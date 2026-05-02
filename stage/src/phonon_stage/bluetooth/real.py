@@ -16,6 +16,14 @@ _ADAPTER_INTERFACE = "org.bluez.Adapter1"
 _DEVICE_INTERFACE = "org.bluez.Device1"
 
 
+def _prop(props: Any, key: str, default: Any = "") -> Any:
+    """Extract value from D-Bus props (handles both Variant and raw types)."""
+    val = props.get(key)
+    if val is None:
+        return default
+    return val.value if hasattr(val, "value") else val
+
+
 class RealBluetoothBackend:
     """Manage BT controllers and devices via BlueZ D-Bus."""
 
@@ -47,11 +55,11 @@ class RealBluetoothBackend:
                 props = interfaces[_ADAPTER_INTERFACE]
                 controllers.append(
                     BluetoothController(
-                        address=props.get("Address", {}).value,
-                        name=props.get("Name", {}).value,
-                        alias=props.get("Alias", {}).value,
-                        powered=props.get("Powered", {}).value,
-                        discovering=props.get("Discovering", {}).value,
+                        address=_prop(props, "Address"),
+                        name=_prop(props, "Name"),
+                        alias=_prop(props, "Alias"),
+                        powered=_prop(props, "Powered", False),
+                        discovering=_prop(props, "Discovering", False),
                     )
                 )
             return controllers
@@ -66,7 +74,7 @@ class RealBluetoothBackend:
         for path, interfaces in objects.items():
             if _ADAPTER_INTERFACE in interfaces:
                 props = interfaces[_ADAPTER_INTERFACE]
-                if props.get("Address", {}).value == controller_address:
+                if _prop(props, "Address") == controller_address:
                     return path  # type: ignore[return-value]
         msg = f"Adapter {controller_address} not found"
         raise ValueError(msg)
@@ -76,7 +84,7 @@ class RealBluetoothBackend:
         for path, interfaces in objects.items():
             if _DEVICE_INTERFACE in interfaces:
                 props = interfaces[_DEVICE_INTERFACE]
-                if props.get("Address", {}).value == device_address:
+                if _prop(props, "Address") == device_address:
                     return path  # type: ignore[return-value]
         msg = f"Device {device_address} not found"
         raise ValueError(msg)
@@ -167,12 +175,12 @@ class RealBluetoothBackend:
             props = interfaces[_DEVICE_INTERFACE]
             devices.append(
                 BluetoothDevice(
-                    address=props.get("Address", {}).value,
-                    name=props.get("Name", {}).value,
-                    alias=props.get("Alias", {}).value,
-                    paired=props.get("Paired", {}).value,
-                    connected=props.get("Connected", {}).value,
-                    icon=props.get("Icon", {}).value if "Icon" in props else "audio-card",
+                    address=_prop(props, "Address"),
+                    name=_prop(props, "Name"),
+                    alias=_prop(props, "Alias"),
+                    paired=_prop(props, "Paired", False),
+                    connected=_prop(props, "Connected", False),
+                    icon=_prop(props, "Icon", "audio-card"),
                 )
             )
         return devices

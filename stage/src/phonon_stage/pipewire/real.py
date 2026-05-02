@@ -24,6 +24,12 @@ class RealPipeWireBackend:
                     media_class=str(n["media_class"]),
                     nick=str(n["nick"]),
                     state=str(n["state"]),
+                    bt_codec=str(n.get("bt_codec", "")),
+                    bt_address=str(n.get("bt_address", "")),
+                    bt_profile=str(n.get("bt_profile", "")),
+                    latency_ms=float(n.get("latency_ms", 0.0)),
+                    sample_rate=int(n.get("sample_rate", 0)),
+                    channels=int(n.get("channels", 0)),
                 )
                 for n in raw_nodes
             ]

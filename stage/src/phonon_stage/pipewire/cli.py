@@ -154,6 +154,22 @@ def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             props = info.get("props", {})
             if not isinstance(props, dict):
                 continue
+            # Extract latency from params if available
+            latency_ns = 0
+            sample_rate = 0
+            channels = 0
+            params = info.get("params", {})
+            if isinstance(params, dict):
+                latency_list = params.get("Latency", [])
+                if isinstance(latency_list, list) and latency_list:
+                    lat = latency_list[0] if isinstance(latency_list[0], dict) else {}
+                    latency_ns = lat.get("minNs", 0)
+                fmt_list = params.get("EnumFormat", params.get("Format", []))
+                if isinstance(fmt_list, list) and fmt_list:
+                    fmt = fmt_list[0] if isinstance(fmt_list[0], dict) else {}
+                    sample_rate = fmt.get("rate", 0)
+                    channels = fmt.get("channels", 0)
+
             nodes.append(
                 {
                     "id": obj.get("id", 0),
@@ -161,6 +177,12 @@ def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "media_class": props.get("media.class", ""),
                     "nick": props.get("node.nick", props.get("node.description", "")),
                     "state": info.get("state", "unknown"),
+                    "bt_codec": props.get("api.bluez5.codec", ""),
+                    "bt_address": props.get("api.bluez5.address", ""),
+                    "bt_profile": props.get("api.bluez5.profile", ""),
+                    "latency_ms": round(latency_ns / 1_000_000, 1) if latency_ns else 0.0,
+                    "sample_rate": sample_rate,
+                    "channels": channels,
                 }
             )
     return nodes

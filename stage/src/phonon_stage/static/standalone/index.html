@@ -244,16 +244,16 @@ async function refreshAll() {
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
   }
 
-  // Fetch paired BT devices on every refresh
-  if (state.btController) {
-    const paired = await api(`/bluetooth/devices?controller_address=${state.btController}`);
-    if (paired) { state.pairedDevices = paired; renderBtPairedDevices(paired); }
-  }
-
   if (nodes) { state.nodes = nodes; renderPatchNodes(nodes, ports || []); }
   if (ports) state.ports = ports;
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
+
+  // Fetch paired BT devices (after nodes so we can match BT info)
+  if (state.btController) {
+    const paired = await api(`/bluetooth/devices?controller_address=${state.btController}`);
+    if (paired) { state.pairedDevices = paired; renderBtPairedDevices(paired); }
+  }
 }
 
 // ── Render: Audio Devices ────────────────────────────
@@ -272,6 +272,14 @@ function renderAudioDevices(devices) {
 }
 
 // ── Render: Patch Bay ────────────────────────────────
+function nodeInfoBadge(n) {
+  if (!n.bt_codec) return '';
+  const parts = [n.bt_codec.toUpperCase()];
+  if (n.latency_ms) parts.push(n.latency_ms + 'ms');
+  if (n.sample_rate) parts.push((n.sample_rate/1000) + 'kHz');
+  return `<div style="font-family:var(--font-m);font-size:8px;color:var(--cyan);margin-top:2px">${parts.join(' · ')}</div>`;
+}
+
 function renderPatchNodes(nodes, ports) {
   const sources = nodes.filter(n => n.media_class.includes('Source') || n.media_class.includes('Duplex'));
   const sinks = nodes.filter(n => n.media_class.includes('Sink') || n.media_class.includes('Duplex'));
@@ -281,6 +289,7 @@ function renderPatchNodes(nodes, ports) {
     `<div class="patch-item${state.selectedSource?.id === n.id ? ' selected' : ''}"
       onclick="selectSource(${n.id})" title="${n.media_class}">
       ${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span>
+      ${nodeInfoBadge(n)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sources</div>';
 
@@ -289,6 +298,7 @@ function renderPatchNodes(nodes, ports) {
     `<div class="patch-item${state.selectedSink?.id === n.id ? ' selected' : ''}"
       onclick="selectSink(${n.id})" title="${n.media_class}">
       ${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span>
+      ${nodeInfoBadge(n)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sinks</div>';
 }
@@ -437,7 +447,22 @@ function renderBtPairedDevices(devices) {
       const actions = d.connected
         ? `<button class="btn" onclick="btDisconnect('${d.address}')">Disconnect</button>`
         : `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>`;
-      return `<div class="bt-row">
+
+      // Match PipeWire node for extended BT info
+      const pwNode = state.nodes.find(n => n.bt_address === d.address);
+      let infoLine = '';
+      if (pwNode && d.connected) {
+        const parts = [];
+        if (pwNode.bt_codec) parts.push(`<span style="color:var(--cyan);font-weight:600">${pwNode.bt_codec.toUpperCase()}</span>`);
+        if (pwNode.sample_rate) parts.push(`${pwNode.sample_rate / 1000}kHz`);
+        if (pwNode.channels) parts.push(`${pwNode.channels}ch`);
+        if (pwNode.latency_ms) parts.push(`<span style="color:${pwNode.latency_ms > 200 ? 'var(--yellow)' : 'var(--green)'}">${pwNode.latency_ms}ms</span>`);
+        if (parts.length) {
+          infoLine = `<div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-top:2px;margin-left:14px">${parts.join(' · ')}</div>`;
+        }
+      }
+
+      return `<div class="bt-row" style="flex-wrap:wrap">
         <div class="bt-device">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;${led}"></span>
           ${d.alias || d.name}
@@ -445,6 +470,7 @@ function renderBtPairedDevices(devices) {
         </div>
         <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
         ${actions}
+        ${infoLine}
       </div>`;
     }).join('');
 }

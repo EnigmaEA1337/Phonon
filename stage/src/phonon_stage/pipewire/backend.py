@@ -15,6 +15,13 @@ class PwNode:
     media_class: str  # "Audio/Sink", "Audio/Source", "Stream/Output/Audio"
     nick: str
     state: str  # "running", "idle", "suspended"
+    # Optional extended info (populated for bluez5 nodes)
+    bt_codec: str = ""  # "aptx", "sbc", "aac", "ldac"
+    bt_address: str = ""  # "80:C3:BA:0A:08:C9"
+    bt_profile: str = ""  # "a2dp-sink", "a2dp-source", "headset-head-unit"
+    latency_ms: float = 0.0  # Buffer latency in milliseconds
+    sample_rate: int = 0  # e.g. 48000
+    channels: int = 0  # e.g. 2
 
 
 @dataclass(frozen=True)

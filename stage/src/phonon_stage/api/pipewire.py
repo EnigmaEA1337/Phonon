@@ -15,6 +15,12 @@ class PwNodeResponse(BaseModel):
     media_class: str
     nick: str
     state: str
+    bt_codec: str = ""
+    bt_address: str = ""
+    bt_profile: str = ""
+    latency_ms: float = 0.0
+    sample_rate: int = 0
+    channels: int = 0
 
 
 class PwPortResponse(BaseModel):
@@ -38,7 +44,19 @@ class PwLinkResponse(BaseModel):
 async def list_nodes(request: Request) -> list[PwNodeResponse]:
     nodes = await request.app.state.pw_backend.list_nodes()
     return [
-        PwNodeResponse(id=n.id, name=n.name, media_class=n.media_class, nick=n.nick, state=n.state)
+        PwNodeResponse(
+            id=n.id,
+            name=n.name,
+            media_class=n.media_class,
+            nick=n.nick,
+            state=n.state,
+            bt_codec=n.bt_codec,
+            bt_address=n.bt_address,
+            bt_profile=n.bt_profile,
+            latency_ms=n.latency_ms,
+            sample_rate=n.sample_rate,
+            channels=n.channels,
+        )
         for n in nodes
     ]
 

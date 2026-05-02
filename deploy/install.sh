@@ -104,6 +104,12 @@ usermod -aG audio "${PHONON_USER}" 2>/dev/null || true
 usermod -aG bluetooth "${PHONON_USER}" 2>/dev/null || true
 echo "  User in audio + bluetooth groups"
 
+# Install D-Bus policy for BlueZ access
+if [ -f "${SCRIPT_DIR}/dbus/phonon-bluetooth.conf" ]; then
+    cp "${SCRIPT_DIR}/dbus/phonon-bluetooth.conf" /etc/dbus-1/system.d/
+    echo "  D-Bus BlueZ policy installed"
+fi
+
 # ── Step 4/7: Create directories ────────────────────────────────────────
 
 echo "[4/7] Creating directories..."

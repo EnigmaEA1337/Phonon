@@ -18,6 +18,7 @@ from phonon_stage.api.capabilities import router as capabilities_router
 from phonon_stage.api.health import router as health_router
 from phonon_stage.api.mappings import router as mappings_router
 from phonon_stage.api.pipewire import router as pipewire_router
+from phonon_stage.api.system import router as system_router
 from phonon_stage.audio.real import RealAudioBackend
 from phonon_stage.bluetooth.real import RealBluetoothBackend
 from phonon_stage.clock import Clock, SystemClock
@@ -115,6 +116,7 @@ def create_app(
     app.include_router(mappings_router)
     app.include_router(bluetooth_router)
     app.include_router(browse_router)
+    app.include_router(system_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

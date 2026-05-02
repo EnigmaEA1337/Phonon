@@ -115,6 +115,30 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .statusbar { display: flex; gap: 16px; font-family: var(--font-m); font-size: 9px; color: var(--text-dim);
   padding: 8px 16px; flex-wrap: wrap; }
 
+/* ── Process pill ───────────────────────────────────── */
+.proc-pill { display: flex; align-items: center; gap: 6px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 11px; min-width: 140px; }
+.proc-led { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.proc-led.on { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.proc-led.off { background: var(--red); box-shadow: 0 0 4px var(--red); }
+.proc-name { font-weight: 600; }
+.proc-ver { font-family: var(--font-m); font-size: 8px; color: var(--text-dim); }
+
+/* ── Modal ──────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000;
+  display: none; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px;
+  width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; }
+.modal-head { padding: 12px 16px; background: var(--bg-2); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; border-radius: 10px 10px 0 0; }
+.modal-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.modal-close { background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; }
+.modal-body { padding: 16px; font-size: 11px; line-height: 1.8; }
+.modal-body dt { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 8px; }
+.modal-body dd { color: var(--text); margin-left: 0; font-family: var(--font-m); font-size: 10px; }
+.sec-ok { color: var(--green); } .sec-warn { color: var(--yellow); } .sec-bad { color: var(--red); }
+
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 640px) {
   .patch-grid { grid-template-columns: 1fr; }
@@ -142,12 +166,22 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   <span class="badge">STANDALONE</span>
   <span class="tb-info" id="stage-id">—</span>
   <div class="tb-spacer"></div>
+  <button class="btn" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
+  <button class="btn" style="font-size:9px;padding:2px 6px" onclick="showModal('security')">Security</button>
   <span class="tb-led"></span>
   <span class="tb-info" id="uptime">—</span>
   <span class="tb-clock" id="clock">--:--:--</span>
 </div>
 
 <div class="container">
+
+  <!-- System Processes -->
+  <div class="section">
+    <div class="section-head">System</div>
+    <div class="section-body">
+      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+    </div>
+  </div>
 
   <!-- Capabilities -->
   <div class="section">
@@ -662,6 +696,91 @@ setInterval(() => {
 // ── Init ─────────────────────────────────────────────
 refreshAll();
 setInterval(refreshAll, 3000);
+
+// ── System Status ────────────────────────────────────
+async function refreshSystemStatus() {
+  const sys = await api('/system/status');
+  if (!sys) return;
+  const el = document.getElementById('sys-processes');
+  el.innerHTML = sys.processes.map(p => {
+    const led = p.running ? 'on' : 'off';
+    const ver = p.version ? `<span class="proc-ver">${p.version}</span>` : '';
+    const det = p.details ? `<span class="proc-ver">${p.details}</span>` : '';
+    return `<div class="proc-pill">
+      <span class="proc-led ${led}"></span>
+      <span class="proc-name">${p.name}</span>${ver}${det}
+    </div>`;
+  }).join('') +
+  `<div class="proc-pill">
+    <span class="proc-led on"></span>
+    <span class="proc-name">phonon-stage</span>
+    <span class="proc-ver">v${sys.agent_version}</span>
+    <span class="proc-ver">${sys.memory_used_mb}/${sys.memory_total_mb}MB</span>
+  </div>`;
+}
+refreshSystemStatus();
+setInterval(refreshSystemStatus, 10000);
+
+// ── Modals ───────────────────────────────────────────
+async function showModal(type) {
+  let overlay = document.getElementById('modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'modal-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove('open'); };
+    overlay.innerHTML = '<div class="modal"><div class="modal-head"><h2 id="modal-title"></h2><button class="modal-close" onclick="document.getElementById(\'modal-overlay\').classList.remove(\'open\')">&times;</button></div><div class="modal-body" id="modal-body"></div></div>';
+    document.body.appendChild(overlay);
+  }
+
+  const title = document.getElementById('modal-title');
+  const body = document.getElementById('modal-body');
+
+  if (type === 'about') {
+    title.textContent = 'About Phonon Stage';
+    const sys = await api('/system/status');
+    if (sys) {
+      body.innerHTML = `<dl>
+        <dt>Agent Version</dt><dd>v${sys.agent_version}</dd>
+        <dt>Hostname</dt><dd>${sys.hostname}</dd>
+        <dt>OS</dt><dd>${sys.os_name}</dd>
+        <dt>Architecture</dt><dd>${sys.arch}</dd>
+        <dt>Kernel</dt><dd>${sys.kernel}</dd>
+        <dt>Python</dt><dd>${sys.python_version}</dd>
+        <dt>CPU</dt><dd>${sys.cpu_count} cores</dd>
+        <dt>Memory</dt><dd>${sys.memory_used_mb} / ${sys.memory_total_mb} MB (${sys.memory_available_mb} MB available)</dd>
+        <dt>Processes</dt><dd>${sys.processes.map(p => `${p.name}: ${p.running ? '<span class="sec-ok">running</span>' : '<span class="sec-bad">stopped</span>'} ${p.version}`).join('<br>')}</dd>
+      </dl>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:10px;color:var(--text-fade)">
+        Phonon — distributed audio router<br>
+        <a href="https://github.com/EnigmaEA1337/Phonon" style="color:var(--cyan)" target="_blank">github.com/EnigmaEA1337/Phonon</a>
+      </div>`;
+    }
+  } else if (type === 'security') {
+    title.textContent = 'Security Status';
+    const sec = await api('/system/security');
+    if (sec) {
+      body.innerHTML = `<dl>
+        <dt>API Binding</dt><dd>${sec.api_bind_address}:${sec.api_port} ${sec.api_bind_address === '0.0.0.0' ? '<span class="sec-bad">WARNING: bound to all interfaces</span>' : '<span class="sec-ok">OK</span>'}</dd>
+        <dt>TLS / HTTPS</dt><dd>${sec.tls_enabled ? '<span class="sec-ok">Enabled</span>' : '<span class="sec-warn">Disabled (HTTP only)</span>'}</dd>
+        <dt>Firewall</dt><dd>${sec.firewall_active ? '<span class="sec-ok">Active</span>' : '<span class="sec-warn">Inactive</span>'}</dd>
+        ${sec.firewall_rules.length ? `<dt>Firewall Rules</dt><dd style="white-space:pre;font-size:9px;max-height:120px;overflow:auto">${sec.firewall_rules.join('\n')}</dd>` : ''}
+        <dt>SSH Port</dt><dd>${sec.ssh_port}</dd>
+        <dt>SSH Authorized Keys</dt><dd>${sec.ssh_authorized_keys} key(s)</dd>
+        <dt>Config File Permissions</dt><dd>${sec.config_file_permissions === '600' ? '<span class="sec-ok">0600 (owner only)</span>' : `<span class="sec-warn">${sec.config_file_permissions}</span>`}</dd>
+        <dt>Data Directory Permissions</dt><dd>${sec.data_dir_permissions}</dd>
+        <dt>Phonon User Groups</dt><dd>${sec.phonon_user_groups.join(', ') || 'N/A'}</dd>
+      </dl>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:10px;color:var(--text-fade)">
+        Phase 1: No authentication (lab network trusted)<br>
+        Phase 2: Bearer token auth planned<br>
+        Phase 3: TLS 1.3 mandatory planned
+      </div>`;
+    }
+  }
+  overlay.classList.add('open');
+}
 </script>
+
 </body>
 </html>

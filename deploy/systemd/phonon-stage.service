@@ -8,7 +8,7 @@ Wants=network-online.target pipewire.service
 Type=exec
 User=phonon
 Group=phonon
-ExecStartPre=/bin/bash -c 'mkdir -p /run/user/%U && chown %u:%g /run/user/%U'
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/user/%U && chown %u:%g /run/user/%U && chmod 700 /run/user/%U'
 ExecStart=/opt/phonon/stage/.venv/bin/phonon-stage --config /etc/phonon/stage.yaml
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus

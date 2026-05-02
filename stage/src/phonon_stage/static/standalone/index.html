@@ -257,10 +257,18 @@ async function refreshAll() {
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
 
-  // Fetch paired BT devices for selected controller (after nodes so we can match BT info)
-  if (state.btSelectedController) {
-    const paired = await api(`/bluetooth/devices?controller_address=${state.btSelectedController}`);
-    if (paired) { state.pairedDevices = paired; renderBtPairedDevices(paired); }
+  // Fetch paired BT devices from ALL controllers (after nodes so we can match BT info)
+  if (state.btControllers.length) {
+    const allPaired = [];
+    for (const ctrl of state.btControllers) {
+      const paired = await api(`/bluetooth/devices?controller_address=${ctrl.address}`);
+      if (paired) {
+        for (const d of paired) { d._controller = ctrl.address; }
+        allPaired.push(...paired);
+      }
+    }
+    state.pairedDevices = allPaired;
+    renderBtPairedDevices(allPaired);
   }
 }
 
@@ -499,7 +507,7 @@ function renderBtPairedDevices(devices) {
           ${d.alias || d.name}
           <span class="bt-status" style="color:${statusColor}">${status}</span>
         </div>
-        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
+        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d._controller || '?'} → ${d.address}</span>
         ${actions}
         ${infoLine}
       </div>`;

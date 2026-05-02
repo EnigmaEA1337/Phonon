@@ -22,7 +22,7 @@ SyslogIdentifier=phonon-stage
 
 # Hardening (SECURITY.md §4.1)
 NoNewPrivileges=yes
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/var/lib/phonon /var/log/phonon /run/user

@@ -60,9 +60,56 @@ async def run_command(*args: str) -> str:
 
 
 async def pw_dump() -> list[dict[str, Any]]:
-    """Run pw-dump and return parsed JSON array of PipeWire objects."""
-    output = await run_command("pw-dump")
-    return json.loads(output)  # type: ignore[no-any-return]
+    """Run pw-dump and return parsed JSON array of PipeWire objects.
+
+    pw-dump streams continuously. We read the first complete JSON array
+    (matching the top-level `[...]`) and kill the process.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "pw-dump",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    chunks: list[bytes] = []
+    depth = 0
+    found_start = False
+
+    try:
+        while True:
+            chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=TIMEOUT_SECONDS)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            text = chunk.decode()
+            for char in text:
+                if char == "[":
+                    depth += 1
+                    found_start = True
+                elif char == "]":
+                    depth -= 1
+                if found_start and depth == 0:
+                    # Complete JSON array received
+                    proc.kill()
+                    await proc.wait()
+                    full = b"".join(chunks).decode()
+                    return json.loads(full)  # type: ignore[no-any-return]
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        stderr = (await proc.stderr.read()).decode().strip() if proc.stderr else ""
+        raise PipeWireCliError("pw-dump", -1, f"timeout: {stderr}") from None
+
+    proc.kill()
+    await proc.wait()
+    stderr = (await proc.stderr.read()).decode().strip() if proc.stderr else ""
+    if not chunks:
+        raise PipeWireCliError("pw-dump", proc.returncode or -1, stderr or "no output")
+    full = b"".join(chunks).decode()
+    return json.loads(full)  # type: ignore[no-any-return]
 
 
 async def pw_link_create(output_port_id: int, input_port_id: int) -> str:

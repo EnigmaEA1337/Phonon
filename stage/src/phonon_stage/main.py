@@ -145,4 +145,5 @@ def cli_entry() -> None:
         host=cfg.bind_address,
         port=cfg.port,
         log_level=cfg.log_level.lower(),
+        loop="asyncio",  # Don't use uvloop — it breaks subprocess on Pi ARM64
     )

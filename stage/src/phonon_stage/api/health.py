@@ -42,8 +42,8 @@ async def debug_pw_test() -> dict[str, object]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        assert proc.stdout is not None  # noqa: S101
-        assert proc.stderr is not None  # noqa: S101
+        assert proc.stdout is not None
+        assert proc.stderr is not None
         chunks: list[bytes] = []
         try:
             while True:

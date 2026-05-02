@@ -175,8 +175,12 @@ def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 fmt_list = params.get("EnumFormat", params.get("Format", []))
                 if isinstance(fmt_list, list) and fmt_list:
                     fmt = fmt_list[0] if isinstance(fmt_list[0], dict) else {}
-                    sample_rate = fmt.get("rate", 0)
-                    channels = fmt.get("channels", 0)
+                    rate_raw = fmt.get("rate", 0)
+                    sample_rate = (
+                        rate_raw.get("default", 0) if isinstance(rate_raw, dict) else rate_raw
+                    )
+                    ch_raw = fmt.get("channels", 0)
+                    channels = ch_raw.get("default", 0) if isinstance(ch_raw, dict) else ch_raw
 
             nodes.append(
                 {

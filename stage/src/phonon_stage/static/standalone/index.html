@@ -180,6 +180,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     <div class="section-head">Bluetooth</div>
     <div class="section-body">
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+        <select id="bt-controller-select" onchange="btSelectController(this.value)"
+          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-m);font-size:10px"></select>
         <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
         <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
         <span class="tb-info" id="bt-status">—</span>
@@ -206,7 +208,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 <script>
 const API = window.location.origin;
-let state = { selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [], btController: null, pairedDevices: [] };
+let state = {
+  selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
+  btControllers: [], btSelectedController: null, pairedDevices: [],
+};
 
 // ── Clock ────────────────────────────────────────────
 setInterval(() => {
@@ -237,9 +242,12 @@ async function refreshAll() {
 
   if (caps) {
     renderAudioDevices(caps.audio_devices);
-    state.btController = caps.bluetooth_controllers?.[0]?.address || null;
-    const ctrl = caps.bluetooth_controllers?.[0];
-    document.getElementById('bt-power').textContent = ctrl?.powered ? 'Power OFF' : 'Power ON';
+    state.btControllers = caps.bluetooth_controllers || [];
+    // Auto-select first controller if none selected
+    if (!state.btSelectedController && state.btControllers.length) {
+      state.btSelectedController = state.btControllers[0].address;
+    }
+    renderBtControllerSelect(state.btControllers);
     document.getElementById('status-ip').textContent = `IP: ${caps.stage_id}`;
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
   }
@@ -249,9 +257,9 @@ async function refreshAll() {
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
 
-  // Fetch paired BT devices (after nodes so we can match BT info)
-  if (state.btController) {
-    const paired = await api(`/bluetooth/devices?controller_address=${state.btController}`);
+  // Fetch paired BT devices for selected controller (after nodes so we can match BT info)
+  if (state.btSelectedController) {
+    const paired = await api(`/bluetooth/devices?controller_address=${state.btSelectedController}`);
     if (paired) { state.pairedDevices = paired; renderBtPairedDevices(paired); }
   }
 }
@@ -402,13 +410,36 @@ async function deleteMapping(id) {
 }
 
 // ── Bluetooth ────────────────────────────────────────
+function renderBtControllerSelect(controllers) {
+  const sel = document.getElementById('bt-controller-select');
+  const current = state.btSelectedController;
+  sel.innerHTML = controllers.map(c => {
+    const selected = c.address === current ? ' selected' : '';
+    const pw = c.powered ? ' ON' : ' OFF';
+    return `<option value="${c.address}"${selected}>${c.alias || c.name} (${c.address})${pw}</option>`;
+  }).join('');
+  if (!controllers.length) sel.innerHTML = '<option>No controllers</option>';
+
+  // Update power button text based on selected controller
+  const ctrl = controllers.find(c => c.address === current);
+  if (ctrl) {
+    document.getElementById('bt-power').textContent = ctrl.powered ? 'Power OFF' : 'Power ON';
+  }
+}
+
+function btSelectController(addr) {
+  state.btSelectedController = addr;
+  document.getElementById('bt-scan-results').innerHTML = '';
+  refreshAll();
+}
+
 async function btPower() {
-  if (!state.btController) return;
+  if (!state.btSelectedController) return;
   const btn = document.getElementById('bt-power');
   const isPowered = btn.textContent.includes('OFF');
   btn.disabled = true;
   document.getElementById('bt-status').textContent = isPowered ? 'Powering off...' : 'Powering on...';
-  await api(`/bluetooth/${state.btController}/power`, {
+  await api(`/bluetooth/${state.btSelectedController}/power`, {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ powered: !isPowered }),
   });
@@ -417,12 +448,12 @@ async function btPower() {
 }
 
 async function btScan() {
-  if (!state.btController) return;
+  if (!state.btSelectedController) return;
   const btn = document.getElementById('bt-scan');
   btn.disabled = true; btn.textContent = 'Scanning...';
   document.getElementById('bt-status').textContent = 'Scanning (10s)...';
 
-  const devices = await api(`/bluetooth/scan?controller_address=${state.btController}&timeout=10`);
+  const devices = await api(`/bluetooth/scan?controller_address=${state.btSelectedController}&timeout=10`);
   btn.disabled = false; btn.textContent = 'Scan';
 
   if (devices) {

@@ -1,8 +1,8 @@
 [Unit]
 Description=Phonon Stage Agent
 Documentation=https://github.com/EnigmaEA1337/Phonon
-After=network-online.target dbus.service avahi-daemon.service
-Wants=network-online.target
+After=network-online.target dbus.service avahi-daemon.service pipewire.service
+Wants=network-online.target pipewire.service
 
 [Service]
 Type=exec
@@ -25,7 +25,7 @@ ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/var/lib/phonon /var/log/phonon
 ReadOnlyPaths=/etc/phonon
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_BLUETOOTH
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=no

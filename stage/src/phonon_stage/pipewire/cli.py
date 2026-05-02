@@ -1,0 +1,162 @@
+"""PipeWire subprocess wrapper — the ONLY module that calls subprocess.
+
+All PipeWire CLI interactions (pw-cli, pw-link, wpctl) are isolated here.
+No other module should import asyncio.create_subprocess_exec for PipeWire.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any
+
+import structlog
+
+logger = structlog.get_logger()
+
+TIMEOUT_SECONDS = 5.0
+
+
+class PipeWireCliError(Exception):
+    """Raised when a PipeWire CLI command fails."""
+
+    def __init__(self, cmd: str, returncode: int, stderr: str) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(f"PipeWire CLI error: {cmd} returned {returncode}: {stderr}")
+
+
+async def run_command(*args: str) -> str:
+    """Run a command and return stdout. Raises PipeWireCliError on failure."""
+    cmd_str = " ".join(args)
+    logger.debug("pipewire.cli.run", cmd=cmd_str)
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise PipeWireCliError(cmd_str, -1, "timeout") from None
+
+    stdout = stdout_bytes.decode().strip()
+    stderr = stderr_bytes.decode().strip()
+
+    if proc.returncode != 0:
+        logger.warning(
+            "pipewire.cli.error", cmd=cmd_str, returncode=proc.returncode, stderr=stderr
+        )
+        raise PipeWireCliError(cmd_str, proc.returncode or -1, stderr)
+
+    return stdout
+
+
+async def pw_dump() -> list[dict[str, Any]]:
+    """Run pw-dump and return parsed JSON array of PipeWire objects."""
+    output = await run_command("pw-dump")
+    return json.loads(output)  # type: ignore[no-any-return]
+
+
+async def pw_link_create(output_port_id: int, input_port_id: int) -> str:
+    """Create a PipeWire link. Returns raw output."""
+    return await run_command("pw-link", str(output_port_id), str(input_port_id))
+
+
+async def pw_link_destroy(link_id: int) -> str:
+    """Destroy a PipeWire link by ID."""
+    return await run_command("pw-link", "-d", str(link_id))
+
+
+async def pw_link_list() -> str:
+    """List PipeWire links in ID mode."""
+    return await run_command("pw-link", "-Iil")
+
+
+async def wpctl_set_volume(node_id: int, volume_linear: float) -> str:
+    """Set node volume via wpctl. volume_linear is 0.0-1.0+."""
+    vol_str = f"{volume_linear:.4f}"
+    return await run_command("wpctl", "set-volume", str(node_id), vol_str)
+
+
+# ── Parsers ──────────────────────────────────────────────────────────────
+
+# pw-link -Iil output format:
+#   <output_port_id>  <output_node>:<port_name>
+#    |- <link_id> -> <input_port_id>  <input_node>:<port_name>
+_LINK_OUTPUT_RE = re.compile(r"^\s+\|-\s+(\d+)\s+->\s+(\d+)\s+")
+_PORT_LINE_RE = re.compile(r"^(\d+)\s+(.+)$")
+
+
+def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract PipeWire Node objects from pw-dump output."""
+    nodes: list[dict[str, Any]] = []
+    for obj in objects:
+        if obj.get("type") == "PipeWire:Interface:Node":
+            info = obj.get("info", {})
+            if not isinstance(info, dict):
+                continue
+            props = info.get("props", {})
+            if not isinstance(props, dict):
+                continue
+            nodes.append(
+                {
+                    "id": obj.get("id", 0),
+                    "name": props.get("node.name", ""),
+                    "media_class": props.get("media.class", ""),
+                    "nick": props.get("node.nick", props.get("node.description", "")),
+                    "state": info.get("state", "unknown"),
+                }
+            )
+    return nodes
+
+
+def parse_pw_dump_ports(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract PipeWire Port objects from pw-dump output."""
+    ports: list[dict[str, Any]] = []
+    for obj in objects:
+        if obj.get("type") == "PipeWire:Interface:Port":
+            info = obj.get("info", {})
+            if not isinstance(info, dict):
+                continue
+            props = info.get("props", {})
+            if not isinstance(props, dict):
+                continue
+            direction_raw = info.get("direction", props.get("port.direction", ""))
+            direction = "output" if direction_raw in ("output", "out") else "input"
+            ports.append(
+                {
+                    "id": obj.get("id", 0),
+                    "node_id": props.get("node.id", 0),
+                    "name": props.get("port.name", ""),
+                    "direction": direction,
+                    "alias": props.get("port.alias", props.get("object.path", "")),
+                }
+            )
+    return ports
+
+
+def parse_pw_dump_links(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract PipeWire Link objects from pw-dump output."""
+    links: list[dict[str, Any]] = []
+    for obj in objects:
+        if obj.get("type") == "PipeWire:Interface:Link":
+            info = obj.get("info", {})
+            if not isinstance(info, dict):
+                continue
+            links.append(
+                {
+                    "id": obj.get("id", 0),
+                    "output_port_id": info.get("output-port-id", 0),
+                    "input_port_id": info.get("input-port-id", 0),
+                    "state": info.get("state", "unknown"),
+                }
+            )
+    return links

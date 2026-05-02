@@ -20,6 +20,7 @@ class StageConfig(BaseModel):
     log_level: str = "INFO"
     mode: str = "STANDALONE"  # Hardcoded for Étape 1
     machine_id_path: Path = Path("/etc/machine-id")
+    standalone_conf_path: Path = Path("/var/lib/phonon/standalone.conf.json")
 
     @field_validator("bind_address")
     @classmethod

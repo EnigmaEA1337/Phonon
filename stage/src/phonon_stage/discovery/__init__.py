@@ -1,5 +1,5 @@
-"""Discovery backend abstraction — mDNS-SD service announcement."""
+"""Discovery backend abstraction — mDNS-SD service announcement and browsing."""
 
-from phonon_stage.discovery.backend import DiscoveryBackend
+from phonon_stage.discovery.backend import DiscoveredStage, DiscoveryBackend
 
-__all__ = ["DiscoveryBackend"]
+__all__ = ["DiscoveredStage", "DiscoveryBackend"]

@@ -1,0 +1,189 @@
+"""Mapping service — orchestrates PipeWire routing and persistence."""
+
+from __future__ import annotations
+
+import uuid
+from typing import TYPE_CHECKING
+
+import structlog
+
+from phonon_stage.mappings.audio_math import db_to_linear, pan_to_stereo_gains, validate_gain
+from phonon_stage.mappings.models import Mapping
+
+if TYPE_CHECKING:
+    from phonon_stage.clock import Clock
+    from phonon_stage.mappings.store import MappingStore
+    from phonon_stage.pipewire.backend import PipeWireBackend
+
+logger = structlog.get_logger()
+
+
+class MappingServiceError(Exception):
+    """Raised on mapping operation failures."""
+
+
+class MappingService:
+    """Orchestrates audio routing: creates PipeWire links and persists mappings."""
+
+    def __init__(
+        self,
+        pw_backend: PipeWireBackend,
+        store: MappingStore,
+        clock: Clock,
+    ) -> None:
+        self._pw = pw_backend
+        self._store = store
+        self._clock = clock
+
+    @property
+    def mappings(self) -> list[Mapping]:
+        return self._store.mappings
+
+    async def create_mapping(
+        self,
+        source_node_id: int,
+        source_port_ids: list[int],
+        sink_node_id: int,
+        sink_port_ids: list[int],
+        gain_db: float = 0.0,
+        pan: float = 0.0,
+        mute: bool = False,
+    ) -> Mapping:
+        """Create a new audio mapping with PipeWire links."""
+        validate_gain(gain_db)
+
+        mapping_id = uuid.uuid4().hex[:8]
+        link_ids: list[int] = []
+
+        if not mute:
+            link_ids = await self._create_links(source_port_ids, sink_port_ids)
+
+        # Apply volume
+        if not mute:
+            volume = db_to_linear(gain_db)
+            await self._apply_volume(sink_node_id, volume, pan)
+
+        mapping = Mapping(
+            id=mapping_id,
+            source_node_id=source_node_id,
+            source_port_ids=source_port_ids,
+            sink_node_id=sink_node_id,
+            sink_port_ids=sink_port_ids,
+            link_ids=link_ids,
+            gain_db=gain_db,
+            pan=pan,
+            mute=mute,
+            created_at=self._clock.now().isoformat(),
+        )
+
+        self._store.add(mapping)
+        logger.info(
+            "mapping.created", mapping_id=mapping_id, source=source_node_id, sink=sink_node_id
+        )
+        return mapping
+
+    async def delete_mapping(self, mapping_id: str) -> None:
+        """Delete a mapping and destroy its PipeWire links."""
+        mapping = self._store.get(mapping_id)
+        if mapping is None:
+            msg = f"Mapping {mapping_id} not found"
+            raise MappingServiceError(msg)
+
+        for link_id in mapping.link_ids:
+            try:
+                await self._pw.destroy_link(link_id)
+            except Exception:
+                logger.warning("mapping.link_destroy_failed", link_id=link_id, exc_info=True)
+
+        self._store.remove(mapping_id)
+        logger.info("mapping.deleted", mapping_id=mapping_id)
+
+    async def update_mapping(
+        self,
+        mapping_id: str,
+        gain_db: float | None = None,
+        pan: float | None = None,
+        mute: bool | None = None,
+    ) -> Mapping:
+        """Update gain/pan/mute on an existing mapping."""
+        mapping = self._store.get(mapping_id)
+        if mapping is None:
+            msg = f"Mapping {mapping_id} not found"
+            raise MappingServiceError(msg)
+
+        updates: dict[str, object] = {}
+
+        if gain_db is not None:
+            validate_gain(gain_db)
+            updates["gain_db"] = gain_db
+
+        if pan is not None:
+            updates["pan"] = pan
+
+        if mute is not None and mute != mapping.mute:
+            if mute:
+                # Muting: destroy links
+                for link_id in mapping.link_ids:
+                    try:
+                        await self._pw.destroy_link(link_id)
+                    except Exception:
+                        logger.warning("mapping.mute_destroy_failed", link_id=link_id)
+                updates["link_ids"] = []
+                updates["mute"] = True
+            else:
+                # Unmuting: recreate links
+                new_link_ids = await self._create_links(
+                    mapping.source_port_ids, mapping.sink_port_ids
+                )
+                updates["link_ids"] = new_link_ids
+                updates["mute"] = False
+
+        updated = self._store.update(mapping_id, **updates)
+
+        # Apply volume if gain or pan changed and not muted
+        if not updated.mute and (gain_db is not None or pan is not None):
+            volume = db_to_linear(updated.gain_db)
+            await self._apply_volume(updated.sink_node_id, volume, updated.pan)
+
+        logger.info("mapping.updated", mapping_id=mapping_id, updates=list(updates.keys()))
+        return updated
+
+    async def restore_mappings(self) -> None:
+        """Restore mappings from persistence on startup."""
+        mappings = self._store.load()
+        restored = 0
+        for mapping in mappings:
+            if mapping.mute:
+                restored += 1
+                continue
+            try:
+                new_link_ids = await self._create_links(
+                    mapping.source_port_ids, mapping.sink_port_ids
+                )
+                self._store.update(mapping.id, link_ids=new_link_ids)
+                volume = db_to_linear(mapping.gain_db)
+                await self._apply_volume(mapping.sink_node_id, volume, mapping.pan)
+                restored += 1
+            except Exception:
+                logger.warning("mapping.restore_failed", mapping_id=mapping.id, exc_info=True)
+
+        logger.info("mappings.restored", total=len(mappings), restored=restored)
+
+    async def _create_links(
+        self, source_port_ids: list[int], sink_port_ids: list[int]
+    ) -> list[int]:
+        """Create PipeWire links for each source→sink port pair."""
+        link_ids: list[int] = []
+        pairs = zip(source_port_ids, sink_port_ids, strict=False)
+        for out_id, in_id in pairs:
+            link = await self._pw.create_link(out_id, in_id)
+            link_ids.append(link.id)
+        return link_ids
+
+    async def _apply_volume(self, node_id: int, volume: float, pan: float) -> None:
+        """Apply volume and pan to a sink node."""
+        _left_gain, _right_gain = pan_to_stereo_gains(pan)
+        # PipeWire wpctl set-volume applies to the whole node
+        # For simplicity in standalone mode, we just set the overall volume
+        # Pan would require per-channel control which is more complex
+        await self._pw.set_node_volume(node_id, volume)

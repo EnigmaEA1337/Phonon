@@ -1,8 +1,12 @@
-"""Fake discovery backend for tests — records registration calls."""
+"""Fake discovery backend for tests — records registration and browse results."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from phonon_stage.discovery.backend import DiscoveredStage
 
 
 @dataclass
@@ -14,6 +18,7 @@ class FakeDiscoveryBackend:
     last_host: str = ""
     last_port: int = 0
     call_log: list[str] = field(default_factory=list)
+    browse_results: list[DiscoveredStage] = field(default_factory=list)
 
     async def register(self, stage_id: str, host: str, port: int) -> None:
         self.registered = True
@@ -25,3 +30,7 @@ class FakeDiscoveryBackend:
     async def unregister(self) -> None:
         self.registered = False
         self.call_log.append("unregister")
+
+    async def browse(self, timeout: float = 3.0) -> list[DiscoveredStage]:
+        self.call_log.append("browse")
+        return list(self.browse_results)

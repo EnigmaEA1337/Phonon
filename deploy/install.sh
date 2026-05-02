@@ -80,6 +80,10 @@ apt-get install -y -qq \
     libdbus-1-dev \
     pkg-config \
     avahi-daemon \
+    pipewire \
+    pipewire-alsa \
+    pipewire-pulse \
+    wireplumber \
     2>/dev/null
 
 echo "  System packages OK"
@@ -95,9 +99,10 @@ else
     echo "  User ${PHONON_USER} created"
 fi
 
-# Add to audio group for ALSA access (not bluetooth — DBus policy handles BT)
+# Add to audio + bluetooth groups
 usermod -aG audio "${PHONON_USER}" 2>/dev/null || true
-echo "  User in audio group"
+usermod -aG bluetooth "${PHONON_USER}" 2>/dev/null || true
+echo "  User in audio + bluetooth groups"
 
 # ── Step 4/7: Create directories ────────────────────────────────────────
 

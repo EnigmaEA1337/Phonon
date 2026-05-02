@@ -29,7 +29,7 @@ class RealPipeWireBackend:
             ]
             logger.info("pipewire.nodes_listed", count=len(nodes))
             return nodes
-        except cli.PipeWireCliError:
+        except Exception:
             logger.warning("pipewire.list_nodes_failed", exc_info=True)
             return []
 
@@ -51,7 +51,7 @@ class RealPipeWireBackend:
                 ports = [p for p in ports if p.node_id == node_id]
             logger.info("pipewire.ports_listed", count=len(ports), node_id=node_id)
             return ports
-        except cli.PipeWireCliError:
+        except Exception:
             logger.warning("pipewire.list_ports_failed", exc_info=True)
             return []
 
@@ -70,7 +70,7 @@ class RealPipeWireBackend:
             ]
             logger.info("pipewire.links_listed", count=len(links))
             return links
-        except cli.PipeWireCliError:
+        except Exception:
             logger.warning("pipewire.list_links_failed", exc_info=True)
             return []
 

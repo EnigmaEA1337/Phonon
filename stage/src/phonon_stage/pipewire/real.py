@@ -16,28 +16,36 @@ class RealPipeWireBackend:
     async def list_nodes(self) -> list[PwNode]:
         try:
             objects = await cli.pw_dump()
-            raw_nodes = cli.parse_pw_dump_nodes(objects)
-            nodes = [
-                PwNode(
-                    id=int(n["id"]),
-                    name=str(n["name"]),
-                    media_class=str(n["media_class"]),
-                    nick=str(n["nick"]),
-                    state=str(n["state"]),
-                    bt_codec=str(n.get("bt_codec", "")),
-                    bt_address=str(n.get("bt_address", "")),
-                    bt_profile=str(n.get("bt_profile", "")),
-                    latency_ms=float(n.get("latency_ms", 0.0)),
-                    sample_rate=int(n.get("sample_rate", 0)),
-                    channels=int(n.get("channels", 0)),
-                )
-                for n in raw_nodes
-            ]
-            logger.info("pipewire.nodes_listed", count=len(nodes))
-            return nodes
-        except Exception:
-            logger.warning("pipewire.list_nodes_failed", exc_info=True)
+        except Exception as exc:
+            import os
+
+            logger.warning(
+                "pipewire.pw_dump_failed",
+                error=str(exc),
+                xdg=os.environ.get("XDG_RUNTIME_DIR", "UNSET"),
+                exc_info=True,
+            )
             return []
+
+        raw_nodes = cli.parse_pw_dump_nodes(objects)
+        nodes = [
+            PwNode(
+                id=int(n["id"]),
+                name=str(n["name"]),
+                media_class=str(n["media_class"]),
+                nick=str(n["nick"]),
+                state=str(n["state"]),
+                bt_codec=str(n.get("bt_codec", "")),
+                bt_address=str(n.get("bt_address", "")),
+                bt_profile=str(n.get("bt_profile", "")),
+                latency_ms=float(n.get("latency_ms", 0.0)),
+                sample_rate=int(n.get("sample_rate", 0)),
+                channels=int(n.get("channels", 0)),
+            )
+            for n in raw_nodes
+        ]
+        logger.info("pipewire.nodes_listed", count=len(nodes))
+        return nodes
 
     async def list_ports(self, node_id: int | None = None) -> list[PwPort]:
         try:

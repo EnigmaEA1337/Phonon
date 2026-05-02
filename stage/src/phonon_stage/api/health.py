@@ -27,3 +27,45 @@ async def health(request: Request) -> HealthResponse:
         uptime_seconds=round(elapsed, 1),
         stage_id=state.config.stage_id,
     )
+
+
+@router.get("/debug/pw-test")
+async def debug_pw_test() -> dict[str, object]:
+    """Temporary debug endpoint — test pw-dump directly."""
+    import asyncio
+    import os
+
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "UNSET")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pw-dump",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdout is not None  # noqa: S101
+        assert proc.stderr is not None  # noqa: S101
+        chunks: list[bytes] = []
+        try:
+            while True:
+                chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=3.0)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except TimeoutError:
+            pass
+        import contextlib
+
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        data = b"".join(chunks)
+        stderr = (await proc.stderr.read()).decode().strip() if not data else ""
+        return {
+            "xdg_runtime_dir": xdg,
+            "bytes": len(data),
+            "returncode": proc.returncode,
+            "stderr": stderr,
+            "first_100": data[:100].decode() if data else "",
+        }
+    except Exception as exc:
+        return {"error": str(exc), "xdg_runtime_dir": xdg}

@@ -250,7 +250,6 @@ async function refreshAll() {
   }
 
   if (caps) {
-    renderAudioDevices(caps.audio_devices);
     state.btControllers = caps.bluetooth_controllers || [];
     // Auto-select first controller if none selected
     if (!state.btSelectedController && state.btControllers.length) {
@@ -261,7 +260,7 @@ async function refreshAll() {
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
   }
 
-  if (nodes) { state.nodes = nodes; renderPatchNodes(nodes, ports || []); }
+  if (nodes) { state.nodes = nodes; renderPatchNodes(nodes, ports || []); renderAudioDevices(caps?.audio_devices || [], nodes); }
   if (ports) state.ports = ports;
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
@@ -282,10 +281,11 @@ async function refreshAll() {
 }
 
 // ── Render: Audio Devices ────────────────────────────
-function renderAudioDevices(devices) {
+function renderAudioDevices(devices, nodes) {
   const el = document.getElementById('audio-devices');
-  if (!devices?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No devices detected</div>'; return; }
-  el.innerHTML = devices.map(d => {
+
+  // ALSA devices
+  const alsaCards = (devices || []).map(d => {
     const type = d.playback && d.capture ? 'both' : d.playback ? 'sink' : 'source';
     const tag = type === 'both' ? 'tag-both' : type === 'sink' ? 'tag-sink' : 'tag-source';
     const label = type === 'both' ? 'IN/OUT' : type === 'sink' ? 'OUTPUT' : 'INPUT';
@@ -293,7 +293,28 @@ function renderAudioDevices(devices) {
       <div class="card-title">${d.name} <span class="card-tag ${tag}">${label}</span></div>
       <div class="card-meta">ID: ${d.id} · Driver: ${d.driver} · Card ${d.card_index}</div>
     </div>`;
-  }).join('');
+  });
+
+  // BT devices from PipeWire (bluez5 nodes not already in ALSA)
+  const btCards = (nodes || []).filter(n => n.bt_codec && n.media_class).map(n => {
+    const isSink = n.media_class.includes('Sink');
+    const isSource = n.media_class.includes('Source');
+    const type = isSink && isSource ? 'both' : isSink ? 'sink' : 'source';
+    const tag = type === 'both' ? 'tag-both' : type === 'sink' ? 'tag-sink' : 'tag-source';
+    const label = type === 'both' ? 'IN/OUT' : type === 'sink' ? 'OUTPUT' : 'INPUT';
+    const codec = n.bt_codec.toUpperCase();
+    const sr = n.sample_rate ? `${n.sample_rate / 1000}kHz` : '';
+    const lat = n.latency_ms ? `${n.latency_ms}ms` : '';
+    const meta = [codec, sr, `${n.channels}ch`, lat, n.bt_address].filter(Boolean).join(' · ');
+    return `<div class="card" style="border-left:3px solid var(--cyan)">
+      <div class="card-title">${n.nick || n.name} <span class="card-tag ${tag}">${label}</span> <span style="font-size:8px;color:var(--cyan)">BT</span></div>
+      <div class="card-meta">${meta}</div>
+    </div>`;
+  });
+
+  const all = [...alsaCards, ...btCards];
+  if (!all.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No devices detected</div>'; return; }
+  el.innerHTML = all.join('');
 }
 
 // ── Render: Patch Bay ────────────────────────────────

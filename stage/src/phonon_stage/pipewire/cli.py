@@ -7,6 +7,7 @@ No other module should import asyncio.create_subprocess_exec for PipeWire.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from typing import Any
@@ -86,7 +87,8 @@ async def pw_dump() -> list[dict[str, Any]]:
     except TimeoutError:
         pass  # Expected: pw-dump keeps streaming, we stop after 2s of no new data
 
-    proc.kill()
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
     await proc.wait()
 
     if not chunks:

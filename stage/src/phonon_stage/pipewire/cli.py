@@ -93,6 +93,14 @@ async def pw_dump() -> list[dict[str, Any]]:
 
     if not chunks:
         stderr = (await proc.stderr.read()).decode().strip()
+        import os
+
+        logger.warning(
+            "pipewire.pw_dump_empty",
+            stderr=stderr,
+            returncode=proc.returncode,
+            xdg_runtime_dir=os.environ.get("XDG_RUNTIME_DIR", "NOT SET"),
+        )
         raise PipeWireCliError("pw-dump", proc.returncode or -1, stderr or "no output")
 
     full = b"".join(chunks).decode()

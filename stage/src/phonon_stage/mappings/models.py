@@ -21,6 +21,7 @@ class Mapping:
     gain_db: float = 0.0
     pan: float = 0.0
     mute: bool = False
+    delay_ms: float = 0.0  # Latency offset for output sync (0-50ms)
     created_at: str = ""  # ISO 8601
 
     def to_dict(self) -> dict[str, object]:
@@ -35,6 +36,7 @@ class Mapping:
             "gain_db": self.gain_db,
             "pan": self.pan,
             "mute": self.mute,
+            "delay_ms": self.delay_ms,
             "created_at": self.created_at,
         }
 
@@ -51,5 +53,6 @@ class Mapping:
             gain_db=float(data.get("gain_db", 0.0)),
             pan=float(data.get("pan", 0.0)),
             mute=bool(data.get("mute", False)),
+            delay_ms=float(data.get("delay_ms", 0.0)),
             created_at=str(data.get("created_at", "")),
         )

@@ -48,6 +48,7 @@ class MappingService:
         gain_db: float = 0.0,
         pan: float = 0.0,
         mute: bool = False,
+        delay_ms: float = 0.0,
     ) -> Mapping:
         """Create a new audio mapping with PipeWire links."""
         validate_gain(gain_db)
@@ -58,10 +59,12 @@ class MappingService:
         if not mute:
             link_ids = await self._create_links(source_port_ids, sink_port_ids)
 
-        # Apply volume
+        # Apply volume and delay
         if not mute:
             volume = db_to_linear(gain_db)
             await self._apply_volume(sink_node_id, volume, pan)
+        if delay_ms > 0:
+            await self._pw.set_node_latency_offset(sink_node_id, int(delay_ms * 1_000_000))
 
         mapping = Mapping(
             id=mapping_id,
@@ -73,6 +76,7 @@ class MappingService:
             gain_db=gain_db,
             pan=pan,
             mute=mute,
+            delay_ms=delay_ms,
             created_at=self._clock.now().isoformat(),
         )
 
@@ -104,6 +108,7 @@ class MappingService:
         gain_db: float | None = None,
         pan: float | None = None,
         mute: bool | None = None,
+        delay_ms: float | None = None,
     ) -> Mapping:
         """Update gain/pan/mute on an existing mapping."""
         mapping = self._store.get(mapping_id)
@@ -144,6 +149,11 @@ class MappingService:
         if not updated.mute and (gain_db is not None or pan is not None):
             volume = db_to_linear(updated.gain_db)
             await self._apply_volume(updated.sink_node_id, volume, updated.pan)
+
+        if delay_ms is not None:
+            updates["delay_ms"] = delay_ms
+            updated = self._store.update(mapping_id, delay_ms=delay_ms)
+            await self._pw.set_node_latency_offset(updated.sink_node_id, int(delay_ms * 1_000_000))
 
         logger.info("mapping.updated", mapping_id=mapping_id, updates=list(updates.keys()))
         return updated

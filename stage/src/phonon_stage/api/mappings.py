@@ -21,6 +21,7 @@ class MappingResponse(BaseModel):
     gain_db: float
     pan: float
     mute: bool
+    delay_ms: float
     created_at: str
 
 
@@ -33,6 +34,7 @@ class CreateMappingRequest(BaseModel):
     gain_db: float = Field(default=0.0, ge=-90.0, le=12.0)
     pan: float = Field(default=0.0, ge=-1.0, le=1.0)
     mute: bool = False
+    delay_ms: float = Field(default=0.0, ge=0.0, le=50.0)
 
 
 class UpdateMappingRequest(BaseModel):
@@ -40,6 +42,7 @@ class UpdateMappingRequest(BaseModel):
     gain_db: float | None = Field(default=None, ge=-90.0, le=12.0)
     pan: float | None = Field(default=None, ge=-1.0, le=1.0)
     mute: bool | None = None
+    delay_ms: float | None = Field(default=None, ge=0.0, le=50.0)
 
 
 def _to_response(m: object) -> MappingResponse:
@@ -65,6 +68,7 @@ async def create_mapping(request: Request, body: CreateMappingRequest) -> Mappin
             gain_db=body.gain_db,
             pan=body.pan,
             mute=body.mute,
+            delay_ms=body.delay_ms,
         )
     except MappingStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -83,6 +87,7 @@ async def update_mapping(
             gain_db=body.gain_db,
             pan=body.pan,
             mute=body.mute,
+            delay_ms=body.delay_ms,
         )
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

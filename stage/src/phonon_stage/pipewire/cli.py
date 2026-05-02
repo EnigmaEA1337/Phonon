@@ -142,6 +142,12 @@ async def wpctl_set_volume(node_id: int, volume_linear: float) -> str:
     return await run_command("wpctl", "set-volume", str(node_id), vol_str)
 
 
+async def pw_cli_set_latency_offset(node_id: int, offset_ns: int) -> str:
+    """Set latency offset on a node via pw-cli. Used for output sync/phasing."""
+    props_json = json.dumps({"latencyOffsetNsec": offset_ns})
+    return await run_command("pw-cli", "set-param", str(node_id), "Props", props_json)
+
+
 # ── Parsers ──────────────────────────────────────────────────────────────
 
 # pw-link -Iil output format:

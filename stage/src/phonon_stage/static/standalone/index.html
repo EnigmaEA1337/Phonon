@@ -381,28 +381,52 @@ function renderMappings(mappings) {
     const sinkNode = state.nodes.find(n => n.id === m.sink_node_id);
     const srcName = srcNode?.nick || srcNode?.name || `Node #${m.source_node_id}`;
     const sinkName = sinkNode?.nick || sinkNode?.name || `Node #${m.sink_node_id}`;
-    const gainPct = ((m.gain_db + 90) / 102 * 100).toFixed(0);
+    const sinkBt = sinkNode?.bt_codec ? ` <span style="color:var(--cyan);font-size:8px">${sinkNode.bt_codec.toUpperCase()}</span>` : '';
+    const sinkLat = sinkNode?.latency_ms ? ` <span style="color:var(--text-fade);font-size:8px">${sinkNode.latency_ms}ms</span>` : '';
+    const active = !m.mute && m.link_ids?.length > 0;
+    const ledStyle = active ? 'background:var(--green);box-shadow:0 0 4px var(--green)' : 'background:var(--text-fade)';
+    const delayVal = (m.delay_ms || 0).toFixed(1);
 
-    return `<div class="mapping-row">
-      <div class="mapping-route">${srcName} <span>→</span> ${sinkName}</div>
-      <div class="mapping-control">
-        <input type="range" class="gain-slider" min="-90" max="12" step="0.5" value="${m.gain_db}"
-          oninput="updateGain('${m.id}', this.value, this)">
-        <span class="gain-val" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</span>
+    return `<div class="mapping-row" style="flex-direction:column;gap:6px;padding:10px 0">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;${ledStyle}"></span>
+        <div class="mapping-route">${srcName} <span style="color:var(--cyan)">→</span> ${sinkName}${sinkBt}${sinkLat}</div>
         <button class="btn-mute${m.mute ? ' active' : ''}" onclick="toggleMute('${m.id}', ${!m.mute})">M</button>
         <button class="btn-del" onclick="deleteMapping('${m.id}')">✕</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;padding-left:14px">
+        <span style="font-size:9px;color:var(--text-dim);width:32px">Gain</span>
+        <input type="range" class="gain-slider" min="-90" max="12" step="0.5" value="${m.gain_db}"
+          oninput="updateGain('${m.id}', this.value)">
+        <span class="gain-val" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;padding-left:14px">
+        <span style="font-size:9px;color:var(--text-dim);width:32px">Delay</span>
+        <input type="range" class="gain-slider" min="0" max="50" step="0.1" value="${delayVal}"
+          oninput="updateDelay('${m.id}', this.value)">
+        <span class="gain-val" id="dv-${m.id}">${delayVal} ms</span>
       </div>
     </div>`;
   }).join('');
 }
 
 let gainTimeout = {};
-function updateGain(id, val, el) {
+function updateGain(id, val) {
   document.getElementById('gv-' + id).textContent = parseFloat(val).toFixed(1) + ' dB';
   clearTimeout(gainTimeout[id]);
   gainTimeout[id] = setTimeout(() => {
     api('/mappings/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ gain_db: parseFloat(val) }) });
+  }, 200);
+}
+
+let delayTimeout = {};
+function updateDelay(id, val) {
+  document.getElementById('dv-' + id).textContent = parseFloat(val).toFixed(1) + ' ms';
+  clearTimeout(delayTimeout[id]);
+  delayTimeout[id] = setTimeout(() => {
+    api('/mappings/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ delay_ms: parseFloat(val) }) });
   }, 200);
 }
 

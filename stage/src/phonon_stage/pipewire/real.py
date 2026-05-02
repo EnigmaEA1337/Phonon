@@ -116,3 +116,7 @@ class RealPipeWireBackend:
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
         await cli.wpctl_set_volume(node_id, volume_linear)
         logger.info("pipewire.volume_set", node_id=node_id, volume=volume_linear)
+
+    async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
+        await cli.pw_cli_set_latency_offset(node_id, offset_ns)
+        logger.info("pipewire.latency_offset_set", node_id=node_id, offset_ns=offset_ns)

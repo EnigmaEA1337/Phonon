@@ -179,12 +179,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   <div class="section">
     <div class="section-head">Bluetooth</div>
     <div class="section-body">
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
         <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
         <span class="tb-info" id="bt-status">—</span>
       </div>
-      <div id="bt-devices"></div>
+      <div id="bt-paired"></div>
+      <div id="bt-scan-results" style="margin-top:8px"></div>
     </div>
   </div>
 
@@ -205,7 +206,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 <script>
 const API = window.location.origin;
-let state = { selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [], btController: null };
+let state = { selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [], btController: null, pairedDevices: [] };
 
 // ── Clock ────────────────────────────────────────────
 setInterval(() => {
@@ -237,8 +238,16 @@ async function refreshAll() {
   if (caps) {
     renderAudioDevices(caps.audio_devices);
     state.btController = caps.bluetooth_controllers?.[0]?.address || null;
+    const ctrl = caps.bluetooth_controllers?.[0];
+    document.getElementById('bt-power').textContent = ctrl?.powered ? 'Power OFF' : 'Power ON';
     document.getElementById('status-ip').textContent = `IP: ${caps.stage_id}`;
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
+  }
+
+  // Fetch paired BT devices on every refresh
+  if (state.btController) {
+    const paired = await api(`/bluetooth/devices?controller_address=${state.btController}`);
+    if (paired) { state.pairedDevices = paired; renderBtPairedDevices(paired); }
   }
 
   if (nodes) { state.nodes = nodes; renderPatchNodes(nodes, ports || []); }
@@ -385,12 +394,16 @@ async function deleteMapping(id) {
 // ── Bluetooth ────────────────────────────────────────
 async function btPower() {
   if (!state.btController) return;
-  document.getElementById('bt-status').textContent = 'Powering on...';
+  const btn = document.getElementById('bt-power');
+  const isPowered = btn.textContent.includes('OFF');
+  btn.disabled = true;
+  document.getElementById('bt-status').textContent = isPowered ? 'Powering off...' : 'Powering on...';
   await api(`/bluetooth/${state.btController}/power`, {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ powered: true }),
+    body: JSON.stringify({ powered: !isPowered }),
   });
-  document.getElementById('bt-status').textContent = 'Powered ON';
+  btn.disabled = false;
+  await refreshAll();
 }
 
 async function btScan() {
@@ -401,27 +414,67 @@ async function btScan() {
 
   const devices = await api(`/bluetooth/scan?controller_address=${state.btController}&timeout=10`);
   btn.disabled = false; btn.textContent = 'Scan';
-  document.getElementById('bt-status').textContent = `Found ${devices?.length || 0} devices`;
 
-  if (devices) renderBtDevices(devices);
+  if (devices) {
+    const pairedAddrs = new Set((state.pairedDevices || []).map(d => d.address));
+    const newDevices = devices.filter(d => !pairedAddrs.has(d.address));
+    document.getElementById('bt-status').textContent = `Found ${newDevices.length} new devices`;
+    renderBtScanResults(newDevices);
+  }
 }
 
-function renderBtDevices(devices) {
-  const el = document.getElementById('bt-devices');
-  if (!devices?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No devices found</div>'; return; }
-  el.innerHTML = devices.map(d => `<div class="bt-row">
-    <div class="bt-device">${d.alias || d.name} <span class="bt-status" style="color:${d.connected ? 'var(--green)' : d.paired ? 'var(--yellow)' : 'var(--text-fade)'}">
-      ${d.connected ? 'connected' : d.paired ? 'paired' : ''}</span></div>
-    <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
-    ${!d.paired ? `<button class="btn" onclick="btPair('${d.address}')">Pair</button>` : ''}
-    ${d.paired && !d.connected ? `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>` : ''}
-    ${d.connected ? `<button class="btn" onclick="btDisconnect('${d.address}')">Disconnect</button>` : ''}
-  </div>`).join('');
+function renderBtPairedDevices(devices) {
+  const el = document.getElementById('bt-paired');
+  if (!devices?.length) {
+    el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No paired devices</div>';
+    return;
+  }
+  el.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Paired devices</div>' +
+    devices.map(d => {
+      const led = d.connected ? 'background:var(--green);box-shadow:0 0 6px var(--green)' : 'background:var(--text-fade)';
+      const status = d.connected ? 'connected' : 'paired';
+      const statusColor = d.connected ? 'var(--green)' : 'var(--yellow)';
+      const actions = d.connected
+        ? `<button class="btn" onclick="btDisconnect('${d.address}')">Disconnect</button>`
+        : `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>`;
+      return `<div class="bt-row">
+        <div class="bt-device">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;${led}"></span>
+          ${d.alias || d.name}
+          <span class="bt-status" style="color:${statusColor}">${status}</span>
+        </div>
+        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
+        ${actions}
+      </div>`;
+    }).join('');
 }
 
-async function btPair(addr) { await api('/bluetooth/pair', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})}); await btScan(); }
-async function btConnect(addr) { await api('/bluetooth/connect', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})}); await btScan(); }
-async function btDisconnect(addr) { await api('/bluetooth/disconnect', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})}); await btScan(); }
+function renderBtScanResults(devices) {
+  const el = document.getElementById('bt-scan-results');
+  if (!devices?.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Discovered devices</div>' +
+    devices.map(d => `<div class="bt-row">
+      <div class="bt-device">${d.alias || d.name || d.address}</div>
+      <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
+      <button class="btn" onclick="btPair('${d.address}')">Pair</button>
+    </div>`).join('');
+}
+
+async function btPair(addr) {
+  document.getElementById('bt-status').textContent = 'Pairing...';
+  await api('/bluetooth/pair', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+  await refreshAll();
+}
+async function btConnect(addr) {
+  document.getElementById('bt-status').textContent = 'Connecting...';
+  await api('/bluetooth/connect', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+  await refreshAll();
+}
+async function btDisconnect(addr) {
+  document.getElementById('bt-status').textContent = 'Disconnecting...';
+  await api('/bluetooth/disconnect', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+  await refreshAll();
+}
 
 // ── Stages ───────────────────────────────────────────
 function renderStages(stages) {

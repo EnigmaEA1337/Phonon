@@ -1,0 +1,3837 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Phonon — Console v4.2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* === PHONON — Palette Cryogenic === */
+
+    /* Backgrounds (gris bleutés froids) */
+    --bg-0: #0a0f14;
+    --bg-1: #121822;
+    --bg-2: #1a2230;
+    --bg-3: #243042;
+    --bg-rack: #1a2230;
+    --bg-rack-alt: #121822;
+    --bg-slot: #243042;
+    --bg-slot-active: #2a3d5e;
+    --border: #2a3850;
+    --border-ins: #060a10;
+
+    /* Text (tons clairs froids) */
+    --text: #f0f7fa;
+    --text-mid: #b8cdd9;
+    --text-dim: #8aa3b5;
+    --text-fade: #6a8294;
+
+    /* Couleurs sémantiques */
+    --blue: #1e40af;       /* secondary indigo */
+    --red: #f87171;        /* alert */
+    --green: #34d399;      /* OK / source */
+    --yellow: #fbbf24;     /* warning / monitor */
+    --orange: #fb923c;     /* warm accent / master */
+    --purple: #a855f7;     /* VCA */
+    --teal: #22d3ee;
+    --pink: #e879f9;       /* magenta accent / output */
+    --cyan: #06b6d4;       /* PRIMARY — bus / brand */
+
+    /* Couleurs par type de strip */
+    --t-source:   #34d399;    /* vert : entrée */
+    --t-output:   #e879f9;    /* magenta : sortie */
+    --t-bus:      #06b6d4;    /* cyan primary : intermédiaire */
+    --t-master:   #dc2626;    /* rouge : master, contraste fort sur l'élément final */
+    --t-monitor:  #fbbf24;    /* jaune doré : casque */
+    --t-vca:      #a855f7;    /* violet : VCA */
+    --t-network:  #1e40af;    /* indigo profond : réseau */
+
+    --font-d: 'Barlow Condensed', sans-serif;
+    --font-m: 'IBM Plex Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg-0);
+    color: var(--text);
+    font-family: var(--font-d);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    font-size: 13px;
+  }
+
+  /* TOPBAR */
+  .topbar {
+    height: 42px;
+    background: linear-gradient(180deg, #353535, #252525);
+    border-bottom: 1px solid #101010;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .tb-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 8px;
+    border-right: 1px solid #111;
+    box-shadow: 1px 0 0 #383838;
+    height: 100%;
+  }
+  .tb-group:last-child { border-right: none; box-shadow: none; margin-left: auto; }
+  .tb-brand {
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 2px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tb-brand .logo {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    color: var(--cyan);
+  }
+  .tb-brand .logo polygon,
+  .tb-brand .logo path {
+    stroke: currentColor;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .tb-brand .logo circle.atom { fill: currentColor; stroke: none; }
+  .tb-brand .logo circle.vertex { fill: currentColor; stroke: none; opacity: 0.55; }
+  .tb-btn {
+    height: 24px;
+    padding: 0 10px;
+    background: linear-gradient(180deg, #444, #2c2c2c);
+    border: 1px solid #1a1a1a;
+    border-radius: 2px;
+    color: var(--text-mid);
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 0.8px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  .tb-btn:hover { color: var(--text); }
+  .tb-btn.on {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #fff;
+    border-color: #1a2a3a;
+  }
+  .tb-btn.add {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #0a1a05;
+    border-color: #0a3a0a;
+    font-weight: 600;
+  }
+  .tb-btn.add:hover { background: linear-gradient(180deg, #67e8f9, #0891b2); }
+
+  /* MODE PLAY/EDIT TOGGLE */
+  .mode-toggle {
+    display: flex;
+    background: #0a0a0a;
+    border: 1px solid #1a1a1a;
+    border-radius: 3px;
+    padding: 1px;
+    height: 26px;
+  }
+  .mode-btn {
+    flex: 1;
+    padding: 0 14px;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 1.3px;
+    cursor: pointer;
+    border-radius: 2px;
+    text-transform: uppercase;
+  }
+  .mode-btn.active {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #fff;
+    box-shadow: 0 0 4px rgba(74,142,196,0.4);
+  }
+  .mode-btn.active.edit {
+    background: linear-gradient(180deg, #e879f9, #a21caf);
+  }
+
+  .tb-led {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 4px var(--green);
+  }
+  .tb-time {
+    font-family: var(--font-m);
+    font-size: 13px;
+    color: var(--orange);
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    padding: 2px 10px;
+    background: #0a0a0a;
+    border: 1px solid #000;
+    border-radius: 2px;
+  }
+
+  /* MAIN */
+  .main {
+    height: calc(100vh - 42px);
+    display: grid;
+    grid-template-columns: 1fr 240px;
+    grid-template-rows: 1fr 88px;
+    grid-template-areas:
+      "scroll side"
+      "player player";
+    background: #0a0a0a;
+    transition: grid-template-columns 0.25s;
+  }
+  .main.side-hidden { grid-template-columns: 1fr 0; }
+  .main.side-hidden .side {
+    opacity: 0; pointer-events: none; padding: 0; overflow: hidden;
+  }
+  .main.player-hidden { grid-template-rows: 1fr 0; }
+  .main.player-hidden .player-bar {
+    opacity: 0; pointer-events: none; overflow: hidden; padding: 0;
+  }
+  .scroll-area { grid-area: scroll; }
+  .side { grid-area: side; }
+  .player-bar { grid-area: player; }
+
+  .scroll-area {
+    display: flex;
+    flex-direction: column;
+    background: #0a0a0a;
+    overflow-y: auto;          /* scroll vertical si le contenu déborde (petit écran) */
+    overflow-x: hidden;
+    position: relative;
+    min-height: 0;
+    /* Firefox scrollbar */
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a #141414;
+  }
+  /* WebKit scrollbar */
+  .scroll-area::-webkit-scrollbar { width: 12px; }
+  .scroll-area::-webkit-scrollbar-track { background: #141414; }
+  .scroll-area::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #3a3a3a, #252525);
+    border: 1px solid #141414;
+  }
+
+  /* Zone libre au-dessus des strips : accueille les plugin-windows */
+  .plugin-zone {
+    flex: 1 1 auto;
+    min-height: 200px;         /* min : pour afficher le filigrane même quand pas de window */
+    background: #050a10;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end; /* le container plugin-windows s'ancre en bas */
+  }
+  /* Quand des windows sont ouvertes, la zone est définie par les windows + leur padding */
+  .plugin-zone:has(.plugin-windows.has-windows) {
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+  .plugin-zone-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-fade);
+    font-family: var(--font-d);
+    font-size: 14px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+    opacity: 0.4;
+    z-index: 0;
+  }
+  .plugin-zone-empty .empty-logo {
+    width: 80px; height: 80px;
+    color: var(--text-fade);
+    margin-right: 16px;
+  }
+  .plugin-zone-empty.hidden { display: none; }
+
+  /* Strips-wrapper : scrollbar horizontale, ancré en bas */
+  .strips-wrapper {
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: #0a0a0a;
+    border-top: 1px solid #1a1a1a;
+    /* Firefox scrollbar */
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a #141414;
+  }
+  /* WebKit scrollbar */
+  .strips-wrapper::-webkit-scrollbar { height: 12px; }
+  .strips-wrapper::-webkit-scrollbar-track { background: #141414; }
+  .strips-wrapper::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #3a3a3a, #252525);
+    border: 1px solid #141414;
+  }
+
+  .strips {
+    display: flex;
+    min-height: 100%;
+    align-items: flex-start;   /* strips compacts, pas de stretch vertical */
+  }
+
+  /* STRIP COMMUN */
+  .strip {
+    width: 132px;
+    height: 565px;             /* hauteur FIXE = somme des composants : 21+50+90+32+22+300+50 */
+    flex: none;
+    flex-shrink: 0;
+    background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #0a0a0a;
+    position: relative;
+    box-sizing: border-box;
+  }
+  .strip:last-of-type { border-right: none; }
+
+  /* Color tag : type + label */
+  .color-tag {
+    height: 20px;
+    background: var(--zone, #444);
+    border-bottom: 1px solid #000;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    justify-content: center;
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    color: rgba(0,0,0,0.8);
+    text-transform: uppercase;
+    padding: 0 6px;
+  }
+  .color-tag .type-icon {
+    font-size: 11px;
+  }
+  .color-tag .label-text {
+    flex: 1;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* HEADER (input routing) */
+  .strip-header {
+    background: var(--bg-rack);
+    border-bottom: 1px solid #141414;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    cursor: pointer;
+    transition: background 0.15s;
+    height: 50px;             /* hauteur fixe pour alignement */
+    flex-shrink: 0;
+    box-sizing: border-box;
+  }
+  .strip-header.editable:hover {
+    background: #2f2c28;
+  }
+  .strip-header.locked {
+    cursor: default;
+    opacity: 0.85;
+  }
+  .strip-route-label {
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-fade);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .strip-route-label .arrow { color: var(--zone, var(--text-fade)); }
+  .strip-route-value {
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .strip-route-value .icon { font-size: 11px; }
+  .strip-route-value .lock-icon {
+    font-size: 9px;
+    color: var(--text-fade);
+    margin-left: auto;
+  }
+  .strip-route-value .edit-icon {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+  .strip-header.editable .edit-icon { display: inline; }
+  .strip-header.locked .lock-icon { display: inline; }
+  .strip-route-value.empty {
+    color: var(--text-fade);
+    font-style: italic;
+    font-size: 10px;
+  }
+  .strip-route-value.multi {
+    color: var(--text-mid);
+    font-size: 10px;
+  }
+  .multi-count {
+    background: var(--zone, var(--text-fade));
+    color: rgba(0,0,0,0.8);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-size: 8px;
+    font-weight: 600;
+    margin-right: 3px;
+  }
+
+  /* RACK / EQ / Sends (réutilisé v2) */
+  .rack {
+    background: var(--bg-rack-alt);
+    border-bottom: 1px solid #141414;
+    padding: 3px 4px 4px;
+    height: 90px;              /* hauteur FIXE pour alignement strict */
+    flex-shrink: 0;
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .rack-head {
+    padding: 1px 2px 2px;
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 8px;
+    color: var(--text-fade);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+  }
+  .slot {
+    height: 14px;
+    background: var(--bg-slot);
+    border: 1px solid #1a1a1a;
+    border-radius: 1px;
+    margin-bottom: 1px;
+    display: flex;
+    align-items: center;
+    padding: 0 3px;
+    gap: 3px;
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-mid);
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .slot.active { background: var(--bg-slot-active); color: #d8e8f5; border-color: #1a2a3a; }
+  .slot.active .slot-led { background: var(--blue); box-shadow: 0 0 3px var(--blue); }
+  .slot.editing {
+    background: linear-gradient(90deg, rgba(34, 211, 238, 0.35), rgba(34, 211, 238, 0.18));
+    border-color: var(--cyan);
+    color: var(--text);
+    box-shadow: 0 0 6px rgba(34, 211, 238, 0.4), inset 0 0 1px rgba(255,255,255,0.2);
+  }
+  .slot.editing .slot-led {
+    background: var(--cyan);
+    box-shadow: 0 0 4px var(--cyan);
+    animation: pulse-led 1.2s infinite;
+  }
+  @keyframes pulse-led {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .slot-led {
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: #1a1a1a;
+    flex-shrink: 0;
+  }
+  .slot-text {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .slot.empty { color: var(--text-fade); }
+  .slot.empty .slot-text::before { content: '—'; }
+
+  /* Profile badge */
+  .profile-badge {
+    background: var(--bg-slot);
+    border: 1px solid #1a1a1a;
+    border-radius: 1px;
+    padding: 3px 6px;
+    margin: 4px 0;
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-mid);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    height: 24px;              /* hauteur FIXE pour alignement strict */
+    flex-shrink: 0;
+    flex: none;
+    box-sizing: border-box;
+  }
+  .profile-badge:hover { background: #353535; color: var(--text); }
+  .profile-badge .label { color: var(--text-fade); letter-spacing: 1px; text-transform: uppercase; font-size: 7px; }
+  .profile-badge .name { font-weight: 500; color: var(--text); }
+
+  /* Master strip — variante du profile-badge pour afficher la mesure LUFS-I */
+  .profile-badge.master-lufs {
+    background: linear-gradient(90deg, rgba(220, 38, 38, 0.14), var(--bg-slot));
+    border-color: rgba(220, 38, 38, 0.35);
+  }
+  .profile-badge.master-lufs .lufs-val {
+    color: var(--t-master);
+    font-family: var(--font-d);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+  }
+  .profile-badge.master-lufs .lufs-tp {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 7.5px;
+    letter-spacing: 0.3px;
+  }
+
+  /* Pan */
+  .pan-row {
+    background: var(--bg-rack);
+    border-bottom: 1px solid #141414;
+    padding: 3px 4px 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-dim);
+    height: 22px;              /* hauteur FIXE pour alignement strict */
+    flex-shrink: 0;
+    flex: none;
+    box-sizing: border-box;
+  }
+  .pan-bar {
+    flex: 1;
+    height: 6px;
+    background: #0a0a0a;
+    border: 1px solid #141414;
+    border-radius: 1px;
+    position: relative;
+  }
+  .pan-mark {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 1px; height: 4px;
+    background: var(--text-fade);
+  }
+  .pan-dot {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 5px; height: 5px;
+    background: var(--zone);
+    border-radius: 50%;
+    box-shadow: 0 0 3px var(--zone);
+  }
+  .pan-val { min-width: 14px; text-align: right; color: var(--text-mid); }
+
+  /* FADER AREA */
+  .fader-area {
+    background: linear-gradient(180deg, var(--bg-1), #1a1a1a);
+    padding: 4px 4px 3px;
+    display: flex;
+    flex-direction: column;
+    height: 300px;            /* hauteur fixe : limite la course du fader */
+    flex: none;
+    flex-shrink: 0;
+    margin-top: auto;         /* pousse le fader en bas → fader-area de toutes les strips alignée à la même Y */
+  }
+  .fader-area .fader-meter { margin-top: 8px; }
+  .btn-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    margin-bottom: 4px;
+  }
+  .mini-btn {
+    height: 16px;
+    background: linear-gradient(180deg, #1a2230, #121822);
+    border: 1px solid #050a10;
+    border-radius: 1px;
+    color: var(--text-dim);
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 9px;
+    cursor: pointer;
+  }
+  .mini-btn:hover { color: var(--text); }
+  .mini-btn.m.on { background: linear-gradient(180deg, #fbbf24, #b45309); color: #0a0f14; }
+  .mini-btn.s.on { background: linear-gradient(180deg, #e879f9, #a21caf); color: #0a0f14; }
+  .mini-btn.r.on { background: linear-gradient(180deg, #f87171, #991b1b); color: #fff; }
+  .mini-btn.l.on { background: linear-gradient(180deg, #22d3ee, #0e7490); color: #fff; }
+  .mini-btn.e.on { background: linear-gradient(180deg, #34d399, #047857); color: #0a0f14; }
+
+  .fader-meter {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 26px;
+    gap: 4px;
+    min-height: 0;
+    position: relative;
+  }
+  .fader {
+    position: relative;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .fader-rail {
+    position: absolute;
+    left: 50%;
+    top: 8px; bottom: 8px;
+    width: 3px;
+    transform: translateX(-50%);
+    background:
+      linear-gradient(180deg, #050a10, #1a2230 50%, #050a10);
+    border: 1px solid #050a10;
+    border-radius: 1px;
+    box-shadow: inset 0 0 2px rgba(0,0,0,0.8);
+  }
+
+  /* Petits tirets de graduation sur le rail (à gauche et à droite) */
+  .fader-rail::before, .fader-rail::after {
+    content: '';
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 5px;
+    background-image:
+      linear-gradient(180deg,
+        rgba(184, 205, 217, 0.55) 0%,
+        rgba(184, 205, 217, 0.55) 1px,
+        transparent 1px,
+        transparent 14.28%,
+        rgba(184, 205, 217, 0.55) 14.28%,
+        rgba(184, 205, 217, 0.55) calc(14.28% + 1px),
+        transparent calc(14.28% + 1px),
+        transparent 28.57%,
+        rgba(184, 205, 217, 0.55) 28.57%,
+        rgba(184, 205, 217, 0.55) calc(28.57% + 1px),
+        transparent calc(28.57% + 1px),
+        transparent 42.85%,
+        rgba(184, 205, 217, 0.55) 42.85%,
+        rgba(184, 205, 217, 0.55) calc(42.85% + 1px),
+        transparent calc(42.85% + 1px),
+        transparent 57.14%,
+        rgba(184, 205, 217, 0.55) 57.14%,
+        rgba(184, 205, 217, 0.55) calc(57.14% + 1px),
+        transparent calc(57.14% + 1px),
+        transparent 71.42%,
+        rgba(184, 205, 217, 0.55) 71.42%,
+        rgba(184, 205, 217, 0.55) calc(71.42% + 1px),
+        transparent calc(71.42% + 1px),
+        transparent 85.71%,
+        rgba(184, 205, 217, 0.55) 85.71%,
+        rgba(184, 205, 217, 0.55) calc(85.71% + 1px),
+        transparent calc(85.71% + 1px));
+    pointer-events: none;
+  }
+  .fader-rail::before { left: -7px; }
+  .fader-rail::after { right: -7px; }
+
+  /* Tirets longs aux niveaux clés (0 dB et -inf) */
+  .fader-rail .key-tick {
+    position: absolute;
+    height: 1px;
+    background: var(--text-mid);
+    left: -10px; right: -10px;
+  }
+  .fader-rail .key-tick.unity { top: 41.66%; height: 2px; background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+
+  /* Barre lumineuse qui remplit du bas du rail jusqu'au bord bas du handle (sans déborder) */
+  /* La couleur suit le type de strip via var(--zone) */
+  .fader-fill {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    /* Démarre 11px sous le centre du handle (= juste sous le bord bas du handle de 22px) */
+    top: calc(var(--handle-y, 40%) + 11px);
+    bottom: 8px;             /* bas du rail */
+    background: linear-gradient(180deg,
+      var(--zone, var(--cyan)) 0%,
+      color-mix(in srgb, var(--zone, var(--cyan)) 75%, transparent) 60%,
+      color-mix(in srgb, var(--zone, var(--cyan)) 45%, transparent) 100%);
+    box-shadow:
+      0 0 4px color-mix(in srgb, var(--zone, var(--cyan)) 50%, transparent),
+      inset 0 0 1px rgba(255, 255, 255, 0.2);
+    border-radius: 1px;
+    border-left: 1px solid rgba(0, 0, 0, 0.5);
+    border-right: 1px solid rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    z-index: 1;              /* derrière le handle */
+    transition: top 0.05s linear;
+  }
+  /* Quand le handle est tout en bas, la barre disparaît proprement */
+  .fader[style*="--handle-y: 9"] .fader-fill,
+  .fader[style*="--handle-y: 100"] .fader-fill {
+    display: none;
+  }
+
+  .fader-ticks {
+    position: absolute;
+    left: calc(50% + 9px);
+    top: 8px; bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-family: var(--font-m);
+    font-size: 7.5px;
+    font-weight: 500;
+    color: var(--text-mid);
+    line-height: 1;
+    pointer-events: none;
+    letter-spacing: 0.2px;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.8);
+  }
+  .fader-ticks .unity {
+    color: var(--cyan);
+    font-weight: 700;
+    font-size: 8.5px;
+    text-shadow: 0 0 4px rgba(6, 182, 212, 0.6);
+  }
+  .handle {
+    position: absolute;
+    left: 50%;
+    width: 28px; height: 22px;
+    top: var(--handle-y, 40%);
+    transform: translate(-50%, -50%);
+    background:
+      linear-gradient(180deg,
+        #2a3d5e 0%,
+        #1a2230 8%,
+        #0e1822 50%,
+        #060a10 92%,
+        #1a2230 100%);
+    border: 1px solid #050a10;
+    border-top-color: #3a5078;
+    border-radius: 3px;
+    box-shadow:
+      0 3px 5px rgba(0,0,0,0.7),
+      inset 0 1px 0 rgba(255,255,255,0.18),
+      inset 0 -1px 0 rgba(0,0,0,0.5);
+    cursor: grab;
+  }
+  .handle:active { cursor: grabbing; }
+
+  /* Ligne centrale blanche (indicateur de position style PreSonus) */
+  .handle::before {
+    content: '';
+    position: absolute;
+    left: 2px; right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 2px;
+    background: linear-gradient(180deg, #f0f7fa, #b8cdd9);
+    border-radius: 1px;
+    box-shadow:
+      0 0 5px rgba(240, 247, 250, 0.5),
+      0 1px 0 rgba(0,0,0,0.3);
+  }
+
+  /* Grip ridges (petites barres au-dessus et en dessous de la ligne centrale) */
+  .handle::after {
+    content: '';
+    position: absolute;
+    left: 4px; right: 4px;
+    top: 0; bottom: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(180deg,
+        transparent 22%,
+        rgba(255,255,255,0.08) 22%,
+        rgba(255,255,255,0.08) 26%,
+        transparent 26%,
+        transparent 32%,
+        rgba(0,0,0,0.4) 32%,
+        rgba(0,0,0,0.4) 35%,
+        transparent 35%,
+        transparent 65%,
+        rgba(0,0,0,0.4) 65%,
+        rgba(0,0,0,0.4) 68%,
+        transparent 68%,
+        transparent 74%,
+        rgba(255,255,255,0.08) 74%,
+        rgba(255,255,255,0.08) 78%,
+        transparent 78%);
+  }
+
+  .meter-bridge {
+    background: #050a10;
+    border: 1px solid #050a10;
+    border-radius: 1px;
+    padding: 2px;
+    display: flex;
+    flex-direction: row;
+    gap: 1px;
+    position: relative;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.95);
+  }
+  .meter-ch {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: #020409;
+    padding: 0;
+    border-radius: 0.5px;
+    position: relative;
+    overflow: hidden;
+  }
+  .meter-bridge::before, .meter-bridge::after {
+    position: absolute;
+    font-family: var(--font-m);
+    font-size: 6.5px;
+    color: var(--text-dim);
+    top: -10px;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    font-weight: 500;
+  }
+  .meter-bridge::before { content: 'L'; left: 3px; }
+  .meter-bridge::after { content: 'R'; right: 3px; }
+
+  .mseg {
+    flex: 1;
+    min-height: 0;
+    background: var(--sc-off, #0a141c);
+    transition: background 30ms linear;
+  }
+  .mseg.on {
+    background: var(--sc, #34d399);
+    box-shadow: inset 0 0 1px rgba(255,255,255,0.15);
+  }
+  .mseg.peak {
+    background: var(--sc-peak, #67e8f9);
+    box-shadow: 0 0 3px var(--sc-peak, #67e8f9), inset 0 0 1px rgba(255,255,255,0.3);
+  }
+
+  /* Marqueur de niveau 0 dB (ligne rouge subtile en haut du meter) */
+  .meter-ch::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: 5%;
+    height: 1px;
+    background: rgba(248, 113, 113, 0.3);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .readouts {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px;
+    padding: 3px 0 2px;
+    align-items: baseline;
+  }
+  .db {
+    font-family: var(--font-m);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .peak-val {
+    font-family: var(--font-m);
+    font-size: 7px;
+    color: var(--red);
+  }
+
+  /* FOOTER (output routing) */
+  .strip-footer {
+    background: var(--bg-rack);
+    border-top: 1px solid #141414;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    cursor: pointer;
+    transition: background 0.15s;
+    height: 50px;              /* hauteur FIXE pour alignement strict */
+    flex-shrink: 0;            /* ne se compresse jamais */
+    flex: none;
+    box-sizing: border-box;
+  }
+  .strip-footer.editable:hover {
+    background: #2f2c28;
+  }
+  .strip-footer.locked {
+    cursor: default;
+    opacity: 0.85;
+  }
+
+  /* ===== TYPES SPÉCIAUX ===== */
+
+  /* VCA strip — différent des autres */
+  .strip.t-vca .vca-targets {
+    background: linear-gradient(180deg, var(--bg-1), #1a1a1a);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: none;                 /* hauteur naturelle, le fader-area s'aligne via margin-top:auto */
+    overflow-y: auto;
+  }
+  .vca-targets-head {
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--text-fade);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .vca-target-item {
+    background: var(--bg-slot);
+    border: 1px solid #1a1a1a;
+    border-radius: 1px;
+    padding: 3px 5px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-m);
+    font-size: 8.5px;
+    color: var(--text-mid);
+  }
+  .vca-target-tag {
+    width: 6px; height: 6px;
+    border-radius: 1px;
+    background: var(--target-color, var(--text-dim));
+    flex-shrink: 0;
+  }
+  .vca-target-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .vca-target-x {
+    color: var(--text-fade);
+    cursor: pointer;
+    font-size: 10px;
+  }
+  .vca-target-x:hover { color: var(--red); }
+  .vca-add-btn {
+    background: transparent;
+    border: 1px dashed #3a3a3a;
+    color: var(--text-fade);
+    padding: 4px;
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    border-radius: 1px;
+  }
+  .vca-add-btn:hover {
+    color: var(--text);
+    border-color: var(--zone);
+  }
+
+  /* Footer Master pinné */
+  .strip.master-strip {
+    width: 144px;
+    background: linear-gradient(180deg, #2a2a2a, #1f1f1f);
+    box-shadow: -2px 0 0 var(--bg-1), -3px 0 0 #000;
+  }
+
+  /* ADD STRIP BUTTON (visible en EDIT mode) */
+  .add-strip-card {
+    width: 132px;
+    flex-shrink: 0;
+    height: 565px;            /* hauteur fixe = même que les strips */
+    background: rgba(34, 211, 238, 0.04);
+    border: 2px dashed rgba(34, 211, 238, 0.25);
+    margin: 8px 4px;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--cyan);
+    font-family: var(--font-d);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-size: 12px;
+    transition: all 0.15s;
+  }
+  .add-strip-card:hover {
+    background: rgba(34, 211, 238, 0.1);
+    border-color: rgba(34, 211, 238, 0.5);
+  }
+  .add-strip-card .plus { font-size: 32px; line-height: 1; margin-bottom: 6px; }
+  body[data-mode="play"] .add-strip-card { display: none; }
+
+  /* SIDE PANEL */
+  .side {
+    background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    border-left: 2px solid #0a0a0a;
+    transition: opacity 0.2s, padding 0.25s;
+  }
+  .panel-h {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #141414;
+  }
+  .scene-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+  }
+  .scene-btn {
+    height: 28px;
+    background: linear-gradient(180deg, #3a3a3a, #252525);
+    border: 1px solid #101010;
+    border-radius: 2px;
+    color: var(--text-mid);
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .scene-btn.on {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #fff;
+  }
+
+  .stage-list { display: flex; flex-direction: column; gap: 4px; }
+  .stage-item {
+    background: var(--bg-rack-alt);
+    border: 1px solid #141414;
+    border-radius: 2px;
+    padding: 6px 8px;
+    font-family: var(--font-m);
+    font-size: 9px;
+  }
+  .stage-item-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .stage-led {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 3px var(--green);
+  }
+  .stage-name { color: var(--text); flex: 1; }
+  .stage-state {
+    font-size: 8px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .stage-meta {
+    color: var(--text-fade);
+    font-size: 8px;
+    margin-top: 2px;
+    letter-spacing: 0.5px;
+  }
+
+  /* MODAL */
+  .modal-bg {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .modal-bg.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .modal {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    width: 100%;
+    max-width: 540px;
+    max-height: 90vh;
+    overflow-y: auto;
+    transform: scale(0.95);
+    transition: transform 0.2s;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+  .modal-bg.open .modal {
+    transform: scale(1);
+  }
+  .modal-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-title {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-mid);
+    font-size: 22px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .modal-body { padding: 20px; }
+  .modal-foot {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .modal-section {
+    margin-bottom: 16px;
+  }
+  .modal-section-head {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  /* Settings modale — surcharges */
+  .settings-modal .modal { max-width: 720px; }
+  .settings-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-rack-alt);
+    border-bottom: 1px solid var(--border);
+    padding: 0 12px;
+  }
+  .settings-tab {
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .settings-tab:hover { color: var(--text-mid); }
+  .settings-tab.active {
+    color: var(--cyan);
+    border-bottom-color: var(--cyan);
+  }
+  .settings-pane { display: none; }
+  .settings-pane.active { display: block; }
+
+  .settings-section-help {
+    background: var(--bg-rack-alt);
+    border-left: 2px solid var(--cyan);
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-family: var(--font-m);
+    font-size: 10px;
+    color: var(--text-mid);
+    line-height: 1.6;
+  }
+
+  .strip-color-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 50px 110px 90px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 6px;
+    border-bottom: 1px solid var(--bg-rack);
+  }
+  .strip-color-row:last-child { border-bottom: none; }
+  .scr-icon { font-size: 16px; text-align: center; }
+  .scr-name {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    letter-spacing: 0.5px;
+  }
+  .scr-name .scr-meta {
+    display: block;
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.3px;
+    font-weight: 400;
+    margin-top: 2px;
+  }
+  .scr-swatch {
+    width: 32px;
+    height: 32px;
+    border-radius: 3px;
+    border: 1px solid #050a10;
+    cursor: pointer;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
+    position: relative;
+  }
+  .scr-swatch input[type="color"] {
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    position: absolute;
+    inset: 0;
+  }
+  .scr-hex-input {
+    background: #050a10;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--font-m);
+    font-size: 11px;
+    padding: 6px 8px;
+    width: 100%;
+    text-transform: uppercase;
+  }
+  .scr-hex-input:focus { outline: none; border-color: var(--cyan); }
+  .scr-reset {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: var(--font-d);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 5px 8px;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .scr-reset:hover { color: var(--text); border-color: var(--text-mid); }
+
+  /* Type picker */
+  .type-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .type-card {
+    padding: 12px 6px;
+    background: var(--bg-rack);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .type-card:hover {
+    background: var(--bg-rack-alt);
+    border-color: var(--border-hi);
+  }
+  .type-card.selected {
+    background: linear-gradient(180deg, #2f3d50, #1a2a3a);
+    border-color: var(--blue);
+    box-shadow: 0 0 8px rgba(74,142,196,0.3);
+  }
+  .type-card .icon { font-size: 22px; line-height: 1; margin-bottom: 6px; display: block; }
+  .type-card .name {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .type-card .desc {
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-dim);
+    line-height: 1.3;
+    margin-top: 4px;
+    letter-spacing: 0.3px;
+  }
+  .type-card.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .type-card.disabled::after {
+    content: 'futur';
+    position: absolute;
+    top: 4px; right: 4px;
+    background: var(--text-fade);
+    color: #0a0f14;
+    padding: 1px 4px;
+    border-radius: 1px;
+    font-family: var(--font-m);
+    font-size: 7px;
+    letter-spacing: 0.5px;
+  }
+
+  /* Layout pills */
+  .layout-pills {
+    display: flex;
+    gap: 4px;
+  }
+  .layout-pill {
+    flex: 1;
+    padding: 8px 10px;
+    background: var(--bg-rack);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    text-align: center;
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-mid);
+  }
+  .layout-pill.active {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #fff;
+    border-color: #1a2a3a;
+  }
+  .layout-pill.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .modal-input {
+    width: 100%;
+    padding: 8px 10px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--font-d);
+    font-size: 13px;
+    outline: none;
+  }
+  .modal-input:focus { border-color: var(--blue); }
+
+  .modal-select {
+    width: 100%;
+    padding: 8px 10px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--font-d);
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .color-picker {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .color-swatch {
+    width: 26px; height: 26px;
+    border-radius: 3px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .color-swatch:hover { transform: scale(1.1); }
+  .color-swatch.selected { border-color: #fff; }
+
+  .modal-btn {
+    padding: 8px 16px;
+    background: linear-gradient(180deg, #444, #2c2c2c);
+    border: 1px solid #1a1a1a;
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .modal-btn.primary {
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #0a1a05;
+    border-color: #0a3a0a;
+  }
+  .modal-btn.primary:hover {
+    background: linear-gradient(180deg, #67e8f9, #0891b2);
+  }
+
+  /* Patching menu (header/footer click) */
+  .patching-modal .group-section {
+    margin-bottom: 14px;
+  }
+  .patching-modal .group-title {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .patching-modal .item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    background: var(--bg-rack);
+    border: 1px solid #141414;
+    border-radius: 2px;
+    margin-bottom: 2px;
+    cursor: pointer;
+    font-family: var(--font-m);
+    font-size: 10px;
+    color: var(--text-mid);
+  }
+  .patching-modal .item:hover {
+    background: var(--bg-rack-alt);
+    color: var(--text);
+  }
+  .patching-modal .item input[type="radio"],
+  .patching-modal .item input[type="checkbox"] {
+    accent-color: var(--blue);
+  }
+  .patching-modal .item.selected {
+    background: linear-gradient(90deg, #2f3d50, var(--bg-rack));
+    border-left: 2px solid var(--blue);
+    color: var(--text);
+  }
+  .patching-modal .item .item-icon {
+    font-size: 11px;
+    width: 14px;
+    text-align: center;
+  }
+  .patching-modal .item .item-meta {
+    margin-left: auto;
+    color: var(--text-fade);
+    font-size: 8px;
+    letter-spacing: 0.5px;
+  }
+
+  /* Locked overlay (PLAY mode) */
+  .locked-message {
+    background: rgba(255,200,80,0.08);
+    border: 1px solid rgba(255,200,80,0.2);
+    border-radius: 2px;
+    padding: 8px 10px;
+    color: var(--yellow);
+    font-family: var(--font-d);
+    font-size: 11px;
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+  }
+  body[data-mode="play"] .strip-header.editable,
+  body[data-mode="play"] .strip-footer.editable {
+    cursor: default;
+  }
+  body[data-mode="play"] .strip-header.editable .edit-icon,
+  body[data-mode="play"] .strip-footer.editable .edit-icon {
+    display: none;
+  }
+  body[data-mode="play"] .strip-header.editable:hover,
+  body[data-mode="play"] .strip-footer.editable:hover {
+    background: var(--bg-rack);
+  }
+
+  /* ===== PLUGIN WINDOWS ===== */
+  /* Container : aligne les fenêtres en bas, leur permet de coexister côte à côte */
+  .plugin-windows {
+    flex: 0 0 0px;             /* fermé : aucune place */
+    flex-shrink: 0;
+    max-height: 100%;
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    padding: 0 8px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    z-index: 1;
+    transition: flex-basis 0.3s ease-out;
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a #141414;
+  }
+  .plugin-windows.has-windows {
+    flex: 0 0 328px;           /* 320 + 8 padding-bottom */
+  }
+  .plugin-windows::-webkit-scrollbar { height: 8px; }
+  .plugin-windows::-webkit-scrollbar-track { background: #141414; }
+  .plugin-windows::-webkit-scrollbar-thumb {
+    background: #3a3a3a;
+    border-radius: 1px;
+  }
+
+  /* Une fenêtre plugin individuelle */
+  .plugin-window {
+    flex: 0 0 540px;           /* largeur fixe */
+    max-width: 100%;           /* mais s'adapte si la zone est plus petite */
+    height: 320px;
+    background: linear-gradient(180deg, #0e1822, #060a10);
+    border: 1px solid rgba(34, 211, 238, 0.25);
+    border-radius: 4px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(8px);
+    animation: pw-in 0.25s ease-out forwards;
+  }
+  @keyframes pw-in {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .plugin-window.closing {
+    animation: pw-out 0.2s ease-in forwards;
+  }
+  @keyframes pw-out {
+    to { opacity: 0; transform: translateY(8px); }
+  }
+  .plugin-window.focused {
+    border-color: rgba(34, 211, 238, 0.55);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(34, 211, 238, 0.3);
+  }
+
+  .pp-header {
+    height: 36px;
+    background: linear-gradient(180deg, #1a2230, #121822);
+    border-bottom: 1px solid #050a10;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .pp-title-block {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pp-strip-tag {
+    background: var(--strip-color, var(--cyan));
+    color: rgba(0,0,0,0.85);
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-family: var(--font-d);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+  .pp-plugin-name {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text);
+    letter-spacing: 1px;
+  }
+  .pp-plugin-uri {
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+  }
+  .pp-controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pp-btn {
+    height: 24px;
+    padding: 0 10px;
+    background: linear-gradient(180deg, #1f2a3d, #121822);
+    border: 1px solid #050a10;
+    border-radius: 2px;
+    color: var(--text-mid);
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .pp-btn:hover { color: var(--text); }
+  .pp-btn.bypass.on {
+    background: linear-gradient(180deg, var(--orange), #b45309);
+    color: #0a0f14;
+    border-color: #5a2a05;
+  }
+  .pp-btn.close {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    width: 24px;
+    padding: 0;
+    font-size: 16px;
+  }
+  .pp-btn.close:hover { color: var(--red); border-color: rgba(248, 113, 113, 0.4); }
+  .pp-preset-select {
+    height: 24px;
+    background: #050a10;
+    border: 1px solid #1a2230;
+    color: var(--text);
+    font-family: var(--font-m);
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 2px;
+  }
+
+  .pp-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 200px;
+    gap: 1px;
+    background: #050a10;
+    overflow: hidden;
+    min-height: 0;             /* Firefox : permet le shrink */
+  }
+
+  /* Container du graphe + bandes (colonne gauche du body) */
+  .pp-eq-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;             /* Firefox : permet le shrink des enfants */
+    overflow: hidden;
+  }
+
+  /* === EQ Curve display (gauche) === */
+  .pp-eq-display {
+    background: #060d18;
+    position: relative;
+    overflow: hidden;
+    flex: 1 1 0;               /* prend l'espace disponible, autorise shrink à 0 */
+    min-height: 0;             /* Firefox : sinon le SVG impose sa taille naturelle */
+  }
+  .pp-eq-display svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* === Bands row au-dessous === */
+  .pp-bands {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 1px;
+    background: #050a10;
+    border-top: 1px solid #1a2230;
+    height: 78px;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .pp-band {
+    background: linear-gradient(180deg, #121822, #0a1018);
+    padding: 4px 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    overflow: hidden;
+  }
+  .pp-band-freq {
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-mid);
+    letter-spacing: 0.3px;
+    line-height: 1;
+  }
+  .pp-band-knob {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 30% 30%, #2a3850 0%, #121822 60%, #060a10 100%);
+    border: 1px solid #050a10;
+    box-shadow:
+      0 2px 4px rgba(0,0,0,0.6),
+      inset 0 1px 0 rgba(255,255,255,0.1);
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .pp-band-knob::before {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 2px; height: 10px;
+    background: var(--cyan);
+    box-shadow: 0 0 4px var(--cyan);
+    transform-origin: center bottom;
+    transform: translate(-50%, -100%) rotate(var(--rot, 0deg));
+    border-radius: 1px;
+  }
+  .pp-band-val {
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--cyan);
+    letter-spacing: 0.3px;
+    font-weight: 500;
+    line-height: 1;
+  }
+  .pp-band-toggle {
+    display: flex;
+    gap: 1px;
+  }
+  .pp-band-toggle .micro {
+    width: 16px;
+    height: 11px;
+    background: #060a10;
+    border: 1px solid #1a2230;
+    color: var(--text-fade);
+    font-family: var(--font-d);
+    font-weight: 700;
+    font-size: 7.5px;
+    border-radius: 0.5px;
+    cursor: pointer;
+  }
+  .pp-band-toggle .micro.on { background: var(--cyan); color: #0a0f14; border-color: var(--cyan); }
+  .pp-band-toggle .micro.off { background: var(--red); color: #0a0f14; border-color: var(--red); opacity: 0.8; }
+
+  /* === Right column: meters + global controls === */
+  .pp-right {
+    background: #0a1018;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .pp-section-title {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .pp-io-meters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    height: 80px;
+  }
+  .pp-io-meter {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .pp-io-meter-label {
+    font-family: var(--font-m);
+    font-size: 8.5px;
+    color: var(--text-mid);
+    letter-spacing: 0.5px;
+    text-align: center;
+  }
+  .pp-io-meter-bridge {
+    flex: 1;
+    background: #020409;
+    border: 1px solid #050a10;
+    border-radius: 1px;
+    display: flex;
+    gap: 1px;
+    padding: 1px;
+  }
+  .pp-io-meter-ch {
+    flex: 1;
+    background: #02060c;
+    display: flex;
+    flex-direction: column;
+  }
+  .pp-io-meter-seg {
+    flex: 1;
+    background: var(--c, #34d399);
+    opacity: var(--lvl, 0.1);
+  }
+  .pp-io-meter-val {
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--cyan);
+    text-align: center;
+    letter-spacing: 0.3px;
+  }
+
+  .pp-knob-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .pp-knob-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .pp-knob-label {
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .pp-knob-val {
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--text);
+  }
+  .player-bar {
+    background: linear-gradient(180deg, #2a2a2a, #1a1a1a);
+    border-top: 2px solid #050505;
+    box-shadow: 0 -2px 4px rgba(0,0,0,0.4);
+    padding: 0 14px;
+    display: grid;
+    grid-template-columns: 280px 1fr 240px;
+    align-items: center;
+    gap: 16px;
+    transition: opacity 0.2s;
+    overflow: hidden;
+  }
+
+  /* Pochette + métadonnées */
+  .pb-now {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
+  }
+  .pb-cover {
+    width: 64px; height: 64px;
+    border-radius: 3px;
+    background: linear-gradient(135deg, #06b6d4 0%, #e879f9 50%, #fb923c 100%);
+    border: 1px solid #050505;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+    overflow: hidden;
+    position: relative;
+  }
+  .pb-cover::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.15), transparent 60%);
+    pointer-events: none;
+  }
+  .pb-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pb-title {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.3px;
+  }
+  .pb-artist {
+    font-family: var(--font-d);
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--text-mid);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pb-source {
+    font-family: var(--font-m);
+    font-size: 8.5px;
+    color: var(--text-fade);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pb-source .src-tag {
+    color: var(--green);
+    margin-right: 4px;
+  }
+  .pb-source .src-tag.cd { color: var(--cyan); }
+  .pb-source .src-tag.lib { color: var(--purple); }
+  .pb-source .src-tag.spotify { color: var(--green); }
+  .pb-source .src-tag.airplay { color: var(--blue); }
+
+  /* Transport central */
+  .pb-transport {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .pb-buttons {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .pb-tbtn {
+    width: 30px; height: 30px;
+    background: linear-gradient(180deg, #3a3a3a, #252525);
+    border: 1px solid #101010;
+    border-radius: 50%;
+    color: var(--text-mid);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .pb-tbtn:hover { color: var(--text); }
+  .pb-tbtn.play {
+    width: 38px; height: 38px;
+    background: linear-gradient(180deg, #22d3ee, #0e7490);
+    color: #fff;
+    border-color: #1a3a5a;
+    font-size: 15px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.18);
+  }
+  .pb-tbtn.play:hover {
+    background: linear-gradient(180deg, #67e8f9, #0891b2);
+  }
+  .pb-tbtn.small {
+    width: 26px; height: 26px;
+    font-size: 11px;
+    border-radius: 2px;
+  }
+  .pb-tbtn.on {
+    color: var(--orange);
+  }
+
+  /* Barre de progression */
+  .pb-progress-row {
+    display: grid;
+    grid-template-columns: 38px 1fr 38px;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 480px;
+  }
+  .pb-time {
+    font-family: var(--font-m);
+    font-size: 9px;
+    color: var(--text-dim);
+    text-align: center;
+    letter-spacing: 0.5px;
+  }
+  .pb-progress {
+    height: 4px;
+    background: #050505;
+    border-radius: 2px;
+    border: 1px solid #141414;
+    position: relative;
+    cursor: pointer;
+    overflow: visible;
+  }
+  .pb-progress-fill {
+    position: absolute;
+    inset: 0;
+    width: var(--progress, 35%);
+    background: linear-gradient(90deg, var(--blue), var(--cyan));
+    border-radius: 2px;
+    box-shadow: 0 0 4px rgba(74,142,196,0.4);
+  }
+  .pb-progress-handle {
+    position: absolute;
+    top: 50%;
+    left: var(--progress, 35%);
+    transform: translate(-50%, -50%);
+    width: 10px; height: 10px;
+    background: #fff;
+    border: 1px solid #1a1a1a;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .pb-progress:hover .pb-progress-handle { opacity: 1; }
+
+  /* Right cluster : queue + volume + source picker */
+  .pb-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+  .pb-vol {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pb-vol-icon {
+    font-size: 14px;
+    color: var(--text-mid);
+  }
+  .pb-vol-bar {
+    width: 70px;
+    height: 4px;
+    background: #050505;
+    border: 1px solid #141414;
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+  }
+  .pb-vol-fill {
+    position: absolute;
+    inset: 0;
+    width: var(--vol, 80%);
+    background: linear-gradient(90deg, var(--text-mid), var(--text));
+    border-radius: 2px;
+  }
+
+  .pb-source-picker {
+    background: var(--bg-rack);
+    border: 1px solid #141414;
+    border-radius: 2px;
+    padding: 5px 8px 5px 8px;
+    cursor: pointer;
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    color: var(--text-mid);
+    text-transform: uppercase;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .pb-source-picker:hover { color: var(--text); background: var(--bg-rack-alt); }
+  .pb-source-picker .chev { font-size: 8px; color: var(--text-fade); }
+
+  /* Queue dropdown (preview) */
+  .pb-queue-pop {
+    position: fixed;
+    bottom: 100px;
+    right: 260px;
+    width: 320px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    padding: 8px;
+    display: none;
+    z-index: 50;
+  }
+  .pb-queue-pop.open { display: block; }
+  .pb-queue-pop .qhead {
+    font-family: var(--font-d);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    padding: 4px 6px 8px;
+    border-bottom: 1px solid #141414;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .pb-queue-pop .qitem {
+    padding: 6px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-m);
+    font-size: 9.5px;
+    color: var(--text-mid);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .pb-queue-pop .qitem:hover { background: var(--bg-rack); }
+  .pb-queue-pop .qitem.now {
+    color: var(--cyan);
+    background: rgba(90,216,216,0.06);
+  }
+  .pb-queue-pop .qitem .qpos {
+    width: 18px;
+    color: var(--text-fade);
+    font-size: 8.5px;
+    text-align: right;
+  }
+  .pb-queue-pop .qitem .qtitle {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pb-queue-pop .qitem .qdur {
+    color: var(--text-fade);
+    font-size: 8.5px;
+  }
+
+  /* Source picker dropdown */
+  .pb-source-pop {
+    position: fixed;
+    bottom: 100px;
+    right: 14px;
+    width: 240px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    padding: 6px;
+    display: none;
+    z-index: 50;
+  }
+  .pb-source-pop.open { display: block; }
+  .pb-source-pop .sitem {
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-d);
+    font-weight: 500;
+    font-size: 11px;
+    color: var(--text-mid);
+    cursor: pointer;
+    border-radius: 2px;
+    letter-spacing: 0.5px;
+  }
+  .pb-source-pop .sitem:hover { background: var(--bg-rack); color: var(--text); }
+  .pb-source-pop .sitem.active {
+    background: linear-gradient(90deg, rgba(74,142,196,0.15), transparent);
+    border-left: 2px solid var(--blue);
+    color: var(--text);
+  }
+  .pb-source-pop .sitem .sicon {
+    width: 18px;
+    text-align: center;
+    font-size: 13px;
+  }
+  .pb-source-pop .sitem .smeta {
+    margin-left: auto;
+    font-family: var(--font-m);
+    font-size: 8px;
+    color: var(--text-fade);
+    letter-spacing: 0.5px;
+  }
+  .pb-source-pop .sdivider {
+    height: 1px;
+    background: #141414;
+    margin: 4px 6px;
+  }
+
+  /* Vars par type */
+  .strip.t-source   { --zone: var(--t-source); }
+  .strip.t-output   { --zone: var(--t-output); }
+  .strip.t-bus      { --zone: var(--t-bus); }
+  .strip.t-master   { --zone: var(--t-master); }
+  .strip.t-monitor  { --zone: var(--t-monitor); }
+  .strip.t-vca      { --zone: var(--t-vca); }
+  .strip.t-network  { --zone: var(--t-network); }
+</style>
+</head>
+<body data-mode="play">
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="tb-group">
+    <span class="tb-brand"><svg class="logo" viewBox="0 0 100 100"><polygon points="50,10 86,30 86,70 50,90 14,70 14,30" stroke-width="3"/><path d="M22 50 Q 32 38, 42 50 T 62 50 T 78 50" stroke-width="2.6"/><circle class="atom" cx="50" cy="50" r="3.2"/><circle class="vertex" cx="50" cy="10" r="2"/><circle class="vertex" cx="86" cy="30" r="2"/><circle class="vertex" cx="86" cy="70" r="2"/><circle class="vertex" cx="50" cy="90" r="2"/><circle class="vertex" cx="14" cy="70" r="2"/><circle class="vertex" cx="14" cy="30" r="2"/></svg>PHONON</span>
+  </div>
+  <div class="tb-group">
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="mode-play">▶ Play</button>
+      <button class="mode-btn edit" id="mode-edit">✎ Edit</button>
+    </div>
+  </div>
+  <div class="tb-group">
+    <button class="tb-btn add" id="btn-add-strip" style="display:none">+ Strip</button>
+  </div>
+  <div class="tb-group">
+    <button class="tb-btn" id="toggle-side">Side</button>
+    <button class="tb-btn on" id="toggle-player">Player</button>
+    <button class="tb-btn" id="open-settings" title="Réglages">⚙</button>
+  </div>
+  <div class="tb-group">
+    <span class="tb-led"></span>
+    <span style="font-family:var(--font-m); font-size:9px; color:var(--text-mid); letter-spacing:1px;">3 Stages · 6 Strips · 0 XRUN</span>
+  </div>
+  <div class="tb-group">
+    <div class="tb-time" id="clock">21:47:12</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+  <div class="scroll-area">
+
+    <!-- Zone libre au-dessus des strips : plugin GUI s'affiche ici quand un insert est cliqué -->
+    <div class="plugin-zone" id="plugin-zone">
+      <div class="plugin-zone-empty" id="plugin-zone-empty">
+        <svg class="empty-logo" viewBox="0 0 100 100" fill="none" stroke="currentColor">
+          <polygon points="50,10 86,30 86,70 50,90 14,70 14,30" stroke-width="2"/>
+          <path d="M22 50 Q 32 38, 42 50 T 62 50 T 78 50" stroke-width="1.6" stroke-linecap="round"/>
+          <circle cx="50" cy="50" r="2.5" fill="currentColor" stroke="none"/>
+        </svg>
+        <span>Phonon</span>
+      </div>
+      <!-- Le plugin-panel s'insère ici en overlay absolu quand ouvert -->
+      <!-- ===== PLUGIN WINDOWS (multi-fenêtres flottantes) ===== -->
+      <div class="plugin-windows" id="plugin-windows">
+        <!-- Les fenêtres plugin sont injectées ici dynamiquement au clic d'un insert -->
+      </div>
+    </div>
+
+    <!-- Strips-wrapper : scroll horizontal, ancré en bas -->
+    <div class="strips-wrapper">
+    <div class="strips" id="strips">
+
+      <!-- ===== SOURCE STRIP : Spotify ===== -->
+      <div class="strip t-source">
+        <div class="color-tag"><span class="type-icon">📥</span><span class="label-text">Spotify</span></div>
+        <div class="strip-header locked">
+          <div class="strip-route-label"><span class="arrow">▼</span>Source</div>
+          <div class="strip-route-value">
+            <span class="icon">🎵</span>
+            <span>Spotify Connect</span>
+            <span class="lock-icon">🔒</span>
+          </div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot"><span class="slot-led"></span><span class="slot-text">Trim Gain</span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">bypass</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="src-spotify"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-1.5</span>dB</span><span class="peak-val">-0.2</span></div>
+        </div>
+        <div class="strip-footer editable">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">🔀</span><span>Bus "Mix soirée"</span><span class="edit-icon">✎</span></div>
+        </div>
+      </div>
+
+      <!-- ===== SOURCE STRIP : AirPlay ===== -->
+      <div class="strip t-source">
+        <div class="color-tag"><span class="type-icon">📥</span><span class="label-text">AirPlay</span></div>
+        <div class="strip-header locked">
+          <div class="strip-route-label"><span class="arrow">▼</span>Source</div>
+          <div class="strip-route-value">
+            <span class="icon">📡</span>
+            <span>shairport</span>
+            <span class="lock-icon">🔒</span>
+          </div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">bypass</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m on">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="src-airplay"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">0.0</span>dB</span><span class="peak-val">—</span></div>
+        </div>
+        <div class="strip-footer editable">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">🔀</span><span>Bus "Mix soirée"</span><span class="edit-icon">✎</span></div>
+        </div>
+      </div>
+
+      <!-- ===== BUS STRIP : Mix soirée ===== -->
+      <div class="strip t-bus">
+        <div class="color-tag"><span class="type-icon">🔀</span><span class="label-text">Mix soirée</span></div>
+        <div class="strip-header editable">
+          <div class="strip-route-label"><span class="arrow">▼</span>Entrées</div>
+          <div class="strip-route-value multi"><span class="multi-count">2</span><span>Spotify, AirPlay</span><span class="edit-icon">✎</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP ParaEQ</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP Comp</span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">master_glue</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="bus-mix"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">+1.0</span>dB</span><span class="peak-val">-0.3</span></div>
+        </div>
+        <div class="strip-footer editable">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sorties</div>
+          <div class="strip-route-value multi"><span class="multi-count">3</span><span>HC, P3, X4</span><span class="edit-icon">✎</span></div>
+        </div>
+      </div>
+
+      <!-- ===== OUTPUT STRIP : HC ===== -->
+      <div class="strip t-output">
+        <div class="color-tag"><span class="type-icon">📤</span><span class="label-text">HC</span></div>
+        <div class="strip-header editable">
+          <div class="strip-route-label"><span class="arrow">▼</span>Entrée</div>
+          <div class="strip-route-value"><span class="icon">🔀</span><span>Bus "Mix soirée"</span><span class="edit-icon">✎</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP ParaEQ</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP Comp</span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">hc_linear</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="out-hc"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-3.2</span>dB</span><span class="peak-val">-0.5</span></div>
+        </div>
+        <div class="strip-footer locked">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">🔊</span><span>X-Fi HD SPDIF</span><span class="lock-icon">🔒</span></div>
+        </div>
+      </div>
+
+      <!-- ===== OUTPUT STRIP : P3 ===== -->
+      <div class="strip t-output">
+        <div class="color-tag"><span class="type-icon">📤</span><span class="label-text">P3</span></div>
+        <div class="strip-header editable">
+          <div class="strip-route-label"><span class="arrow">▼</span>Entrée</div>
+          <div class="strip-route-value"><span class="icon">🔀</span><span>Bus "Mix soirée"</span><span class="edit-icon">✎</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP ParaEQ</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP Comp</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP DeEss</span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">jbl_pulse3</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="out-p3"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-5.8</span>dB</span><span class="peak-val">-2.1</span></div>
+        </div>
+        <div class="strip-footer locked">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">📻</span><span>UD100-A · BT</span><span class="lock-icon">🔒</span></div>
+        </div>
+      </div>
+
+      <!-- ===== OUTPUT STRIP : X4 ===== -->
+      <div class="strip t-output">
+        <div class="color-tag"><span class="type-icon">📤</span><span class="label-text">X4</span></div>
+        <div class="strip-header editable">
+          <div class="strip-route-label"><span class="arrow">▼</span>Entrée</div>
+          <div class="strip-route-value"><span class="icon">🔀</span><span>Bus "Mix soirée"</span><span class="edit-icon">✎</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP ParaEQ</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP MBComp</span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">jbl_xtreme4</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="out-x4"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-2.1</span>dB</span><span class="peak-val">+0.3</span></div>
+        </div>
+        <div class="strip-footer locked">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">📻</span><span>UD100-B · BT</span><span class="lock-icon">🔒</span></div>
+        </div>
+      </div>
+
+      <!-- ===== MONITOR STRIP : Cue ===== -->
+      <div class="strip t-monitor">
+        <div class="color-tag"><span class="type-icon">🎧</span><span class="label-text">Cue</span></div>
+        <div class="strip-header editable">
+          <div class="strip-route-label"><span class="arrow">▼</span>PFL</div>
+          <div class="strip-route-value"><span class="icon">🎚️</span><span>Master Bus</span><span class="edit-icon">✎</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+          <div class="slot empty"><span class="slot-led"></span><span class="slot-text"></span></div>
+        </div>
+        <div class="profile-badge"><span class="label">Profile</span><span class="name">casque_neutre</span></div>
+        <div class="pan-row"><span style="letter-spacing:1px;">PAN</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">C</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s">S</button><button class="mini-btn l on">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="mon-cue"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-1.5</span>dB</span><span class="peak-val">-0.8</span></div>
+        </div>
+        <div class="strip-footer locked">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie</div>
+          <div class="strip-route-value"><span class="icon">🔊</span><span>AK1 Cue (3-4)</span><span class="lock-icon">🔒</span></div>
+        </div>
+      </div>
+
+      <!-- ===== VCA STRIP : Tout ===== -->
+      <div class="strip t-vca">
+        <div class="color-tag"><span class="type-icon">🔗</span><span class="label-text">VCA Tout</span></div>
+        <div class="vca-targets">
+          <div class="vca-targets-head">Strips contrôlées (3)</div>
+          <div class="vca-target-item">
+            <span class="vca-target-tag" style="--target-color: var(--t-output)"></span>
+            <span class="vca-target-name">HC</span>
+            <span class="vca-target-x">×</span>
+          </div>
+          <div class="vca-target-item">
+            <span class="vca-target-tag" style="--target-color: var(--t-output)"></span>
+            <span class="vca-target-name">P3</span>
+            <span class="vca-target-x">×</span>
+          </div>
+          <div class="vca-target-item">
+            <span class="vca-target-tag" style="--target-color: var(--t-output)"></span>
+            <span class="vca-target-name">X4</span>
+            <span class="vca-target-x">×</span>
+          </div>
+          <button class="vca-add-btn">+ Ajouter</button>
+        </div>
+        <div class="fader-area" style="border-top: 1px solid #141414;">
+          <div class="btn-row" style="visibility: hidden;" aria-hidden="true">
+            <button class="mini-btn">·</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div style="background: #050505; border: 1px solid #000; display: flex; align-items: center; justify-content: center; font-family: var(--font-m); font-size: 8px; color: var(--text-fade); writing-mode: vertical-rl; transform: rotate(180deg); padding: 4px 0;">VCA</div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">0.0</span>dB</span><span class="peak-val">—</span></div>
+        </div>
+        <div class="strip-footer locked">
+          <div class="strip-route-label"><span class="arrow">▶</span>Cibles</div>
+          <div class="strip-route-value"><span class="icon">🔗</span><span>3 strips</span><span class="lock-icon">🔒</span></div>
+        </div>
+      </div>
+
+      <!-- ===== ADD STRIP CARD (visible only in EDIT mode) ===== -->
+      <div class="add-strip-card" id="add-strip-trigger">
+        <div class="plus">+</div>
+        <div>Ajouter</div>
+        <div>une strip</div>
+      </div>
+
+      <!-- ===== MASTER STRIP (singleton, pinned) ===== -->
+      <div class="strip t-master master-strip">
+        <div class="color-tag"><span class="type-icon">🎚️</span><span class="label-text">Master</span></div>
+        <div class="strip-header locked">
+          <div class="strip-route-label"><span class="arrow">▼</span>Sommation</div>
+          <div class="strip-route-value"><span class="icon">∑</span><span>All sources</span><span class="lock-icon">🔒</span></div>
+        </div>
+        <div class="rack">
+          <div class="rack-head"><span>Inserts</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP Limiter</span></div>
+          <div class="slot active"><span class="slot-led"></span><span class="slot-text">LSP Dither</span></div>
+        </div>
+        <div class="profile-badge master-lufs">
+          <span class="label">LUFS-I</span>
+          <span class="lufs-val">-14.2</span>
+          <span class="lufs-tp">−0.3 dBTP</span>
+        </div>
+        <div class="pan-row"><span style="letter-spacing:1px;">BAL</span><div class="pan-bar"><div class="pan-mark"></div><div class="pan-dot" style="left:50%"></div></div><span class="pan-val">0</span></div>
+        <div class="fader-area">
+          <div class="btn-row">
+            <button class="mini-btn r">R</button><button class="mini-btn m">M</button><button class="mini-btn s" style="visibility:hidden">S</button><button class="mini-btn l">L</button><button class="mini-btn e">E</button>
+          </div>
+          <div class="fader-meter">
+            <div class="fader"><div class="fader-rail"></div><div class="fader-fill"></div><div class="fader-ticks"><span>+6</span><span>+3</span><span class="unity">0</span><span>-3</span><span>-6</span><span>-10</span><span>-15</span><span>-20</span><span>-30</span><span>-∞</span></div><div class="handle" style="--handle-y: 95%"></div></div>
+            <div class="meter-bridge" data-meter="master"></div>
+          </div>
+          <div class="readouts"><span class="db"><span class="dbv">-0.8</span>dB</span><span class="peak-val">-0.1</span></div>
+        </div>
+        <div class="strip-footer editable">
+          <div class="strip-route-label"><span class="arrow">▶</span>Sortie système</div>
+          <div class="strip-route-value"><span class="icon">🔊</span><span>Sortie principale</span><span class="edit-icon">✎</span></div>
+        </div>
+      </div>
+
+    </div>
+    </div><!-- /strips-wrapper -->
+  </div><!-- /scroll-area -->
+
+  <!-- SIDE PANEL -->
+  <div class="side">
+    <div class="panel-h">Stages</div>
+    <div class="stage-list">
+      <div class="stage-item">
+        <div class="stage-item-head">
+          <span class="stage-led"></span>
+          <span class="stage-name">core-3f9a1b8e</span>
+          <span class="stage-state">Owner</span>
+        </div>
+        <div class="stage-meta">8 capabilities · CPU 14% · 0 xrun</div>
+      </div>
+      <div class="stage-item">
+        <div class="stage-item-head">
+          <span class="stage-led"></span>
+          <span class="stage-name">stage-a4b2c8</span>
+          <span class="stage-state">Adopted</span>
+        </div>
+        <div class="stage-meta">rpi2 · "AK1 cuisine" · CPU 6%</div>
+      </div>
+      <div class="stage-item">
+        <div class="stage-item-head">
+          <span class="stage-led" style="background:var(--text-dim); box-shadow:none"></span>
+          <span class="stage-name">stage-7c1944</span>
+          <span class="stage-state">Discovered</span>
+        </div>
+        <div class="stage-meta">rpi2 · cliquer pour adopter</div>
+      </div>
+    </div>
+
+    <div class="panel-h" style="margin-top:6px;">Scènes</div>
+    <div class="scene-grid">
+      <button class="scene-btn on">Apéro</button>
+      <button class="scene-btn">Dîner</button>
+      <button class="scene-btn">Dance</button>
+      <button class="scene-btn">Chill</button>
+    </div>
+
+    <div class="panel-h" style="margin-top:6px;">Système</div>
+    <div style="font-family:var(--font-m); font-size:9px; color:var(--text-dim); display:flex; flex-direction:column; gap:3px; letter-spacing:0.5px;">
+      <div style="display:flex; justify-content:space-between;"><span>Strips actives</span><span style="color:var(--green)">8/8</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>Mode</span><span style="color:var(--blue)" id="mode-display">PLAY</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>Sample rate</span><span style="color:var(--text)">48 kHz</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>Buffer</span><span style="color:var(--text)">128s · 2.7ms</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>PTP</span><span style="color:var(--green)">locked</span></div>
+    </div>
+  </div>
+
+  <!-- ===== PLAYER BAR ===== -->
+  <div class="player-bar">
+
+    <!-- Now playing -->
+    <div class="pb-now">
+      <div class="pb-cover" id="pb-cover">🎵</div>
+      <div class="pb-meta">
+        <div class="pb-title" id="pb-title">Strobe (Album Mix)</div>
+        <div class="pb-artist" id="pb-artist">deadmau5 — For Lack of a Better Name</div>
+        <div class="pb-source"><span class="src-tag lib" id="pb-src-tag">●</span><span id="pb-src-name">MPD · Library NAS</span></div>
+      </div>
+    </div>
+
+    <!-- Transport central -->
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <button class="pb-tbtn small" title="Shuffle">🔀</button>
+        <button class="pb-tbtn" title="Précédent">⏮</button>
+        <button class="pb-tbtn play" id="pb-play" title="Play/Pause">▶</button>
+        <button class="pb-tbtn" title="Suivant">⏭</button>
+        <button class="pb-tbtn small" title="Repeat">🔁</button>
+      </div>
+      <div class="pb-progress-row">
+        <div class="pb-time" id="pb-elapsed">3:14</div>
+        <div class="pb-progress" id="pb-progress">
+          <div class="pb-progress-fill"></div>
+          <div class="pb-progress-handle"></div>
+        </div>
+        <div class="pb-time">10:32</div>
+      </div>
+    </div>
+
+    <!-- Right cluster -->
+    <div class="pb-right">
+      <button class="pb-tbtn small" id="pb-queue-btn" title="Queue">≡</button>
+      <div class="pb-vol">
+        <span class="pb-vol-icon">🔊</span>
+        <div class="pb-vol-bar"><div class="pb-vol-fill"></div></div>
+      </div>
+      <div class="pb-source-picker" id="pb-source-btn">
+        <span>Source</span>
+        <span class="chev">▼</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Queue popup -->
+  <div class="pb-queue-pop" id="pb-queue-pop">
+    <div class="qhead">File d'attente · MPD</div>
+    <div class="qitem">
+      <span class="qpos">1</span>
+      <span class="qtitle">Pyramid Song — Radiohead</span>
+      <span class="qdur">4:49</span>
+    </div>
+    <div class="qitem now">
+      <span class="qpos">▶</span>
+      <span class="qtitle">Strobe (Album Mix) — deadmau5</span>
+      <span class="qdur">10:32</span>
+    </div>
+    <div class="qitem">
+      <span class="qpos">3</span>
+      <span class="qtitle">Avril 14th — Aphex Twin</span>
+      <span class="qdur">2:05</span>
+    </div>
+    <div class="qitem">
+      <span class="qpos">4</span>
+      <span class="qtitle">Weightless — Marconi Union</span>
+      <span class="qdur">8:08</span>
+    </div>
+    <div class="qitem">
+      <span class="qpos">5</span>
+      <span class="qtitle">An Ending (Ascent) — Brian Eno</span>
+      <span class="qdur">4:23</span>
+    </div>
+    <div class="qitem">
+      <span class="qpos">6</span>
+      <span class="qtitle">Teardrop — Massive Attack</span>
+      <span class="qdur">5:30</span>
+    </div>
+  </div>
+
+  <!-- Source picker popup -->
+  <div class="pb-source-pop" id="pb-source-pop">
+    <div class="sitem active" data-src="lib">
+      <span class="sicon">🎵</span>
+      <span>MPD Library NAS</span>
+      <span class="smeta">12 482 morceaux</span>
+    </div>
+    <div class="sitem" data-src="local">
+      <span class="sicon">💾</span>
+      <span>MPD Library locale</span>
+      <span class="smeta">312 morceaux</span>
+    </div>
+    <div class="sitem" data-src="cd">
+      <span class="sicon">💿</span>
+      <span>Lecteur CD</span>
+      <span class="smeta">aucun disque</span>
+    </div>
+    <div class="sdivider"></div>
+    <div class="sitem" data-src="spotify">
+      <span class="sicon">🟢</span>
+      <span>Spotify Connect</span>
+      <span class="smeta">externe</span>
+    </div>
+    <div class="sitem" data-src="airplay">
+      <span class="sicon">📡</span>
+      <span>AirPlay</span>
+      <span class="smeta">externe</span>
+    </div>
+    <div class="sdivider"></div>
+    <div class="sitem" data-src="radio">
+      <span class="sicon">📻</span>
+      <span>Radio (MPD streams)</span>
+      <span class="smeta">42 stations</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ===== MODAL: Création strip ===== -->
+<div class="modal-bg" id="modal-create">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Nouvelle strip</div>
+      <button class="modal-close" data-close="modal-create">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="modal-section">
+        <div class="modal-section-head">Type de strip</div>
+        <div class="type-grid">
+          <div class="type-card selected" data-type="source">
+            <span class="icon">📥</span>
+            <div class="name">Source</div>
+            <div class="desc">Entrée audio (Spotify, AirPlay, mic)</div>
+          </div>
+          <div class="type-card" data-type="output">
+            <span class="icon">📤</span>
+            <div class="name">Output</div>
+            <div class="desc">Vers destination physique</div>
+          </div>
+          <div class="type-card" data-type="bus">
+            <span class="icon">🔀</span>
+            <div class="name">Bus</div>
+            <div class="desc">Regroupement avec DSP commun</div>
+          </div>
+          <div class="type-card" data-type="monitor">
+            <span class="icon">🎧</span>
+            <div class="name">Monitor</div>
+            <div class="desc">Pré-écoute casque (PFL)</div>
+          </div>
+          <div class="type-card" data-type="vca">
+            <span class="icon">🔗</span>
+            <div class="name">VCA</div>
+            <div class="desc">Contrôle gain groupé</div>
+          </div>
+          <div class="type-card" data-type="network">
+            <span class="icon">📡</span>
+            <div class="name">Network</div>
+            <div class="desc">Stream AES67 in/out</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-head">Channel layout</div>
+        <div class="layout-pills">
+          <div class="layout-pill" data-layout="mono">Mono</div>
+          <div class="layout-pill active" data-layout="stereo">Stereo</div>
+          <div class="layout-pill disabled" data-layout="5.1">5.1</div>
+          <div class="layout-pill disabled" data-layout="7.1">7.1</div>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-head">Nom</div>
+        <input type="text" class="modal-input" id="strip-name" placeholder="Ex. : Bus voix soirée" value="Nouvelle strip">
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-head">Profile DSP initial</div>
+        <select class="modal-select">
+          <option>bypass</option>
+          <option>hc_linear</option>
+          <option>jbl_pulse3</option>
+          <option>jbl_xtreme4</option>
+          <option>casque_neutre</option>
+          <option>master_glue</option>
+          <option>voix_live</option>
+          <option disabled>───</option>
+          <option>+ Créer un nouveau profile</option>
+        </select>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-head">Couleur</div>
+        <div class="color-picker">
+          <div class="color-swatch selected" style="background: var(--t-source)"></div>
+          <div class="color-swatch" style="background: var(--t-output)"></div>
+          <div class="color-swatch" style="background: var(--t-bus)"></div>
+          <div class="color-swatch" style="background: var(--t-monitor)"></div>
+          <div class="color-swatch" style="background: var(--t-vca)"></div>
+          <div class="color-swatch" style="background: var(--cyan)"></div>
+          <div class="color-swatch" style="background: var(--orange)"></div>
+          <div class="color-swatch" style="background: var(--text-dim)"></div>
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="modal-btn" data-close="modal-create">Annuler</button>
+      <button class="modal-btn primary">Créer la strip</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Patching INPUT ===== -->
+<div class="modal-bg patching-modal" id="modal-patch-input">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Patcher l'entrée</div>
+      <button class="modal-close" data-close="modal-patch-input">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="play-locked-input" class="locked-message" style="display:none;">
+        ⚠ Mode PLAY actif — patching verrouillé. Bascule en EDIT pour modifier.
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">📡 Sources réseau</div>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">🎵</span>
+          <span>Spotify Connect</span>
+          <span class="item-meta">librespot · core-3f9a1b8e</span>
+        </label>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">📡</span>
+          <span>AirPlay</span>
+          <span class="item-meta">shairport · core-3f9a1b8e</span>
+        </label>
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">📻 Entrées Bluetooth</div>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">📻</span>
+          <span>BT-In A</span>
+          <span class="item-meta">DG60-RX-A · core</span>
+        </label>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">📻</span>
+          <span>BT-In B</span>
+          <span class="item-meta">DG60-RX-B · core</span>
+        </label>
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">🎤 Entrées physiques</div>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">🎤</span>
+          <span>AK1 Mic</span>
+          <span class="item-meta">stage-a4b2c8</span>
+        </label>
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">🔀 Bus / Strips internes</div>
+        <label class="item selected">
+          <input type="radio" name="patch-input" checked>
+          <span class="item-icon">🔀</span>
+          <span>Bus "Mix soirée"</span>
+          <span class="item-meta">internal</span>
+        </label>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">🎚️</span>
+          <span>Master Bus</span>
+          <span class="item-meta">PFL</span>
+        </label>
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">❌ Aucune entrée</div>
+        <label class="item">
+          <input type="radio" name="patch-input">
+          <span class="item-icon">∅</span>
+          <span>Pas de source (mute implicite)</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="modal-btn" data-close="modal-patch-input">Annuler</button>
+      <button class="modal-btn primary">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Patching OUTPUT ===== -->
+<div class="modal-bg patching-modal" id="modal-patch-output">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Patcher la sortie</div>
+      <button class="modal-close" data-close="modal-patch-output">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="play-locked-output" class="locked-message" style="display:none;">
+        ⚠ Mode PLAY actif — patching verrouillé. Bascule en EDIT pour modifier.
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">🔊 Outputs physiques</div>
+        <label class="item">
+          <input type="checkbox">
+          <span class="item-icon">🔊</span>
+          <span>X-Fi HD SPDIF</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+        <label class="item">
+          <input type="checkbox">
+          <span class="item-icon">🔊</span>
+          <span>X-Fi HD RCA</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+        <label class="item selected">
+          <input type="checkbox" checked>
+          <span class="item-icon">📻</span>
+          <span>UD100-A → JBL Pulse 3</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+        <label class="item selected">
+          <input type="checkbox" checked>
+          <span class="item-icon">📻</span>
+          <span>UD100-B → JBL Xtreme 4</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+        <label class="item">
+          <input type="checkbox">
+          <span class="item-icon">🔊</span>
+          <span>AK1 Main (1-2)</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+        <label class="item">
+          <input type="checkbox">
+          <span class="item-icon">🎧</span>
+          <span>AK1 Cue (3-4)</span>
+          <span class="item-meta">core-3f9a1b8e</span>
+        </label>
+      </div>
+
+      <div class="group-section">
+        <div class="group-title">🔀 Bus internes</div>
+        <label class="item selected">
+          <input type="checkbox" checked>
+          <span class="item-icon">🎚️</span>
+          <span>Master Bus</span>
+          <span class="item-meta">cumul</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="modal-btn" data-close="modal-patch-output">Annuler</button>
+      <button class="modal-btn primary">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Settings ===== -->
+<div class="modal-bg settings-modal" id="modal-settings">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">⚙ Réglages Phonon</div>
+      <button class="modal-close" data-close="modal-settings">✕</button>
+    </div>
+
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-pane="colors">Couleurs strips</button>
+      <button class="settings-tab" data-pane="audio">Audio</button>
+      <button class="settings-tab" data-pane="network">Réseau</button>
+      <button class="settings-tab" data-pane="display">Affichage</button>
+      <button class="settings-tab" data-pane="about">À propos</button>
+    </div>
+
+    <div class="modal-body">
+      <!-- Pane : Couleurs strips -->
+      <div class="settings-pane active" data-pane="colors">
+        <div class="settings-section-help">
+          La couleur de chaque type de strip est utilisée pour le bandeau de tag, la barre lumineuse du fader, l'aiguille du handle et l'accent visuel global. Modifie ici pour adapter à ta préférence : les changements s'appliquent immédiatement sur toute la console et sont synchronisés à toutes les autres Consoles connectées au Controller.
+        </div>
+
+        <div class="strip-color-row" data-type="source">
+          <span class="scr-icon">📥</span>
+          <div class="scr-name">Source<span class="scr-meta">Spotify, AirPlay, BT-In, mic — entrées audio</span></div>
+          <div class="scr-swatch" style="background: #34d399;"><input type="color" value="#34d399" data-var="--t-source"></div>
+          <input class="scr-hex-input" value="#34D399" data-hex="--t-source">
+          <button class="scr-reset" data-default="#34d399">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="output">
+          <span class="scr-icon">📤</span>
+          <div class="scr-name">Output<span class="scr-meta">SPDIF, UD100, AK1, BT — destinations physiques</span></div>
+          <div class="scr-swatch" style="background: #e879f9;"><input type="color" value="#e879f9" data-var="--t-output"></div>
+          <input class="scr-hex-input" value="#E879F9" data-hex="--t-output">
+          <button class="scr-reset" data-default="#e879f9">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="bus">
+          <span class="scr-icon">🔀</span>
+          <div class="scr-name">Bus<span class="scr-meta">Regroupement intermédiaire avec DSP commun</span></div>
+          <div class="scr-swatch" style="background: #06b6d4;"><input type="color" value="#06b6d4" data-var="--t-bus"></div>
+          <input class="scr-hex-input" value="#06B6D4" data-hex="--t-bus">
+          <button class="scr-reset" data-default="#06b6d4">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="master">
+          <span class="scr-icon">🎚️</span>
+          <div class="scr-name">Master<span class="scr-meta">Sommation finale, limiteur, mesure LUFS</span></div>
+          <div class="scr-swatch" style="background: #dc2626;"><input type="color" value="#dc2626" data-var="--t-master"></div>
+          <input class="scr-hex-input" value="#DC2626" data-hex="--t-master">
+          <button class="scr-reset" data-default="#dc2626">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="monitor">
+          <span class="scr-icon">🎧</span>
+          <div class="scr-name">Monitor<span class="scr-meta">Pré-écoute casque (PFL)</span></div>
+          <div class="scr-swatch" style="background: #fbbf24;"><input type="color" value="#fbbf24" data-var="--t-monitor"></div>
+          <input class="scr-hex-input" value="#FBBF24" data-hex="--t-monitor">
+          <button class="scr-reset" data-default="#fbbf24">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="vca">
+          <span class="scr-icon">🔗</span>
+          <div class="scr-name">VCA<span class="scr-meta">Contrôle de gain groupé sans audio</span></div>
+          <div class="scr-swatch" style="background: #a855f7;"><input type="color" value="#a855f7" data-var="--t-vca"></div>
+          <input class="scr-hex-input" value="#A855F7" data-hex="--t-vca">
+          <button class="scr-reset" data-default="#a855f7">Reset</button>
+        </div>
+
+        <div class="strip-color-row" data-type="network">
+          <span class="scr-icon">📡</span>
+          <div class="scr-name">Network<span class="scr-meta">Stream AES67 entrant ou sortant</span></div>
+          <div class="scr-swatch" style="background: #1e40af;"><input type="color" value="#1e40af" data-var="--t-network"></div>
+          <input class="scr-hex-input" value="#1E40AF" data-hex="--t-network">
+          <button class="scr-reset" data-default="#1e40af">Reset</button>
+        </div>
+      </div>
+
+      <!-- Pane : Audio -->
+      <div class="settings-pane" data-pane="audio">
+        <div class="settings-section-help">
+          Paramètres audio globaux du Controller. Modifications appliquées via reconfiguration des Stage Agents.
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Sample rate</div>
+          <select class="modal-select"><option>44.1 kHz</option><option selected>48 kHz</option><option>88.2 kHz</option><option>96 kHz</option></select>
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Quantum (buffer size)</div>
+          <select class="modal-select"><option>64 samples · 1.3 ms</option><option selected>128 samples · 2.7 ms</option><option>256 samples · 5.3 ms</option><option>512 samples · 10.7 ms</option></select>
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Format AES67</div>
+          <select class="modal-select"><option>L16 · 16-bit</option><option selected>L24 · 24-bit</option><option>L32 · 32-bit float</option></select>
+        </div>
+      </div>
+
+      <!-- Pane : Réseau -->
+      <div class="settings-pane" data-pane="network">
+        <div class="settings-section-help">
+          Configuration du lab Phonon (séparé du réseau domestique).
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Subnet</div>
+          <input class="modal-input" value="10.100.0.0/24">
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Multicast AES67</div>
+          <input class="modal-input" value="239.69.0.0/16">
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">PTP domain</div>
+          <input class="modal-input" value="0">
+        </div>
+      </div>
+
+      <!-- Pane : Affichage -->
+      <div class="settings-pane" data-pane="display">
+        <div class="modal-section">
+          <div class="modal-section-head">Densité strips</div>
+          <div class="layout-pills">
+            <div class="layout-pill" data-density="dense">Dense</div>
+            <div class="layout-pill active" data-density="normal">Normal</div>
+            <div class="layout-pill" data-density="comfy">Comfortable</div>
+          </div>
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Affichage des meters</div>
+          <div class="layout-pills">
+            <div class="layout-pill active" data-meters="ardour">Ardour-style</div>
+            <div class="layout-pill" data-meters="ppm">PPM</div>
+            <div class="layout-pill" data-meters="vu">VU</div>
+            <div class="layout-pill" data-meters="ebu">EBU R128</div>
+          </div>
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-head">Position des labels dB</div>
+          <div class="layout-pills">
+            <div class="layout-pill" data-dbpos="left">Gauche</div>
+            <div class="layout-pill active" data-dbpos="right">Droite</div>
+            <div class="layout-pill" data-dbpos="both">Les deux</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pane : À propos -->
+      <div class="settings-pane" data-pane="about">
+        <div style="text-align: center; padding: 20px;">
+          <div style="display: inline-block; color: var(--cyan); margin-bottom: 16px;">
+            <svg viewBox="0 0 100 100" width="64" height="64">
+              <polygon points="50,10 86,30 86,70 50,90 14,70 14,30" stroke="currentColor" stroke-width="3" fill="none"/>
+              <path d="M22 50 Q 32 38, 42 50 T 62 50 T 78 50" stroke="currentColor" stroke-width="2.6" fill="none"/>
+              <circle cx="50" cy="50" r="3.2" fill="currentColor"/>
+            </svg>
+          </div>
+          <div style="font-size: 24px; font-weight: 700; letter-spacing: 3px; color: var(--text); margin-bottom: 4px;">PHONON</div>
+          <div style="font-family: var(--font-m); font-size: 11px; color: var(--text-dim); letter-spacing: 1px;">v4.4 · Console build 2026.04</div>
+          <div style="font-family: var(--font-m); font-size: 10px; color: var(--text-fade); margin-top: 16px; line-height: 1.6;">
+            Routeur audio distribué multi-Stages<br>
+            Architecture : Stage / Controller / Console<br>
+            Transport : AES67 / PTP / OSC<br>
+            DSP : LSP Plugins · PipeWire · mod-host
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="modal-btn" data-close="modal-settings">Fermer</button>
+      <button class="modal-btn primary">Sauvegarder</button>
+    </div>
+  </div>
+</div>
+
+<!-- Template d'une fenêtre plugin (cloné à chaque clic d'insert) -->
+<template id="plugin-window-template">
+  <div class="plugin-window">
+        <div class="pp-header">
+          <div class="pp-title-block">
+            <span class="pp-strip-tag" style="--strip-color: var(--t-bus);">MIX SOIRÉE</span>
+            <div>
+              <div class="pp-plugin-name">LSP Parametric Equalizer x16 Stereo</div>
+              <div class="pp-plugin-uri">http://lsp-plug.in/plugins/lv2/para_equalizer_x16_stereo</div>
+            </div>
+          </div>
+          <div class="pp-controls">
+            <select class="pp-preset-select">
+              <option>— Preset —</option>
+              <option>Flat</option>
+              <option>Vocal Lift</option>
+              <option>Bass Boost</option>
+              <option>Notch 50Hz</option>
+            </select>
+            <button class="pp-btn">Save</button>
+            <button class="pp-btn">Load</button>
+            <button class="pp-btn bypass">Bypass</button>
+            <button class="pp-btn close" title="Fermer">✕</button>
+          </div>
+        </div>
+
+        <div class="pp-body">
+          <!-- EQ display + bands -->
+          <div class="pp-eq-col">
+            <div class="pp-eq-display">
+              <svg viewBox="0 0 800 220" preserveAspectRatio="none">
+                <!-- Grid -->
+                <g stroke="#1a2230" stroke-width="0.5" fill="none">
+                  <line x1="0" y1="55" x2="800" y2="55"/>
+                  <line x1="0" y1="110" x2="800" y2="110"/>
+                  <line x1="0" y1="165" x2="800" y2="165"/>
+                  <line x1="100" y1="0" x2="100" y2="220"/>
+                  <line x1="200" y1="0" x2="200" y2="220"/>
+                  <line x1="300" y1="0" x2="300" y2="220"/>
+                  <line x1="400" y1="0" x2="400" y2="220"/>
+                  <line x1="500" y1="0" x2="500" y2="220"/>
+                  <line x1="600" y1="0" x2="600" y2="220"/>
+                  <line x1="700" y1="0" x2="700" y2="220"/>
+                </g>
+                <!-- 0 dB line -->
+                <line x1="0" y1="110" x2="800" y2="110" stroke="#3a5078" stroke-width="0.7" stroke-dasharray="3 3"/>
+                <!-- Frequency labels -->
+                <g fill="#5a7388" font-family="IBM Plex Mono" font-size="9" letter-spacing="0.5">
+                  <text x="100" y="212">100</text>
+                  <text x="200" y="212">200</text>
+                  <text x="300" y="212">500</text>
+                  <text x="400" y="212">1k</text>
+                  <text x="500" y="212">2k</text>
+                  <text x="600" y="212">5k</text>
+                  <text x="700" y="212">10k</text>
+                </g>
+                <!-- dB labels -->
+                <g fill="#5a7388" font-family="IBM Plex Mono" font-size="8.5">
+                  <text x="3" y="58">+12</text>
+                  <text x="6" y="113">0</text>
+                  <text x="3" y="168">-12</text>
+                </g>
+                <!-- Spectrum analyser (faux, en bleu pâle) -->
+                <path d="M0 200 L 50 195 L 100 180 L 150 170 L 200 175 L 250 168 L 300 158 L 350 152 L 400 148 L 450 155 L 500 160 L 550 165 L 600 172 L 650 180 L 700 190 L 750 200 L 800 210 L 800 220 L 0 220 Z"
+                      fill="rgba(34, 211, 238, 0.12)" stroke="rgba(34, 211, 238, 0.4)" stroke-width="0.8"/>
+                <!-- Courbe EQ active (cyan vif) -->
+                <path d="M0 110 Q 80 110, 100 95 T 180 90 Q 220 95, 260 100 T 360 75 Q 400 70, 440 80 T 540 110 Q 580 130, 620 145 T 720 130 L 800 125"
+                      fill="none" stroke="var(--cyan)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                <!-- Points de chaque bande -->
+                <g fill="var(--cyan)">
+                  <circle cx="100" cy="95" r="4"/>
+                  <circle cx="180" cy="90" r="4"/>
+                  <circle cx="260" cy="100" r="4"/>
+                  <circle cx="360" cy="75" r="4"/>
+                  <circle cx="440" cy="80" r="4"/>
+                  <circle cx="540" cy="110" r="4"/>
+                  <circle cx="620" cy="145" r="4"/>
+                  <circle cx="720" cy="130" r="4"/>
+                </g>
+              </svg>
+            </div>
+
+            <!-- Bandes EQ -->
+            <div class="pp-bands">
+              <!-- 8 bandes parmi les 16 -->
+              <div class="pp-band">
+                <div class="pp-band-freq">63 Hz</div>
+                <div class="pp-band-knob" style="--rot: -110deg"></div>
+                <div class="pp-band-val">+1.8 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">160 Hz</div>
+                <div class="pp-band-knob" style="--rot: -80deg"></div>
+                <div class="pp-band-val">+2.4 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">315 Hz</div>
+                <div class="pp-band-knob" style="--rot: -10deg"></div>
+                <div class="pp-band-val">+0.5 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">800 Hz</div>
+                <div class="pp-band-knob" style="--rot: +50deg"></div>
+                <div class="pp-band-val">+4.2 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">1.6 kHz</div>
+                <div class="pp-band-knob" style="--rot: +30deg"></div>
+                <div class="pp-band-val">+3.1 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">3.15 kHz</div>
+                <div class="pp-band-knob" style="--rot: -30deg"></div>
+                <div class="pp-band-val">-1.2 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">6.3 kHz</div>
+                <div class="pp-band-knob" style="--rot: -90deg"></div>
+                <div class="pp-band-val">-3.5 dB</div>
+              </div>
+              <div class="pp-band">
+                <div class="pp-band-freq">12.5 kHz</div>
+                <div class="pp-band-knob" style="--rot: -55deg"></div>
+                <div class="pp-band-val">-2.0 dB</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right column: meters + globals -->
+          <div class="pp-right">
+            <div>
+              <div class="pp-section-title">In / Out</div>
+              <div class="pp-io-meters">
+                <div class="pp-io-meter">
+                  <div class="pp-io-meter-label">IN</div>
+                  <div class="pp-io-meter-bridge"></div>
+                  <div class="pp-io-meter-val">-6.2 dB</div>
+                </div>
+                <div class="pp-io-meter">
+                  <div class="pp-io-meter-label">OUT</div>
+                  <div class="pp-io-meter-bridge"></div>
+                  <div class="pp-io-meter-val">-4.8 dB</div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="pp-section-title">Globals</div>
+              <div class="pp-knob-row">
+                <div class="pp-knob-cell">
+                  <div class="pp-knob-label">Input</div>
+                  <div class="pp-band-knob" style="--rot: 0deg; width: 28px; height: 28px;"></div>
+                  <div class="pp-knob-val">0.0 dB</div>
+                </div>
+                <div class="pp-knob-cell">
+                  <div class="pp-knob-label">Output</div>
+                  <div class="pp-band-knob" style="--rot: -25deg; width: 28px; height: 28px;"></div>
+                  <div class="pp-knob-val">-1.5 dB</div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="pp-section-title">Stage</div>
+              <div style="font-family: var(--font-m); font-size: 9px; color: var(--text-mid); line-height: 1.6;">
+                core-3f9a1b8e<br>
+                <span style="color: var(--text-fade);">CPU 4.2% &middot; 0 xrun</span>
+              </div>
+            </div>
+          </div>
+        </div>
+  </div>
+</template>
+
+<script>
+/* Clock */
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toTimeString().slice(0,8);
+}, 1000);
+document.getElementById('clock').textContent = new Date().toTimeString().slice(0,8);
+
+/* MODE PLAY/EDIT */
+const body = document.body;
+const btnAddStrip = document.getElementById('btn-add-strip');
+const modeDisplay = document.getElementById('mode-display');
+document.getElementById('mode-play').addEventListener('click', () => {
+  body.dataset.mode = 'play';
+  document.getElementById('mode-play').classList.add('active');
+  document.getElementById('mode-edit').classList.remove('active');
+  btnAddStrip.style.display = 'none';
+  if (modeDisplay) { modeDisplay.textContent = 'PLAY'; modeDisplay.style.color = 'var(--blue)'; }
+});
+document.getElementById('mode-edit').addEventListener('click', () => {
+  body.dataset.mode = 'edit';
+  document.getElementById('mode-edit').classList.add('active');
+  document.getElementById('mode-play').classList.remove('active');
+  btnAddStrip.style.display = '';
+  if (modeDisplay) { modeDisplay.textContent = 'EDIT'; modeDisplay.style.color = 'var(--orange)'; }
+});
+
+/* PLUGIN WINDOWS (multi-fenêtres flottantes) */
+const winContainer = document.getElementById('plugin-windows');
+const winTemplate = document.getElementById('plugin-window-template');
+const ppEmpty = document.getElementById('plugin-zone-empty');
+const openWindows = new Map();      // slotKey → windowEl
+
+const PLUGIN_URIS = {
+  'LSP ParaEQ': { name: 'LSP Parametric Equalizer x16 Stereo', uri: 'http://lsp-plug.in/plugins/lv2/para_equalizer_x16_stereo' },
+  'LSP Comp':   { name: 'LSP Compressor Stereo',                uri: 'http://lsp-plug.in/plugins/lv2/compressor_stereo' },
+  'LSP DeEss':  { name: 'LSP Sidechain Compressor Stereo (de-ess)', uri: 'http://lsp-plug.in/plugins/lv2/sc_compressor_stereo' },
+  'LSP MBComp': { name: 'LSP Multiband Compressor x4 Stereo',   uri: 'http://lsp-plug.in/plugins/lv2/mb_compressor_x4_stereo' },
+  'LSP Limiter':{ name: 'LSP Limiter Stereo',                   uri: 'http://lsp-plug.in/plugins/lv2/limiter_stereo' },
+  'LSP Dither': { name: 'LSP Dither Stereo',                    uri: 'http://lsp-plug.in/plugins/lv2/dither' },
+  'Trim Gain':  { name: 'LSP Trigger MIDI Stereo',              uri: 'http://lsp-plug.in/plugins/lv2/trim' },
+};
+const STRIP_COLORS = {
+  't-source':  'var(--t-source)', 't-output':  'var(--t-output)',
+  't-bus':     'var(--t-bus)',    't-master':  'var(--t-master)',
+  't-monitor': 'var(--t-monitor)','t-vca':     'var(--t-vca)',
+};
+
+function slotKey(slot) {
+  const stripEl = slot.closest('.strip');
+  const stripLabel = stripEl.querySelector('.color-tag .label-text')?.textContent || 'strip';
+  const text = slot.querySelector('.slot-text')?.textContent?.trim() || '?';
+  return stripLabel + '::' + text;
+}
+
+function focusWindow(win) {
+  document.querySelectorAll('.plugin-window.focused').forEach(w => w.classList.remove('focused'));
+  win.classList.add('focused');
+  win.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+}
+
+function openPluginWindow(slot) {
+  const text = slot.querySelector('.slot-text')?.textContent?.trim() || 'Plugin';
+  const stripEl = slot.closest('.strip');
+  const stripType = [...stripEl.classList].find(c => c.startsWith('t-'));
+  const stripLabel = stripEl.querySelector('.color-tag .label-text')?.textContent || 'Strip';
+  const key = slotKey(slot);
+
+  if (openWindows.has(key)) { focusWindow(openWindows.get(key)); return; }
+
+  const win = winTemplate.content.cloneNode(true).firstElementChild;
+  const info = PLUGIN_URIS[text] || { name: text, uri: '—' };
+
+  win.querySelector('.pp-strip-tag').textContent = stripLabel;
+  win.querySelector('.pp-strip-tag').style.setProperty('--strip-color', STRIP_COLORS[stripType] || 'var(--cyan)');
+  win.querySelector('.pp-plugin-name').textContent = info.name;
+  win.querySelector('.pp-plugin-uri').textContent = info.uri;
+
+  win.querySelector('.pp-btn.close').addEventListener('click', () => closePluginWindow(key));
+  const bypassBtn = win.querySelector('.pp-btn.bypass');
+  bypassBtn.addEventListener('click', () => bypassBtn.classList.toggle('on'));
+  win.addEventListener('mousedown', () => focusWindow(win));
+
+  winContainer.appendChild(win);
+  winContainer.classList.add('has-windows');
+  openWindows.set(key, win);
+  win.dataset.slotKey = key;
+  slot.classList.add('editing');
+  slot.dataset.slotKey = key;
+  ppEmpty.classList.add('hidden');
+  focusWindow(win);
+}
+
+function closePluginWindow(key) {
+  const win = openWindows.get(key);
+  if (!win) return;
+  win.classList.add('closing');
+  setTimeout(() => {
+    win.remove();
+    openWindows.delete(key);
+    if (openWindows.size === 0) {
+      winContainer.classList.remove('has-windows');
+      ppEmpty.classList.remove('hidden');
+    }
+  }, 200);
+  const slot = document.querySelector('.strip .slot[data-slot-key="' + key + '"]');
+  if (slot) {
+    slot.classList.remove('editing');
+    slot.removeAttribute('data-slot-key');
+  }
+}
+
+document.querySelectorAll('.strip .slot').forEach(slot => {
+  if (slot.classList.contains('empty')) return;
+  slot.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPluginWindow(slot);
+  });
+});
+
+/* In/Out meters animation pour TOUTES les fenêtres ouvertes */
+setInterval(() => {
+  document.querySelectorAll('.pp-io-meter-bridge').forEach(m => {
+    if (m.children.length === 0) {
+      for (let ch = 0; ch < 2; ch++) {
+        const chDiv = document.createElement('div');
+        chDiv.className = 'pp-io-meter-ch';
+        for (let i = 0; i < 16; i++) {
+          const seg = document.createElement('div');
+          seg.className = 'pp-io-meter-seg';
+          const t = i / 16;
+          seg.style.setProperty('--c',
+            t < 0.15 ? 'var(--red)' :
+            t < 0.30 ? 'var(--orange)' :
+            t < 0.55 ? 'var(--yellow)' : 'var(--green)');
+          chDiv.appendChild(seg);
+        }
+        m.appendChild(chDiv);
+      }
+    }
+    [...m.children].forEach(ch => {
+      const segs = ch.children;
+      const lvl = 0.5 + Math.random() * 0.4;
+      const lit = Math.floor(lvl * segs.length);
+      [...segs].forEach((s, i) => {
+        s.style.setProperty('--lvl', i >= (segs.length - lit) ? '1' : '0.08');
+      });
+    });
+  });
+}, 80);
+
+/* SIDE TOGGLE */
+document.getElementById('toggle-side').addEventListener('click', () => {
+  document.querySelector('.main').classList.toggle('side-hidden');
+});
+
+/* PLAYER TOGGLE */
+const togglePlayerBtn = document.getElementById('toggle-player');
+togglePlayerBtn.addEventListener('click', () => {
+  document.querySelector('.main').classList.toggle('player-hidden');
+  togglePlayerBtn.classList.toggle('on');
+});
+
+/* PLAYER BAR */
+const pbPlay = document.getElementById('pb-play');
+const pbProgress = document.getElementById('pb-progress');
+const pbProgressFill = pbProgress.querySelector('.pb-progress-fill');
+const pbProgressHandle = pbProgress.querySelector('.pb-progress-handle');
+const pbElapsed = document.getElementById('pb-elapsed');
+const pbQueueBtn = document.getElementById('pb-queue-btn');
+const pbQueuePop = document.getElementById('pb-queue-pop');
+const pbSourceBtn = document.getElementById('pb-source-btn');
+const pbSourcePop = document.getElementById('pb-source-pop');
+const pbSrcTag = document.getElementById('pb-src-tag');
+const pbSrcName = document.getElementById('pb-src-name');
+const pbTitle = document.getElementById('pb-title');
+const pbArtist = document.getElementById('pb-artist');
+const pbCover = document.getElementById('pb-cover');
+
+let playing = true;
+let elapsed = 194; // 3:14
+const total = 632;  // 10:32
+
+pbPlay.addEventListener('click', () => {
+  playing = !playing;
+  pbPlay.textContent = playing ? '▶' : '⏸';
+});
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const r = Math.floor(s % 60);
+  return `${m}:${r.toString().padStart(2,'0')}`;
+}
+setInterval(() => {
+  if (playing) {
+    elapsed = (elapsed + 1) % total;
+    const pct = (elapsed / total * 100).toFixed(2) + '%';
+    pbProgressFill.parentElement.style.setProperty('--progress', pct);
+    pbElapsed.textContent = fmtTime(elapsed);
+  }
+}, 1000);
+pbProgress.addEventListener('click', (e) => {
+  const rect = pbProgress.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  elapsed = Math.floor(x * total);
+  const pct = (elapsed / total * 100).toFixed(2) + '%';
+  pbProgress.style.setProperty('--progress', pct);
+  pbElapsed.textContent = fmtTime(elapsed);
+});
+
+/* Queue popup */
+pbQueueBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  pbQueuePop.classList.toggle('open');
+  pbSourcePop.classList.remove('open');
+});
+
+/* Source popup */
+pbSourceBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  pbSourcePop.classList.toggle('open');
+  pbQueuePop.classList.remove('open');
+});
+
+/* Click outside to close */
+document.addEventListener('click', () => {
+  pbQueuePop.classList.remove('open');
+  pbSourcePop.classList.remove('open');
+});
+pbQueuePop.addEventListener('click', e => e.stopPropagation());
+pbSourcePop.addEventListener('click', e => e.stopPropagation());
+
+/* Source switch */
+const sourceData = {
+  lib:     { tag: 'lib',     name: 'MPD · Library NAS',     title: 'Strobe (Album Mix)',  artist: 'deadmau5 — For Lack of a Better Name', cover: '🎵' },
+  local:   { tag: 'lib',     name: 'MPD · Library locale',  title: 'Demo session 12',     artist: 'Local recordings', cover: '💾' },
+  cd:      { tag: 'cd',      name: 'CD Audio',              title: '— Aucun disque —',    artist: 'Insère un CD',     cover: '💿' },
+  spotify: { tag: 'spotify', name: 'Spotify Connect',       title: 'Midnight City',       artist: 'M83 — Hurry Up, We\'re Dreaming', cover: '🟢' },
+  airplay: { tag: 'airplay', name: 'AirPlay',               title: '(stream entrant)',    artist: 'iPhone de Serge',  cover: '📡' },
+  radio:   { tag: 'lib',     name: 'MPD · Radio',           title: 'FIP Live',            artist: 'Radio France',     cover: '📻' }
+};
+document.querySelectorAll('.pb-source-pop .sitem').forEach(it => {
+  it.addEventListener('click', () => {
+    document.querySelectorAll('.pb-source-pop .sitem').forEach(x => x.classList.remove('active'));
+    it.classList.add('active');
+    const src = it.dataset.src;
+    const d = sourceData[src];
+    if (d) {
+      pbSrcTag.className = 'src-tag ' + d.tag;
+      pbSrcName.textContent = d.name;
+      pbTitle.textContent = d.title;
+      pbArtist.textContent = d.artist;
+      pbCover.textContent = d.cover;
+    }
+    pbSourcePop.classList.remove('open');
+  });
+});
+
+/* MODALS open/close */
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+document.querySelectorAll('[data-close]').forEach(btn => {
+  btn.addEventListener('click', () => closeModal(btn.dataset.close));
+});
+document.querySelectorAll('.modal-bg').forEach(bg => {
+  bg.addEventListener('click', (e) => {
+    if (e.target === bg) bg.classList.remove('open');
+  });
+});
+
+/* CREATE STRIP */
+btnAddStrip.addEventListener('click', () => openModal('modal-create'));
+document.getElementById('add-strip-trigger').addEventListener('click', () => {
+  if (body.dataset.mode === 'edit') openModal('modal-create');
+});
+
+/* TYPE CARDS */
+document.querySelectorAll('.type-card').forEach(card => {
+  card.addEventListener('click', () => {
+    if (card.classList.contains('disabled')) return;
+    document.querySelectorAll('.type-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+  });
+});
+
+/* LAYOUT PILLS */
+document.querySelectorAll('.layout-pill').forEach(p => {
+  p.addEventListener('click', () => {
+    if (p.classList.contains('disabled')) return;
+    document.querySelectorAll('.layout-pill').forEach(x => x.classList.remove('active'));
+    p.classList.add('active');
+  });
+});
+
+/* COLOR SWATCHES */
+document.querySelectorAll('.color-swatch').forEach(s => {
+  s.addEventListener('click', () => {
+    document.querySelectorAll('.color-swatch').forEach(x => x.classList.remove('selected'));
+    s.classList.add('selected');
+  });
+});
+
+/* PATCHING (header/footer click) */
+document.querySelectorAll('.strip-header.editable').forEach(h => {
+  h.addEventListener('click', () => {
+    if (body.dataset.mode === 'play') {
+      document.getElementById('play-locked-input').style.display = 'block';
+    } else {
+      document.getElementById('play-locked-input').style.display = 'none';
+    }
+    openModal('modal-patch-input');
+  });
+});
+document.querySelectorAll('.strip-footer.editable').forEach(f => {
+  f.addEventListener('click', () => {
+    if (body.dataset.mode === 'play') {
+      document.getElementById('play-locked-output').style.display = 'block';
+    } else {
+      document.getElementById('play-locked-output').style.display = 'none';
+    }
+    openModal('modal-patch-output');
+  });
+});
+
+/* PATCHING ITEMS toggle radio/checkbox visual */
+document.querySelectorAll('.patching-modal .item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    if (body.dataset.mode === 'play') return;
+    const input = item.querySelector('input');
+    if (!input) return;
+    if (input.type === 'radio') {
+      // Decoche tous les autres
+      document.querySelectorAll(`.patching-modal input[name="${input.name}"]`).forEach(i => {
+        i.closest('.item').classList.remove('selected');
+      });
+      item.classList.add('selected');
+    } else if (input.type === 'checkbox') {
+      input.checked = !input.checked;
+      item.classList.toggle('selected', input.checked);
+    }
+  });
+});
+
+/* Buttons toggle */
+document.querySelectorAll('.mini-btn').forEach(b => b.addEventListener('click', () => b.classList.toggle('on')));
+document.querySelectorAll('.scene-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.scene-btn').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+  });
+});
+
+/* METERS — style Ardour (mapping logarithmique, peak hold, zones de couleur précises) */
+const MSEG = 40;          // densité des segments
+const MS_PEAK_HOLD = 30;  // ~1s à 30 fps
+
+// Mapping segment-index → dBFS (échelle log Ardour-like)
+// Index 0 = top (0 dB), index MSEG-1 = bottom (-inf)
+function segIndexToDb(idx, total) {
+  const t = idx / (total - 1);  // 0..1, 0=top
+  // Échelle non-linéaire : compressée en bas, étalée en haut
+  // Approximation Ardour : dB = -60 * t^1.6
+  return -3 + (-(total === 1 ? 0 : 60 * Math.pow(t, 1.6)));
+}
+
+// Couleur d'un segment selon sa position dB
+function segColor(idx, total) {
+  const db = segIndexToDb(idx, total);
+  if (db >= -3)  return { c: '#f87171', off: '#2a0a10', peak: '#fca5a5' }; // rouge
+  if (db >= -6)  return { c: '#fb923c', off: '#2a1808', peak: '#fdba74' }; // orange
+  if (db >= -12) return { c: '#fbbf24', off: '#2a1d08', peak: '#fde68a' }; // jaune
+  if (db >= -20) return { c: '#a3e635', off: '#1a2208', peak: '#d9f99d' }; // vert clair
+  return { c: '#34d399', off: '#0a2218', peak: '#6ee7b7' }; // vert
+}
+
+// Dans Ardour, le niveau audio (0..1) est mappé en dB via dBFS = 20*log10(linear)
+// On veut savoir : combien de segments allumer pour un niveau linéaire donné
+function levelToLitCount(level, total) {
+  if (level <= 0.0001) return 0;
+  const db = 20 * Math.log10(level);  // ex: 0.5 → -6 dB, 1.0 → 0 dB
+  // Trouver l'index où segIndexToDb(idx) crosserait ce dB
+  for (let i = 0; i < total; i++) {
+    if (segIndexToDb(i, total) <= db) return total - i;
+  }
+  return 0;
+}
+
+const ms = {};
+document.querySelectorAll('.meter-bridge').forEach(m => {
+  const id = m.dataset.meter;
+  const silent = id.includes('airplay') || id.includes('bt-b') || id.includes('mic');
+  ms[id] = {
+    L: { cur: 0.4, tgt: 0.5, peak: 0, ph: 0 },
+    R: { cur: 0.4, tgt: 0.5, peak: 0, ph: 0 },
+    silent
+  };
+  ['L', 'R'].forEach(ch => {
+    const chDiv = document.createElement('div');
+    chDiv.className = 'meter-ch';
+    chDiv.dataset.ch = ch;
+    // Index 0 en haut (top = 0 dB), index MSEG-1 en bas (-inf)
+    for (let i = 0; i < MSEG; i++) {
+      const s = document.createElement('div');
+      s.className = 'mseg';
+      const colors = segColor(i, MSEG);
+      s.style.setProperty('--sc', colors.c);
+      s.style.setProperty('--sc-off', colors.off);
+      s.style.setProperty('--sc-peak', colors.peak);
+      chDiv.appendChild(s);
+    }
+    m.appendChild(chDiv);
+  });
+});
+
+function anim() {
+  Object.keys(ms).forEach(id => {
+    const d = ms[id];
+    ['L','R'].forEach(ch => {
+      const c = d[ch];
+      if (d.silent) {
+        c.cur *= 0.92;
+        c.peak *= 0.96;
+      } else if (Math.random() < 0.18) {
+        // Niveaux cibles selon le type de strip
+        const baseLin = id === 'master' ? 0.85 :
+                        id.includes('bus') ? 0.82 :
+                        id.includes('out-') ? 0.72 :
+                        0.6;
+        c.tgt = Math.max(0.05, Math.min(0.99, baseLin + (Math.random() - 0.5) * 0.35));
+      }
+      // Smoothing : montée rapide, descente plus lente
+      c.cur += (c.tgt - c.cur) * (c.tgt > c.cur ? 0.6 : 0.12);
+
+      // Peak hold
+      if (c.cur > c.peak) { c.peak = c.cur; c.ph = MS_PEAK_HOLD; }
+      else if (c.ph > 0) c.ph--;
+      else c.peak = Math.max(0, c.peak - 0.01);
+
+      const segs = document.querySelectorAll(`.meter-bridge[data-meter="${id}"] .meter-ch[data-ch="${ch}"] .mseg`);
+      const lit = levelToLitCount(c.cur, MSEG);
+      const peakI = MSEG - levelToLitCount(c.peak, MSEG);
+      segs.forEach((s, i) => {
+        // i=0 est en haut (0dB), donc segments allumés sont [MSEG-lit, MSEG[
+        const isOn = i >= (MSEG - lit);
+        const isPeak = i === peakI - 1 && c.ph > 0;
+        s.classList.toggle('on', isOn && !isPeak);
+        s.classList.toggle('peak', isPeak);
+      });
+    });
+  });
+  requestAnimationFrame(anim);
+}
+anim();
+
+/* FADERS */
+function setupFader(fader) {
+  const h = fader.querySelector('.handle');
+  const db = fader.closest('.fader-area').querySelector('.dbv');
+
+  // Récupérer la position initiale depuis le handle, et la poser sur le parent .fader
+  // pour que la barre fader-fill voie la même var --handle-y via héritage CSS
+  const initialY = h.style.getPropertyValue('--handle-y') || '40%';
+  fader.style.setProperty('--handle-y', initialY);
+  h.style.removeProperty('--handle-y');  // évite le doublon
+
+  let drag = false, sy = 0, sp = 0;
+  const setPos = (p) => {
+    p = Math.max(2, Math.min(98, p));
+    fader.style.setProperty('--handle-y', p + '%');
+    if (db) {
+      const v = ((50 - p) / 50) * 12;
+      db.textContent = p > 95 ? '-∞' : (v >= 0 ? '+' : '') + v.toFixed(1);
+    }
+  };
+  const down = (e) => {
+    drag = true;
+    sy = e.touches ? e.touches[0].clientY : e.clientY;
+    sp = parseFloat(fader.style.getPropertyValue('--handle-y')) || 50;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  const move = (e) => {
+    if (!drag) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const rect = fader.getBoundingClientRect();
+    setPos(sp + ((y - sy) / rect.height) * 100);
+    e.preventDefault();
+  };
+  const up = () => { drag = false; };
+  h.addEventListener('mousedown', down);
+  h.addEventListener('touchstart', down, { passive: false });
+  window.addEventListener('mousemove', move);
+  window.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('mouseup', up);
+  window.addEventListener('touchend', up);
+}
+document.querySelectorAll('.fader').forEach(setupFader);
+</script>
+</body>
+</html>

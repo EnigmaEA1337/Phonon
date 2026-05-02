@@ -1,0 +1,32 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd stage
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff check)
+        run: ruff check stage/
+
+      - name: Format check (ruff format)
+        run: ruff format --check stage/
+
+      - name: Type check (mypy)
+        run: mypy stage/src/
+
+      - name: Tests + coverage
+        run: |
+          cd stage
+          pytest -v -m "not hardware" --cov=phonon_stage --cov-report=term-missing --cov-fail-under=70

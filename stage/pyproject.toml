@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "phonon-stage"
+version = "0.1.0"
+description = "Phonon Stage Agent — distributed audio router stage daemon"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.32,<1",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "zeroconf>=0.136,<1",
+    "structlog>=24.4,<26",
+    "pyyaml>=6.0,<7",
+    "dbus-fast>=2.24,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+    "pytest-cov>=6,<7",
+    "httpx>=0.27,<1",
+    "ruff>=0.8,<1",
+    "mypy>=1.13,<2",
+    "freezegun>=1.4,<2",
+    "types-PyYAML>=6.0,<7",
+]
+
+[project.scripts]
+phonon-stage = "phonon_stage.main:cli_entry"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phonon_stage"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["hardware: requires physical hardware"]

@@ -1,0 +1,35 @@
+[Unit]
+Description=Phonon Stage Agent
+Documentation=https://github.com/EnigmaEA1337/Phonon
+After=network-online.target dbus.service avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=phonon
+Group=phonon
+ExecStart=/opt/phonon/stage/.venv/bin/phonon-stage --config /etc/phonon/stage.yaml
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=phonon-stage
+
+# Hardening (SECURITY.md §4.1)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/phonon /var/log/phonon
+ReadOnlyPaths=/etc/phonon
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

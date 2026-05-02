@@ -62,8 +62,8 @@ async def run_command(*args: str) -> str:
 async def pw_dump() -> list[dict[str, Any]]:
     """Run pw-dump and return parsed JSON array of PipeWire objects.
 
-    pw-dump streams continuously. We read the first complete JSON array
-    (matching the top-level `[...]`) and kill the process.
+    pw-dump may stream continuously (monitoring mode). We read with a
+    short timeout — once the initial dump is sent we parse whatever we got.
     """
     proc = await asyncio.create_subprocess_exec(
         "pw-dump",
@@ -75,41 +75,40 @@ async def pw_dump() -> list[dict[str, Any]]:
     assert proc.stderr is not None
 
     chunks: list[bytes] = []
-    depth = 0
-    found_start = False
 
     try:
+        # Read chunks until timeout (pw-dump sends the full dump quickly, then idles)
         while True:
-            chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=TIMEOUT_SECONDS)
+            chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=2.0)
             if not chunk:
                 break
             chunks.append(chunk)
-            text = chunk.decode()
-            for char in text:
-                if char == "[":
-                    depth += 1
-                    found_start = True
-                elif char == "]":
-                    depth -= 1
-                if found_start and depth == 0:
-                    # Complete JSON array received
-                    proc.kill()
-                    await proc.wait()
-                    full = b"".join(chunks).decode()
-                    return json.loads(full)  # type: ignore[no-any-return]
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        stderr = (await proc.stderr.read()).decode().strip() if proc.stderr else ""
-        raise PipeWireCliError("pw-dump", -1, f"timeout: {stderr}") from None
+        pass  # Expected: pw-dump keeps streaming, we stop after 2s of no new data
 
     proc.kill()
     await proc.wait()
-    stderr = (await proc.stderr.read()).decode().strip() if proc.stderr else ""
+
     if not chunks:
+        stderr = (await proc.stderr.read()).decode().strip()
         raise PipeWireCliError("pw-dump", proc.returncode or -1, stderr or "no output")
+
     full = b"".join(chunks).decode()
-    return json.loads(full)  # type: ignore[no-any-return]
+
+    # pw-dump output may be a complete JSON array, or may have trailing
+    # partial data from monitoring. Try to parse as-is, then try truncating
+    # at the last top-level `]`.
+    try:
+        return json.loads(full)  # type: ignore[no-any-return]
+    except json.JSONDecodeError:
+        # Find the last `]\n` which closes the top-level array
+        last_bracket = full.rfind("\n]\n")
+        if last_bracket == -1:
+            last_bracket = full.rfind("\n]")
+        if last_bracket >= 0:
+            truncated = full[: last_bracket + 2]
+            return json.loads(truncated)  # type: ignore[no-any-return]
+        raise PipeWireCliError("pw-dump", -1, "unparseable output") from None
 
 
 async def pw_link_create(output_port_id: int, input_port_id: int) -> str:

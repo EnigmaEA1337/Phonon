@@ -23,7 +23,10 @@ _active_bridges: dict[str, dict[str, object]] = {}
 
 
 async def cleanup_stale_bridges() -> None:
-    """Remove any null-sink modules left from a previous run."""
+    """Remove any null-sink modules and bridge processes left from a previous run."""
+    # Clear in-memory registry
+    _active_bridges.clear()
+    # Unload all bt_ null-sink modules
     raw = await _run("pactl list modules short")
     for line in raw.splitlines():
         if "module-null-sink" in line and "bt_" in line:
@@ -108,6 +111,14 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
                     await _run(f"pactl unload-module {module_id}")
                 del _active_bridges[key]
                 logger.warning("bluealsa.bridge_dead_recreating", mac=mac, btype=device_type)
+
+    # Clean up any existing pactl modules with same sink_name
+    existing_mods = await _run("pactl list modules short")
+    for line in existing_mods.splitlines():
+        if f"bt_{safe_name}" in line and "module-null-sink" in line:
+            old_mid = line.split()[0]
+            await _run(f"pactl unload-module {old_mid}")
+            logger.info("bluealsa.old_module_cleaned", name=safe_name, module=old_mid)
 
     if device_type == "playback":
         module_id = await _run(

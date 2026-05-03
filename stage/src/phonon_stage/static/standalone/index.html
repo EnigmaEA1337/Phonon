@@ -227,6 +227,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
           style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-m);font-size:10px"></select>
         <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
         <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
+        <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Audio</button>
         <span class="tb-info" id="bt-status">—</span>
       </div>
       <div id="bt-paired"></div>
@@ -662,6 +663,13 @@ async function btUnpair(addr) {
   if (!confirm('Remove pairing for ' + addr + '?')) return;
   document.getElementById('bt-status').textContent = 'Unpairing...';
   await api('/bluetooth/unpair', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+  await api('/bluealsa/sync', { method: 'POST' });
+  await refreshAll();
+}
+async function btSyncBridges() {
+  document.getElementById('bt-status').textContent = 'Syncing audio bridges...';
+  const result = await api('/bluealsa/sync', { method: 'POST' });
+  document.getElementById('bt-status').textContent = result ? `${result.active} bridge(s) active` : 'Sync failed';
   await refreshAll();
 }
 

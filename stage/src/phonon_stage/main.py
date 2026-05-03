@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from phonon_stage.api.bluealsa_bridge import router as bluealsa_router
 from phonon_stage.api.bluetooth import router as bluetooth_router
 from phonon_stage.api.browse import router as browse_router
 from phonon_stage.api.capabilities import router as capabilities_router
@@ -117,6 +118,7 @@ def create_app(
     app.include_router(bluetooth_router)
     app.include_router(browse_router)
     app.include_router(system_router)
+    app.include_router(bluealsa_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

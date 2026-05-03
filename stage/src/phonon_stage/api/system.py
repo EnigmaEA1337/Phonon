@@ -27,6 +27,7 @@ class ProcessStatus(BaseModel):
 class UsbBusInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bus: str
+    speed_mbps: int = 0
     device_count: int
     devices: list[str]
 
@@ -166,8 +167,30 @@ async def _get_usb_buses() -> list[UsbBusInfo]:
         bus = line[:7]  # "Bus 001"
         desc = line.split("ID ")[1] if "ID " in line else line
         buses.setdefault(bus, []).append(desc.strip())
+    # Get bus speed from lsusb -t
+    bus_speeds: dict[str, int] = {}
+    tree = await _run("lsusb -t 2>/dev/null")
+    for line in tree.splitlines():
+        if "Bus" in line and "root_hub" in line:
+            parts = line.split("Bus ")
+            if len(parts) >= 2:
+                bus_num = parts[1].split(".")[0].strip()
+                speed = 0
+                if "480M" in line:
+                    speed = 480
+                elif "5000M" in line:
+                    speed = 5000
+                elif "12M" in line:
+                    speed = 12
+                bus_speeds[f"Bus {bus_num.zfill(3)}"] = speed
+
     return [
-        UsbBusInfo(bus=bus, device_count=len(devs), devices=devs)
+        UsbBusInfo(
+            bus=bus,
+            speed_mbps=bus_speeds.get(bus, 0),
+            device_count=len(devs),
+            devices=devs,
+        )
         for bus, devs in sorted(buses.items())
     ]
 

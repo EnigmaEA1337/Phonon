@@ -85,13 +85,16 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .btn-del:hover { border-color: var(--red); color: var(--red); }
 .mapping-empty { color: var(--text-fade); font-size: 11px; text-align: center; padding: 16px; }
 
-/* ── VU Meter ───────────────────────────────────────── */
+/* ── Bar Graph (shared: VU, CPU, RAM, USB) ─────────── */
+.bar-graph { display: flex; align-items: stretch; gap: 1px; height: 10px; flex: 1;
+  background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; }
+.bar-graph.tall { height: 14px; }
+.bar-seg { flex: 1; background: #0a141c; border-radius: 0.5px; transition: background 50ms linear; }
+.bar-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
+/* Aliases for VU */
 .vu-meter { display: flex; align-items: stretch; gap: 1px; height: 10px; flex: 1;
   background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; }
-.vu-seg { flex: 1; background: #0a141c; border-radius: 0.5px; transition: background 50ms linear; }
-.vu-seg.on-green { background: #34d399; }
-.vu-seg.on-yellow { background: #fbbf24; }
-.vu-seg.on-red { background: #f87171; }
+.vu-seg { flex: 1; background: #0a141c; border-radius: 0.5px; }
 .vu-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
 
 /* ── Bluetooth ──────────────────────────────────────── */
@@ -727,55 +730,61 @@ function renderStages(stages) {
 }
 
 // ── VU Meter Animation ───────────────────────────────
-// Simulated metering: when a mapping is active (links exist, not muted),
-// animate the VU segments based on gain level + random jitter.
-// Real peak metering requires a native PipeWire client (v2).
-setInterval(() => {
-  const rows = document.querySelectorAll('.mapping-row[data-mapping-id]');
-  rows.forEach(row => {
-    const active = row.dataset.active === 'true';
-    const gainDb = parseFloat(row.dataset.gain || '-90');
-    const meters = row.querySelectorAll('.vu-meter');
-
-    meters.forEach(meter => {
-      const segs = meter.querySelectorAll('.vu-seg');
+function animateVU() {
+  try {
+    document.querySelectorAll('.vu-meter').forEach(meter => {
+      const row = meter.closest('[data-active]');
+      if (!row) return;
+      const active = row.getAttribute('data-active') === 'true';
+      const gainDb = parseFloat(row.getAttribute('data-gain') || '-90');
+      const segs = meter.children;
       const total = segs.length;
+      if (!total) return;
 
       if (!active) {
-        segs.forEach(s => { s.className = 'vu-seg'; });
+        for (let i = 0; i < total; i++) segs[i].style.background = '#0a141c';
         return;
       }
 
-      // Simulate level: base level from gain, with random fluctuation
       const gainLin = Math.pow(10, gainDb / 20);
-      const baseLevel = Math.min(gainLin * 0.7, 0.95);
-      const jitter = (Math.random() - 0.5) * 0.15;
-      const level = Math.max(0.05, Math.min(1.0, baseLevel + jitter));
+      const base = Math.min(gainLin * 0.7, 0.95);
+      const level = Math.max(0.05, Math.min(1.0, base + (Math.random() - 0.5) * 0.15));
       const lit = Math.floor(level * total);
 
-      segs.forEach((s, i) => {
+      for (let i = 0; i < total; i++) {
         if (i < lit) {
-          if (i >= total * 0.9) s.className = 'vu-seg on-red';
-          else if (i >= total * 0.7) s.className = 'vu-seg on-yellow';
-          else s.className = 'vu-seg on-green';
+          if (i >= total * 0.9) segs[i].style.background = '#f87171';
+          else if (i >= total * 0.7) segs[i].style.background = '#fbbf24';
+          else segs[i].style.background = '#34d399';
         } else {
-          s.className = 'vu-seg';
+          segs[i].style.background = '#0a141c';
         }
-      });
+      }
     });
-  });
-}, 80);
+  } catch(e) { /* ignore */ }
+}
+setInterval(animateVU, 80);
 
 // ── Init ─────────────────────────────────────────────
 refreshAll();
 setInterval(refreshAll, 3000);
 
 // ── System Status ────────────────────────────────────
-function gaugeBar(pct, color) {
-  const c = pct > 80 ? 'var(--red)' : pct > 60 ? 'var(--yellow)' : (color || 'var(--cyan)');
-  return `<div style="flex:1;height:8px;background:var(--bg-0);border-radius:3px;overflow:hidden">
-    <div style="width:${Math.min(pct,100)}%;height:100%;background:${c};border-radius:3px;transition:width 0.3s"></div>
-  </div>`;
+function segBar(pct, segs, color) {
+  // Audio-style segmented bar graph
+  const total = segs || 16;
+  const lit = Math.floor(pct / 100 * total);
+  let html = '<div class="bar-graph">';
+  for (let i = 0; i < total; i++) {
+    let bg = '#0a141c';
+    if (i < lit) {
+      if (i >= total * 0.9) bg = '#f87171';
+      else if (i >= total * 0.7) bg = '#fbbf24';
+      else bg = color || '#06b6d4';
+    }
+    html += `<div class="bar-seg" style="background:${bg}"></div>`;
+  }
+  return html + '</div>';
 }
 
 async function refreshSystemStatus() {
@@ -795,7 +804,7 @@ async function refreshSystemStatus() {
     <div style="display:flex;justify-content:space-between;font-size:9px">
       <span>CPU</span><span style="font-family:var(--font-m)">${sys.cpu_percent}%</span>
     </div>
-    ${gaugeBar(sys.cpu_percent)}
+    ${segBar(sys.cpu_percent, 16, '#06b6d4')}
     <span class="proc-ver">load: ${sys.cpu_load_1m.toFixed(1)} / ${sys.cpu_load_5m.toFixed(1)} / ${sys.cpu_load_15m.toFixed(1)}</span>
   </div>`;
 
@@ -804,7 +813,7 @@ async function refreshSystemStatus() {
     <div style="display:flex;justify-content:space-between;font-size:9px">
       <span>Memory</span><span style="font-family:var(--font-m)">${sys.memory_percent}%</span>
     </div>
-    ${gaugeBar(sys.memory_percent)}
+    ${segBar(sys.memory_percent, 16, '#34d399')}
     <span class="proc-ver">${sys.memory_used_mb}/${sys.memory_total_mb} MB</span>
   </div>`;
 
@@ -812,11 +821,12 @@ async function refreshSystemStatus() {
   if (sys.usb_buses?.length) {
     html += sys.usb_buses.map(b => {
       const load = Math.min(b.device_count / 8 * 100, 100);
+      const spd = b.speed_mbps ? `${b.speed_mbps}M` : '';
       return `<div class="proc-pill" style="min-width:140px;flex-direction:column;align-items:stretch;gap:3px">
         <div style="display:flex;justify-content:space-between;font-size:9px">
-          <span>${b.bus}</span><span style="font-family:var(--font-m)">${b.device_count} dev</span>
+          <span>${b.bus} ${spd}</span><span style="font-family:var(--font-m)">${b.device_count} dev</span>
         </div>
-        ${gaugeBar(load, 'var(--purple)')}
+        ${segBar(load, 12, '#a855f7')}
         <span class="proc-ver">${b.devices.slice(0,3).map(d => d.split(' ').slice(0,3).join(' ')).join(', ')}</span>
       </div>`;
     }).join('');

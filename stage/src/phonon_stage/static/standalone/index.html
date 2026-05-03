@@ -86,16 +86,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .mapping-empty { color: var(--text-fade); font-size: 11px; text-align: center; padding: 16px; }
 
 /* ── Bar Graph (shared: VU, CPU, RAM, USB) ─────────── */
-.bar-graph { display: flex; align-items: stretch; gap: 1px; height: 10px; flex: 1;
-  background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; }
-.bar-graph.tall { height: 14px; }
-.bar-seg { flex: 1; background: #0a141c; border-radius: 0.5px; transition: background 50ms linear; }
-.bar-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
-/* Aliases for VU */
-.vu-meter { display: flex; align-items: stretch; gap: 1px; height: 10px; flex: 1;
-  background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; }
-.vu-seg { flex: 1; background: #0a141c; border-radius: 0.5px; }
-.vu-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
+.bar-graph, .vu-meter { display: flex; align-items: stretch; gap: 1px; height: 10px; width: 100%;
+  background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; box-sizing: border-box; }
+.bar-seg, .vu-seg { flex: 1; background: #0a141c; border-radius: 0.5px; min-width: 2px; }
+.bar-label, .vu-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
 
 /* ── Bluetooth ──────────────────────────────────────── */
 .bt-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
@@ -182,24 +176,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   <div class="section">
     <div class="section-head">System</div>
     <div class="section-body">
-      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap">
-        <!-- Static test bar (should show 5 green + 2 yellow + 1 red segments) -->
-        <div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
-          <span style="font-size:9px">Test Bar</span>
-          <div class="bar-graph">
-            <div class="bar-seg" style="background:#34d399"></div>
-            <div class="bar-seg" style="background:#34d399"></div>
-            <div class="bar-seg" style="background:#34d399"></div>
-            <div class="bar-seg" style="background:#34d399"></div>
-            <div class="bar-seg" style="background:#34d399"></div>
-            <div class="bar-seg" style="background:#fbbf24"></div>
-            <div class="bar-seg" style="background:#fbbf24"></div>
-            <div class="bar-seg" style="background:#f87171"></div>
-            <div class="bar-seg" style="background:#0a141c"></div>
-            <div class="bar-seg" style="background:#0a141c"></div>
-          </div>
-        </div>
-      </div>
+      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
     </div>
   </div>
 

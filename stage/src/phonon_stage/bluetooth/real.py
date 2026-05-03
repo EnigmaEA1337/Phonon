@@ -39,6 +39,61 @@ class RealBluetoothBackend:
         obj_manager = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
         return await obj_manager.call_get_managed_objects()  # type: ignore[attr-defined]
 
+    async def _get_usb_hw_names(self) -> dict[str, str]:
+        """Map BT adapter addresses to USB hardware product names via lsusb + hciconfig."""
+        hw_map: dict[str, str] = {}
+        try:
+            # Get USB BT devices from lsusb
+            proc = await asyncio.create_subprocess_exec(
+                "lsusb", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            usb_devices: dict[str, str] = {}
+            for line in stdout.decode().splitlines():
+                # "Bus 001 Device 015: ID 0b05:17cb ASUSTek Computer, Inc. Broadcom BCM20702A0"
+                parts = line.split("ID ")
+                if len(parts) < 2:
+                    continue
+                rest = parts[1]
+                vid_pid = rest[:9]  # "0b05:17cb"
+                desc = rest[10:].strip()
+                if any(kw in desc.lower() for kw in ("bluetooth", "csr", "radio")):
+                    usb_devices[vid_pid] = desc
+
+            # Match hci adapters to USB vendor:product via sysfs
+            from pathlib import Path
+
+            for hci_dir in sorted(Path("/sys/class/bluetooth").glob("hci*")):
+                hci_name = hci_dir.name
+                # Get MAC address
+                proc2 = await asyncio.create_subprocess_exec(
+                    "hciconfig", hci_name,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=2.0)
+                addr = ""
+                for hline in out2.decode().splitlines():
+                    if "BD Address" in hline:
+                        addr = hline.split("BD Address:")[1].strip().split()[0]
+                        break
+                if not addr:
+                    continue
+                # Get USB vendor:product from sysfs
+                uevent = hci_dir / "device" / "uevent"
+                if uevent.exists():
+                    for uline in uevent.read_text().splitlines():
+                        if uline.startswith("PRODUCT="):
+                            # PRODUCT=a12/1/134 → vid=0a12, pid=0001
+                            pparts = uline.split("=")[1].split("/")
+                            if len(pparts) >= 2:
+                                vid = pparts[0].zfill(4)
+                                pid = pparts[1].zfill(4)
+                                key = f"{vid}:{pid}"
+                                hw_map[addr] = usb_devices.get(key, f"USB {key}")
+        except Exception:
+            logger.debug("bluetooth.hw_names_failed", exc_info=True)
+        return hw_map
+
     async def list_controllers(self) -> list[BluetoothController]:
         try:
             bus = await self._get_bus()
@@ -47,19 +102,22 @@ class RealBluetoothBackend:
             return []
 
         try:
+            hw_names = await self._get_usb_hw_names()
             objects = await self._get_managed_objects(bus)
             controllers: list[BluetoothController] = []
             for _path, interfaces in objects.items():
                 if _ADAPTER_INTERFACE not in interfaces:
                     continue
                 props = interfaces[_ADAPTER_INTERFACE]
+                addr = _prop(props, "Address")
                 controllers.append(
                     BluetoothController(
-                        address=_prop(props, "Address"),
+                        address=addr,
                         name=_prop(props, "Name"),
                         alias=_prop(props, "Alias"),
                         powered=_prop(props, "Powered", False),
                         discovering=_prop(props, "Discovering", False),
+                        hw_name=hw_names.get(addr, ""),
                     )
                 )
             return controllers

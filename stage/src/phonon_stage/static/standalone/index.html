@@ -539,7 +539,8 @@ function renderBtControllerSelect(controllers) {
   sel.innerHTML = controllers.map(c => {
     const selected = c.address === current ? ' selected' : '';
     const pw = c.powered ? ' ON' : ' OFF';
-    return `<option value="${c.address}"${selected}>${c.alias || c.name} (${c.address})${pw}</option>`;
+    const hw = c.hw_name ? ` [${c.hw_name}]` : '';
+    return `<option value="${c.address}"${selected}>${c.alias || c.name}${hw} (${c.address})${pw}</option>`;
   }).join('');
   if (!controllers.length) sel.innerHTML = '<option>No controllers</option>';
 
@@ -623,7 +624,7 @@ function renderBtPairedDevices(devices) {
           ${d.alias || d.name}
           <span class="bt-status" style="color:${statusColor}">${status}</span>
         </div>
-        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${(() => { const c = state.btControllers.find(cc => cc.address === d._controller); return c ? c.alias || c.name : d._controller || '?'; })()} (${d._controller || '?'}) → ${d.address}</span>
+        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${(() => { const c = state.btControllers.find(cc => cc.address === d._controller); const hw = c?.hw_name ? ` [${c.hw_name}]` : ''; return (c ? c.alias || c.name : '?') + hw; })()} (${d._controller || '?'}) → ${d.address}</span>
         ${actions}
         ${unpairBtn}
         ${infoLine}

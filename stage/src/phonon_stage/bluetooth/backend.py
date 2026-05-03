@@ -15,6 +15,7 @@ class BluetoothController:
     alias: str
     powered: bool
     discovering: bool
+    hw_name: str = ""  # USB product name (e.g. "ASUS BCM20702A0", "CSR Dongle")
 
 
 @dataclass(frozen=True)

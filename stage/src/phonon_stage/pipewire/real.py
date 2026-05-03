@@ -114,9 +114,21 @@ class RealPipeWireBackend:
         logger.info("pipewire.link_destroyed", link_id=link_id)
 
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
-        await cli.wpctl_set_volume(node_id, volume_linear)
-        logger.info("pipewire.volume_set", node_id=node_id, volume=volume_linear)
+        try:
+            await cli.wpctl_set_volume(node_id, volume_linear)
+            logger.info("pipewire.volume_set", node_id=node_id, volume=volume_linear)
+        except Exception:
+            # wpctl may fail on null-sinks, try pactl as fallback
+            try:
+                vol_pct = int(volume_linear * 100)
+                await cli.run_command("pactl", "set-sink-volume", str(node_id), f"{vol_pct}%")
+                logger.info("pipewire.volume_set_pactl", node_id=node_id, volume=vol_pct)
+            except Exception:
+                logger.warning("pipewire.volume_set_failed", node_id=node_id, exc_info=True)
 
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
-        await cli.pw_cli_set_latency_offset(node_id, offset_ns)
-        logger.info("pipewire.latency_offset_set", node_id=node_id, offset_ns=offset_ns)
+        try:
+            await cli.pw_cli_set_latency_offset(node_id, offset_ns)
+            logger.info("pipewire.latency_offset_set", node_id=node_id, offset_ns=offset_ns)
+        except Exception:
+            logger.warning("pipewire.latency_offset_failed", node_id=node_id, exc_info=True)

@@ -147,12 +147,74 @@ class RealBluetoothBackend:
         msg = f"Device {device_address} not found"
         raise ValueError(msg)
 
+    async def _find_hci_and_rfkill(self, controller_address: str) -> tuple[str, str]:
+        """Find hci name and rfkill index for a controller by MAC address."""
+        from pathlib import Path
+
+        for hci_dir in sorted(Path("/sys/class/bluetooth").glob("hci*")):
+            hci_name = hci_dir.name
+            proc = await asyncio.create_subprocess_exec(
+                "hciconfig", hci_name,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            if controller_address in out.decode():
+                # Find rfkill index
+                rfkill_path = hci_dir / "rfkill"
+                if rfkill_path.exists():
+                    name_file = rfkill_path / "name"
+                    if name_file.exists():
+                        rfk_name = name_file.read_text().strip()
+                        # Get index from /sys/class/rfkill
+                        for rf in Path("/sys/class/rfkill").glob("rfkill*"):
+                            if (rf / "name").read_text().strip() == rfk_name:
+                                return hci_name, rf.name.replace("rfkill", "")
+                # Fallback: parse rfkill list
+                proc2 = await asyncio.create_subprocess_exec(
+                    "rfkill", "list",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=2.0)
+                for line in out2.decode().splitlines():
+                    if hci_name in line and ":" in line:
+                        return hci_name, line.split(":")[0].strip()
+                return hci_name, ""
+        return "", ""
+
     async def set_power(self, controller_address: str, powered: bool) -> None:
-        # Select the right controller then power on/off
-        await self._bluetoothctl("select", controller_address)
-        state = "on" if powered else "off"
-        await self._bluetoothctl("power", state)
+        if powered:
+            # Power on: rfkill unblock + hciconfig up + bluetoothctl power on
+            hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
+            if rfk_idx:
+                await self._run_root("rfkill", "unblock", rfk_idx)
+            if hci:
+                await self._run_root("hciconfig", hci, "up")
+            await self._bluetoothctl("select", controller_address)
+            await self._bluetoothctl("power", "on")
+        else:
+            # Power off: bluetoothctl power off, then rfkill block as fallback
+            await self._bluetoothctl("select", controller_address)
+            await self._bluetoothctl("power", "off")
+            hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
+            if rfk_idx:
+                await self._run_root("rfkill", "block", rfk_idx)
         logger.info("bluetooth.power_set", controller=controller_address, powered=powered)
+
+    async def _run_root(self, *args: str) -> str:
+        """Run a command that may need root (via sudo if available)."""
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode != 0:
+            # Try with sudo
+            proc2 = await asyncio.create_subprocess_exec(
+                "sudo", "-n", *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await asyncio.wait_for(proc2.communicate(), timeout=5.0)
+        return out.decode().strip()
 
     async def start_scan(
         self, controller_address: str, timeout: float = 10.0

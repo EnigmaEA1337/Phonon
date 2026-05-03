@@ -88,7 +88,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* ── VU Meter ───────────────────────────────────────── */
 .vu-meter { display: flex; gap: 1px; height: 12px; flex: 1; background: var(--bg-0);
   border: 1px solid #050a10; border-radius: 1px; padding: 1px; overflow: hidden; }
-.vu-seg { flex: 1; background: var(--bg-0); border-radius: 0.5px; transition: background 60ms linear; }
+.vu-seg { flex: 1; min-height: 100%; background: var(--bg-0); border-radius: 0.5px; transition: background 60ms linear; }
 .vu-seg.on-green { background: #34d399; box-shadow: inset 0 0 1px rgba(255,255,255,0.1); }
 .vu-seg.on-yellow { background: #fbbf24; }
 .vu-seg.on-red { background: #f87171; }
@@ -726,7 +726,8 @@ function renderStages(stages) {
 // animate the VU segments based on gain level + random jitter.
 // Real peak metering requires a native PipeWire client (v2).
 setInterval(() => {
-  document.querySelectorAll('.mapping-row[data-mapping-id]').forEach(row => {
+  const rows = document.querySelectorAll('.mapping-row[data-mapping-id]');
+  rows.forEach(row => {
     const active = row.dataset.active === 'true';
     const gainDb = parseFloat(row.dataset.gain || '-90');
     const meters = row.querySelectorAll('.vu-meter');

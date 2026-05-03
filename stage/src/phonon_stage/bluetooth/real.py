@@ -259,7 +259,9 @@ class RealBluetoothBackend:
             with contextlib.suppress(Exception):
                 await adapter.call_stop_discovery()  # type: ignore[attr-defined]
 
-            return await self._list_devices(bus)
+            # Only return devices seen by THIS adapter
+            adapter_path = await self._find_adapter_path(bus, controller_address)
+            return await self._list_devices(bus, adapter_path)
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
@@ -355,16 +357,22 @@ class RealBluetoothBackend:
     async def list_paired_devices(self, controller_address: str) -> list[BluetoothDevice]:
         bus = await self._get_bus()
         try:
-            devices = await self._list_devices(bus)
+            adapter_path = await self._find_adapter_path(bus, controller_address)
+            devices = await self._list_devices(bus, adapter_path)
             return [d for d in devices if d.paired]
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
-    async def _list_devices(self, bus: object) -> list[BluetoothDevice]:
+    async def _list_devices(
+        self, bus: object, adapter_path: str | None = None
+    ) -> list[BluetoothDevice]:
         objects = await self._get_managed_objects(bus)
         devices: list[BluetoothDevice] = []
         for _path, interfaces in objects.items():
             if _DEVICE_INTERFACE not in interfaces:
+                continue
+            # Filter by adapter: device path starts with adapter path
+            if adapter_path and not str(_path).startswith(adapter_path):
                 continue
             props = interfaces[_DEVICE_INTERFACE]
             devices.append(

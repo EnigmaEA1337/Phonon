@@ -90,87 +90,59 @@ class RealBluetoothBackend:
         raise ValueError(msg)
 
     async def set_power(self, controller_address: str, powered: bool) -> None:
-        bus = await self._get_bus()
-        try:
-            path = await self._find_adapter_path(bus, controller_address)
-            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
-            props_iface = proxy.get_interface("org.freedesktop.DBus.Properties")
-            from dbus_fast import Variant
-
-            await props_iface.call_set(_ADAPTER_INTERFACE, "Powered", Variant("b", powered))
-            logger.info("bluetooth.power_set", controller=controller_address, powered=powered)
-        finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+        # Select the right controller then power on/off
+        await self._bluetoothctl("select", controller_address)
+        state = "on" if powered else "off"
+        await self._bluetoothctl("power", state)
+        logger.info("bluetooth.power_set", controller=controller_address, powered=powered)
 
     async def start_scan(
         self, controller_address: str, timeout: float = 10.0
     ) -> list[BluetoothDevice]:
         bus = await self._get_bus()
         try:
-            path = await self._find_adapter_path(bus, controller_address)
-            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
-            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
-
-            await adapter.call_start_discovery()  # type: ignore[attr-defined]
+            # Select controller and start scan via bluetoothctl
+            await self._bluetoothctl("select", controller_address)
+            await self._bluetoothctl("scan", "on")
             await asyncio.sleep(timeout)
             with contextlib.suppress(Exception):
-                await adapter.call_stop_discovery()  # type: ignore[attr-defined]
+                await self._bluetoothctl("scan", "off")
 
             return await self._list_devices(bus)
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
     async def pair(self, device_address: str) -> None:
-        bus = await self._get_bus()
-        try:
-            path = await self._find_device_path(bus, device_address)
-            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
-            device = proxy.get_interface(_DEVICE_INTERFACE)
-            await device.call_pair()  # type: ignore[attr-defined]
-            logger.info("bluetooth.paired", device=device_address)
-        finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+        await self._bluetoothctl("trust", device_address)
+        await self._bluetoothctl("pair", device_address)
+        logger.info("bluetooth.paired", device=device_address)
+
+    async def _bluetoothctl(self, *args: str) -> str:
+        """Run bluetoothctl command via subprocess (more reliable than D-Bus for A2DP)."""
+        cmd = ["bluetoothctl", *args]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        output = stdout.decode().strip()
+        if proc.returncode != 0:
+            err = stderr.decode().strip()
+            logger.warning("bluetooth.cmd_failed", cmd=args, stderr=err)
+        return output
 
     async def unpair(self, device_address: str) -> None:
-        bus = await self._get_bus()
-        try:
-            device_path = await self._find_device_path(bus, device_address)
-            # Find the adapter path (parent of device)
-            adapter_path = "/".join(device_path.split("/")[:-1])
-            introspection = await bus.introspect("org.bluez", adapter_path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", adapter_path, introspection)  # type: ignore[attr-defined]
-            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
-            await adapter.call_remove_device(device_path)  # type: ignore[attr-defined]
-            logger.info("bluetooth.unpaired", device=device_address)
-        finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+        await self._bluetoothctl("remove", device_address)
+        logger.info("bluetooth.unpaired", device=device_address)
 
     async def connect(self, device_address: str) -> None:
-        bus = await self._get_bus()
-        try:
-            path = await self._find_device_path(bus, device_address)
-            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
-            device = proxy.get_interface(_DEVICE_INTERFACE)
-            await device.call_connect()  # type: ignore[attr-defined]
-            logger.info("bluetooth.connected", device=device_address)
-        finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+        result = await self._bluetoothctl("connect", device_address)
+        logger.info("bluetooth.connected", device=device_address, result=result)
 
     async def disconnect(self, device_address: str) -> None:
-        bus = await self._get_bus()
-        try:
-            path = await self._find_device_path(bus, device_address)
-            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
-            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
-            device = proxy.get_interface(_DEVICE_INTERFACE)
-            await device.call_disconnect()  # type: ignore[attr-defined]
-            logger.info("bluetooth.disconnected", device=device_address)
-        finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+        result = await self._bluetoothctl("disconnect", device_address)
+        logger.info("bluetooth.disconnected", device=device_address, result=result)
 
     async def list_paired_devices(self, controller_address: str) -> list[BluetoothDevice]:
         bus = await self._get_bus()

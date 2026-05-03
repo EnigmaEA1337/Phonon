@@ -29,6 +29,9 @@ class FakeBluetoothBackend:
         self._powered[controller_address] = powered
         self.call_log.append(f"power:{controller_address}:{powered}")
 
+    async def set_role(self, controller_address: str, role: str) -> None:
+        self.call_log.append(f"role:{controller_address}:{role}")
+
     async def start_scan(
         self, controller_address: str, timeout: float = 10.0
     ) -> list[BluetoothDevice]:

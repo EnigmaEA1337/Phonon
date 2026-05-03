@@ -28,6 +28,22 @@ class BluetoothDeviceResponse(BaseModel):
     icon: str
 
 
+class RoleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: str  # "receiver" or "transmitter"
+
+
+@router.post("/{controller_address}/role", status_code=200)
+async def set_role(
+    request: Request, controller_address: str, body: RoleRequest
+) -> dict[str, object]:
+    try:
+        await request.app.state.bt_backend.set_role(controller_address, body.role)
+        return {"controller": controller_address, "role": body.role}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/{controller_address}/power", status_code=200)
 async def set_power(
     request: Request, controller_address: str, body: PowerRequest

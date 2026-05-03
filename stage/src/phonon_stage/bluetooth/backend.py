@@ -15,6 +15,8 @@ class BluetoothController:
     alias: str
     powered: bool
     discovering: bool
+    discoverable: bool = False
+    pairable: bool = False
     hw_name: str = ""  # USB product name (e.g. "ASUS BCM20702A0", "CSR Dongle")
 
 
@@ -36,6 +38,8 @@ class BluetoothBackend(Protocol):
     async def list_controllers(self) -> list[BluetoothController]: ...
 
     async def set_power(self, controller_address: str, powered: bool) -> None: ...
+
+    async def set_role(self, controller_address: str, role: str) -> None: ...
 
     async def start_scan(
         self, controller_address: str, timeout: float = 10.0

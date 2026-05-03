@@ -119,6 +119,8 @@ class RealBluetoothBackend:
                         alias=_prop(props, "Alias"),
                         powered=_prop(props, "Powered", False),
                         discovering=_prop(props, "Discovering", False),
+                        discoverable=_prop(props, "Discoverable", False),
+                        pairable=_prop(props, "Pairable", False),
                         hw_name=hw_names.get(addr, ""),
                     )
                 )
@@ -200,6 +202,26 @@ class RealBluetoothBackend:
             if rfk_idx:
                 await self._run_root("rfkill", "block", rfk_idx)
         logger.info("bluetooth.power_set", controller=controller_address, powered=powered, hci=hci)
+
+    async def set_role(self, controller_address: str, role: str) -> None:
+        """Set adapter role: 'receiver' (discoverable+pairable) or 'transmitter'."""
+        bus = await self._get_bus()
+        try:
+            from dbus_fast import Variant
+
+            path = await self._find_adapter_path(bus, controller_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            props = proxy.get_interface("org.freedesktop.DBus.Properties")
+
+            is_receiver = role == "receiver"
+            await props.call_set(_ADAPTER_INTERFACE, "Discoverable", Variant("b", is_receiver))
+            await props.call_set(_ADAPTER_INTERFACE, "Pairable", Variant("b", is_receiver))
+            if is_receiver:
+                await props.call_set(_ADAPTER_INTERFACE, "DiscoverableTimeout", Variant("u", 0))
+            logger.info("bluetooth.role_set", controller=controller_address, role=role)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
 
     async def _run_root(self, *args: str) -> str:
         """Run a command that may need root (via sudo if available)."""

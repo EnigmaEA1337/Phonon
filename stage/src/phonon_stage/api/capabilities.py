@@ -31,6 +31,8 @@ class BluetoothControllerResponse(BaseModel):
     alias: str
     powered: bool
     discovering: bool
+    discoverable: bool = False
+    pairable: bool = False
     hw_name: str = ""
 
 
@@ -72,6 +74,8 @@ async def capabilities(request: Request) -> CapabilitiesResponse:
                 alias=c.alias,
                 powered=c.powered,
                 discovering=c.discovering,
+                discoverable=c.discoverable,
+                pairable=c.pairable,
                 hw_name=c.hw_name,
             )
             for c in bt_controllers

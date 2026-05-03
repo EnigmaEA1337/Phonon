@@ -182,7 +182,24 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   <div class="section">
     <div class="section-head">System</div>
     <div class="section-body">
-      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap">
+        <!-- Static test bar (should show 5 green + 2 yellow + 1 red segments) -->
+        <div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
+          <span style="font-size:9px">Test Bar</span>
+          <div class="bar-graph">
+            <div class="bar-seg" style="background:#34d399"></div>
+            <div class="bar-seg" style="background:#34d399"></div>
+            <div class="bar-seg" style="background:#34d399"></div>
+            <div class="bar-seg" style="background:#34d399"></div>
+            <div class="bar-seg" style="background:#34d399"></div>
+            <div class="bar-seg" style="background:#fbbf24"></div>
+            <div class="bar-seg" style="background:#fbbf24"></div>
+            <div class="bar-seg" style="background:#f87171"></div>
+            <div class="bar-seg" style="background:#0a141c"></div>
+            <div class="bar-seg" style="background:#0a141c"></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

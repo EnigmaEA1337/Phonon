@@ -94,7 +94,20 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
     key = f"{mac}_{device_type}"
 
     if key in _active_bridges:
-        return {"status": "already_exists", "mac": mac, "name": safe_name}
+        # Check if bridge process is still alive
+        existing = _active_bridges[key]
+        pid = existing.get("bridge_pid")
+        if pid is not None:
+            try:
+                os.kill(int(str(pid)), 0)  # Signal 0 = check if alive
+                return {"status": "already_exists", "mac": mac, "name": safe_name}
+            except (ProcessLookupError, OSError):
+                # Process dead, clean up and recreate
+                module_id = existing.get("module_id")
+                if module_id is not None:
+                    await _run(f"pactl unload-module {module_id}")
+                del _active_bridges[key]
+                logger.warning("bluealsa.bridge_dead_recreating", mac=mac, btype=device_type)
 
     if device_type == "playback":
         module_id = await _run(

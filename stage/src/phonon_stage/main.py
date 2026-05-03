@@ -95,6 +95,14 @@ def create_app(
         except Exception:
             logger.warning("stage.mapping_restore_failed", exc_info=True)
 
+        # Clean up stale bluealsa bridges from previous run
+        try:
+            from phonon_stage.api.bluealsa_bridge import cleanup_stale_bridges
+
+            await cleanup_stale_bridges()
+        except Exception:
+            logger.warning("stage.bluealsa_cleanup_failed", exc_info=True)
+
         logger.info(
             "stage.started",
             stage_id=cfg.stage_id,

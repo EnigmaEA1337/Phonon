@@ -22,6 +22,21 @@ logger = structlog.get_logger()
 _active_bridges: dict[str, dict[str, object]] = {}
 
 
+async def cleanup_stale_bridges() -> None:
+    """Remove any null-sink modules left from a previous run."""
+    raw = await _run("pactl list modules short")
+    for line in raw.splitlines():
+        if "module-null-sink" in line and "bt_" in line:
+            mid = line.split()[0]
+            await _run(f"pactl unload-module {mid}")
+            logger.info("bluealsa.stale_bridge_cleaned", module=mid)
+    # Kill any orphan bridge processes
+    await _run(
+        "pkill -f 'parec.*bt_' 2>/dev/null; pkill -f 'aplay.*bluealsa' 2>/dev/null; "
+        "pkill -f 'arecord.*bluealsa' 2>/dev/null; pkill -f 'pacat.*bt_' 2>/dev/null"
+    )
+
+
 async def _run(cmd: str, timeout: float = 5.0) -> str:
     proc = await asyncio.create_subprocess_shell(
         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

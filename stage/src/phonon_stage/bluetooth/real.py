@@ -216,12 +216,16 @@ class RealBluetoothBackend:
     ) -> list[BluetoothDevice]:
         bus = await self._get_bus()
         try:
-            # Select controller and start scan via bluetoothctl
-            await self._bluetoothctl("select", controller_address)
-            await self._bluetoothctl("scan", "on")
+            # Use D-Bus for scan (bluetoothctl select doesn't persist between calls)
+            path = await self._find_adapter_path(bus, controller_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
+
+            await adapter.call_start_discovery()  # type: ignore[attr-defined]
             await asyncio.sleep(timeout)
             with contextlib.suppress(Exception):
-                await self._bluetoothctl("scan", "off")
+                await adapter.call_stop_discovery()  # type: ignore[attr-defined]
 
             return await self._list_devices(bus)
         finally:

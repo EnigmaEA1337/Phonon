@@ -19,14 +19,17 @@ class DiscoveredStageResponse(BaseModel):
 
 @router.get("/stages", response_model=list[DiscoveredStageResponse])
 async def browse_stages(request: Request, timeout: float = 3.0) -> list[DiscoveredStageResponse]:
-    stages = await request.app.state.discovery_backend.browse(timeout)
-    return [
-        DiscoveredStageResponse(
-            stage_id=s.stage_id,
-            host=s.host,
-            port=s.port,
-            version=s.version,
-            mode=s.mode,
-        )
-        for s in stages
-    ]
+    try:
+        stages = await request.app.state.discovery_backend.browse(timeout)
+        return [
+            DiscoveredStageResponse(
+                stage_id=s.stage_id,
+                host=s.host,
+                port=s.port,
+                version=s.version,
+                mode=s.mode,
+            )
+            for s in stages
+        ]
+    except Exception:
+        return []

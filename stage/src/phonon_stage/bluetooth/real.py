@@ -67,8 +67,10 @@ class RealBluetoothBackend:
                 hci_name = hci_dir.name
                 # Get MAC address
                 proc2 = await asyncio.create_subprocess_exec(
-                    "hciconfig", hci_name,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    "hciconfig",
+                    hci_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=2.0)
                 addr = ""
@@ -154,8 +156,10 @@ class RealBluetoothBackend:
         for hci_dir in sorted(Path("/sys/class/bluetooth").glob("hci*")):
             hci_name = hci_dir.name
             proc = await asyncio.create_subprocess_exec(
-                "hciconfig", hci_name,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                "hciconfig",
+                hci_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
             if controller_address in out.decode():
@@ -171,8 +175,10 @@ class RealBluetoothBackend:
                                 return hci_name, rf.name.replace("rfkill", "")
                 # Fallback: parse rfkill list
                 proc2 = await asyncio.create_subprocess_exec(
-                    "rfkill", "list",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    "rfkill",
+                    "list",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=2.0)
                 for line in out2.decode().splitlines():
@@ -199,14 +205,18 @@ class RealBluetoothBackend:
         """Run a command that may need root (via sudo if available)."""
         proc = await asyncio.create_subprocess_exec(
             *args,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         out, _err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode != 0:
             # Try with sudo
             proc2 = await asyncio.create_subprocess_exec(
-                "sudo", "-n", *args,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                "sudo",
+                "-n",
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             out, _ = await asyncio.wait_for(proc2.communicate(), timeout=5.0)
         return out.decode().strip()
@@ -232,9 +242,22 @@ class RealBluetoothBackend:
             bus.disconnect()  # type: ignore[attr-defined]
 
     async def pair(self, device_address: str) -> None:
-        await self._bluetoothctl("trust", device_address)
-        await self._bluetoothctl("pair", device_address)
-        logger.info("bluetooth.paired", device=device_address)
+        bus = await self._get_bus()
+        try:
+            path = await self._find_device_path(bus, device_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            # Trust first
+            from dbus_fast import Variant
+
+            props = proxy.get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set(_DEVICE_INTERFACE, "Trusted", Variant("b", True))
+            # Pair
+            device = proxy.get_interface(_DEVICE_INTERFACE)
+            await device.call_pair()  # type: ignore[attr-defined]
+            logger.info("bluetooth.paired", device=device_address)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
 
     async def _bluetoothctl(self, *args: str) -> str:
         """Run bluetoothctl command via subprocess (more reliable than D-Bus for A2DP)."""
@@ -252,8 +275,17 @@ class RealBluetoothBackend:
         return output
 
     async def unpair(self, device_address: str) -> None:
-        await self._bluetoothctl("remove", device_address)
-        logger.info("bluetooth.unpaired", device=device_address)
+        bus = await self._get_bus()
+        try:
+            device_path = await self._find_device_path(bus, device_address)
+            adapter_path = "/".join(device_path.split("/")[:-1])
+            introspection = await bus.introspect("org.bluez", adapter_path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", adapter_path, introspection)  # type: ignore[attr-defined]
+            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
+            await adapter.call_remove_device(device_path)  # type: ignore[attr-defined]
+            logger.info("bluetooth.unpaired", device=device_address)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
 
     async def connect(self, device_address: str) -> None:
         result = await self._bluetoothctl("connect", device_address)

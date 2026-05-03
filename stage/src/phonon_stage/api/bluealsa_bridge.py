@@ -109,18 +109,24 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback")
 
     elif device_type == "capture":
+        # For capture (phone→Pi): create a pipe-source that exposes as Audio/Source
+        # arecord from bluealsa → write to FIFO → pw-cat reads FIFO as source
+        # Simpler: use module-null-sink but expose the MONITOR as the usable source
+        # The monitor ports have direction "output" → they appear as sources in Patch Bay
         module_id = await _run(
             f"pactl load-module module-null-sink "
-            f"sink_name=bt_{safe_name}_raw "
+            f"sink_name=bt_{safe_name}_in "
             f"sink_properties=device.description={safe_name}-BT-In "
             f"format=s16le rate=44100 channels=2"
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
 
+        # Bridge: bluealsa capture → pacat into the null sink
+        # The null sink's MONITOR becomes the source in PipeWire
         bridge_cmd = (
             f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 44100 -c 2 - '
-            f"| pacat --device=bt_{safe_name}_raw --format=s16le --rate=44100 --channels=2"
+            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2"
         )
         proc = await asyncio.create_subprocess_shell(
             bridge_cmd,

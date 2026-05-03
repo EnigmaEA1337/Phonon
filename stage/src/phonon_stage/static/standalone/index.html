@@ -377,8 +377,10 @@ function nodeInfoBadge(n) {
 }
 
 function renderPatchNodes(nodes, ports) {
-  const sources = nodes.filter(n => n.media_class.includes('Source') || n.media_class.includes('Duplex'));
-  const sinks = nodes.filter(n => n.media_class.includes('Sink') || n.media_class.includes('Duplex'));
+  // BT-In null sinks (phone capture) should appear as sources, not sinks
+  const isBtInput = (n) => n.nick?.includes('-BT-In') || n.name?.includes('_in');
+  const sources = nodes.filter(n => n.media_class.includes('Source') || n.media_class.includes('Duplex') || (n.media_class.includes('Sink') && isBtInput(n)));
+  const sinks = nodes.filter(n => (n.media_class.includes('Sink') || n.media_class.includes('Duplex')) && !isBtInput(n));
 
   const srcEl = document.getElementById('patch-sources');
   srcEl.innerHTML = sources.length ? sources.map(n =>

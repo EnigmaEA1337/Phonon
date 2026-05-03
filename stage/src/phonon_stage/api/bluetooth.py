@@ -97,6 +97,12 @@ async def connect_device(request: Request, body: DeviceRequest) -> dict[str, str
 @router.delete("/disconnect", status_code=200)
 async def disconnect_device(request: Request, body: DeviceRequest) -> dict[str, str]:
     try:
+        # Destroy any active bluealsa bridges for this device
+        from phonon_stage.api.bluealsa_bridge import destroy_bridge
+
+        for dtype in ("playback", "capture"):
+            await destroy_bridge(body.device_address, dtype)
+
         await request.app.state.bt_backend.disconnect(body.device_address)
         return {"status": "disconnected", "device": body.device_address}
     except Exception as exc:
@@ -106,6 +112,12 @@ async def disconnect_device(request: Request, body: DeviceRequest) -> dict[str, 
 @router.delete("/unpair", status_code=200)
 async def unpair_device(request: Request, body: DeviceRequest) -> dict[str, str]:
     try:
+        # Destroy any active bluealsa bridges for this device
+        from phonon_stage.api.bluealsa_bridge import destroy_bridge
+
+        for dtype in ("playback", "capture"):
+            await destroy_bridge(body.device_address, dtype)
+
         await request.app.state.bt_backend.unpair(body.device_address)
         return {"status": "unpaired", "device": body.device_address}
     except Exception as exc:

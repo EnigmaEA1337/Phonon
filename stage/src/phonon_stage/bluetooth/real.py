@@ -287,13 +287,38 @@ class RealBluetoothBackend:
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
+    async def _bluetoothctl_interactive(self, *commands: str, timeout: float = 15.0) -> str:
+        """Run multiple bluetoothctl commands in a single interactive session."""
+        script = "\n".join(commands) + "\n"
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(input=script.encode()), timeout=timeout
+            )
+            return stdout.decode()
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ""
+
     async def connect(self, device_address: str) -> None:
-        result = await self._bluetoothctl("connect", device_address)
-        logger.info("bluetooth.connected", device=device_address, result=result)
+        result = await self._bluetoothctl_interactive(
+            "agent on",
+            "default-agent",
+            f"connect {device_address}",
+        )
+        logger.info("bluetooth.connected", device=device_address, result=result[:200])
 
     async def disconnect(self, device_address: str) -> None:
-        result = await self._bluetoothctl("disconnect", device_address)
-        logger.info("bluetooth.disconnected", device=device_address, result=result)
+        result = await self._bluetoothctl_interactive(
+            f"disconnect {device_address}",
+        )
+        logger.info("bluetooth.disconnected", device=device_address, result=result[:200])
 
     async def list_paired_devices(self, controller_address: str) -> list[BluetoothDevice]:
         bus = await self._get_bus()

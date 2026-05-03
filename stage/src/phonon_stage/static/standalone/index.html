@@ -299,14 +299,19 @@ async function refreshAll() {
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
 
-  // Fetch paired BT devices from ALL controllers (after nodes so we can match BT info)
+  // Fetch paired BT devices from ALL controllers, deduplicate by address
   if (state.btControllers.length) {
     const allPaired = [];
+    const seenAddrs = new Set();
     for (const ctrl of state.btControllers) {
       const paired = await api(`/bluetooth/devices?controller_address=${ctrl.address}`);
       if (paired) {
-        for (const d of paired) { d._controller = ctrl.address; }
-        allPaired.push(...paired);
+        for (const d of paired) {
+          if (seenAddrs.has(d.address)) continue;
+          seenAddrs.add(d.address);
+          d._controller = ctrl.address;
+          allPaired.push(d);
+        }
       }
     }
     state.pairedDevices = allPaired;
@@ -329,11 +334,20 @@ function renderAudioDevices(devices, nodes) {
     </div>`;
   });
 
-  // BT devices from PipeWire (bluez5 nodes not already in ALSA)
-  const btCards = (nodes || []).filter(n => n.bt_codec && n.media_class).map(n => {
-    const isSink = n.media_class.includes('Sink');
-    const isSource = n.media_class.includes('Source');
-    const type = isSink && isSource ? 'both' : isSink ? 'sink' : 'source';
+  // BT devices from PipeWire (bluez5 nodes), deduplicate by bt_address
+  const seenBtAddr = new Set();
+  const btNodes = (nodes || []).filter(n => {
+    if (!n.bt_codec || !n.media_class) return false;
+    if (seenBtAddr.has(n.bt_address)) return false;
+    seenBtAddr.add(n.bt_address);
+    return true;
+  });
+  // Check if same address has both sink and source nodes
+  const btCards = btNodes.map(n => {
+    const allForAddr = (nodes || []).filter(nn => nn.bt_address === n.bt_address);
+    const hasSink = allForAddr.some(nn => nn.media_class.includes('Sink'));
+    const hasSource = allForAddr.some(nn => nn.media_class.includes('Source'));
+    const type = hasSink && hasSource ? 'both' : hasSink ? 'sink' : 'source';
     const tag = type === 'both' ? 'tag-both' : type === 'sink' ? 'tag-sink' : 'tag-source';
     const label = type === 'both' ? 'IN/OUT' : type === 'sink' ? 'OUTPUT' : 'INPUT';
     const codec = n.bt_codec.toUpperCase();

@@ -24,6 +24,13 @@ class ProcessStatus(BaseModel):
     details: str = ""
 
 
+class UsbBusInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bus: str
+    device_count: int
+    devices: list[str]
+
+
 class SystemStatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_version: str
@@ -35,8 +42,14 @@ class SystemStatusResponse(BaseModel):
     memory_total_mb: int
     memory_used_mb: int
     memory_available_mb: int
+    memory_percent: float = 0.0
     cpu_count: int
+    cpu_load_1m: float = 0.0
+    cpu_load_5m: float = 0.0
+    cpu_load_15m: float = 0.0
+    cpu_percent: float = 0.0
     processes: list[ProcessStatus]
+    usb_buses: list[UsbBusInfo] = []
 
 
 class SecurityStatusResponse(BaseModel):
@@ -129,9 +142,34 @@ async def system_status(request: Request) -> SystemStatusResponse:
         memory_total_mb=mem_total,
         memory_used_mb=mem_used,
         memory_available_mb=mem_avail,
+        memory_percent=round(mem_used / mem_total * 100, 1) if mem_total else 0,
         cpu_count=os.cpu_count() or 1,
+        cpu_load_1m=os.getloadavg()[0],
+        cpu_load_5m=os.getloadavg()[1],
+        cpu_load_15m=os.getloadavg()[2],
+        cpu_percent=round(os.getloadavg()[0] / (os.cpu_count() or 1) * 100, 1),
         processes=[pw, wp, bluez, avahi],
+        usb_buses=await _get_usb_buses(),
     )
+
+
+async def _get_usb_buses() -> list[UsbBusInfo]:
+    """Get USB bus info — device count and bandwidth usage."""
+    raw = await _run("lsusb 2>/dev/null")
+    buses: dict[str, list[str]] = {}
+    for line in raw.splitlines():
+        if not line.startswith("Bus"):
+            continue
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        bus = line[:7]  # "Bus 001"
+        desc = line.split("ID ")[1] if "ID " in line else line
+        buses.setdefault(bus, []).append(desc.strip())
+    return [
+        UsbBusInfo(bus=bus, device_count=len(devs), devices=devs)
+        for bus, devs in sorted(buses.items())
+    ]
 
 
 @router.get("/security", response_model=SecurityStatusResponse)

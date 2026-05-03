@@ -86,13 +86,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .mapping-empty { color: var(--text-fade); font-size: 11px; text-align: center; padding: 16px; }
 
 /* ── VU Meter ───────────────────────────────────────── */
-.vu-meter { display: flex; gap: 1px; height: 12px; flex: 1; background: var(--bg-0);
-  border: 1px solid #050a10; border-radius: 1px; padding: 1px; overflow: hidden; }
-.vu-seg { flex: 1; min-height: 100%; background: var(--bg-0); border-radius: 0.5px; transition: background 60ms linear; }
-.vu-seg.on-green { background: #34d399; box-shadow: inset 0 0 1px rgba(255,255,255,0.1); }
+.vu-meter { display: flex; align-items: stretch; gap: 1px; height: 10px; flex: 1;
+  background: #050a10; border: 1px solid #050a10; border-radius: 2px; padding: 1px; }
+.vu-seg { flex: 1; background: #0a141c; border-radius: 0.5px; transition: background 50ms linear; }
+.vu-seg.on-green { background: #34d399; }
 .vu-seg.on-yellow { background: #fbbf24; }
 .vu-seg.on-red { background: #f87171; }
-.vu-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 20px; text-align: right; }
+.vu-label { font-family: var(--font-m); font-size: 8px; color: var(--text-fade); width: 14px; text-align: right; }
 
 /* ── Bluetooth ──────────────────────────────────────── */
 .bt-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
@@ -228,6 +228,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
         <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
         <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
         <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Audio</button>
+        <span style="font-size:9px;color:var(--text-dim)">Buffer</span>
+        <input type="range" min="20" max="200" step="10" value="50" id="bt-buffer-slider"
+          style="width:60px;accent-color:var(--cyan)" oninput="document.getElementById('bt-buffer-val').textContent=this.value+'ms'">
+        <span class="gain-val" id="bt-buffer-val">50ms</span>
         <span class="tb-info" id="bt-status">—</span>
       </div>
       <div id="bt-controllers-cards" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
@@ -703,8 +707,9 @@ async function btUnpair(addr) {
   await refreshAll();
 }
 async function btSyncBridges() {
-  document.getElementById('bt-status').textContent = 'Syncing audio bridges...';
-  const result = await api('/bluealsa/sync', { method: 'POST' });
+  const buf = document.getElementById('bt-buffer-slider').value;
+  document.getElementById('bt-status').textContent = `Syncing (buffer=${buf}ms)...`;
+  const result = await api(`/bluealsa/sync?buffer_ms=${buf}`, { method: 'POST' });
   document.getElementById('bt-status').textContent = result ? `${result.active} bridge(s) active` : 'Sync failed';
   await refreshAll();
 }
@@ -766,32 +771,66 @@ refreshAll();
 setInterval(refreshAll, 3000);
 
 // ── System Status ────────────────────────────────────
+function gaugeBar(pct, color) {
+  const c = pct > 80 ? 'var(--red)' : pct > 60 ? 'var(--yellow)' : (color || 'var(--cyan)');
+  return `<div style="flex:1;height:8px;background:var(--bg-0);border-radius:3px;overflow:hidden">
+    <div style="width:${Math.min(pct,100)}%;height:100%;background:${c};border-radius:3px;transition:width 0.3s"></div>
+  </div>`;
+}
+
 async function refreshSystemStatus() {
   const sys = await api('/system/status');
   if (!sys) return;
   const el = document.getElementById('sys-processes');
-  el.innerHTML = sys.processes.map(p => {
+
+  // Process pills
+  let html = sys.processes.map(p => {
     const led = p.running ? 'on' : 'off';
     const ver = p.version ? `<span class="proc-ver">${p.version}</span>` : '';
-    const det = p.details ? `<span class="proc-ver">${p.details}</span>` : '';
-    return `<div class="proc-pill">
-      <span class="proc-led ${led}"></span>
-      <span class="proc-name">${p.name}</span>${ver}${det}
-    </div>`;
-  }).join('') +
-  `<div class="proc-pill">
-    <span class="proc-led on"></span>
-    <span class="proc-name">phonon-stage</span>
-    <span class="proc-ver">v${sys.agent_version}</span>
-    <span class="proc-ver">${sys.memory_used_mb}/${sys.memory_total_mb}MB</span>
+    return `<div class="proc-pill"><span class="proc-led ${led}"></span><span class="proc-name">${p.name}</span>${ver}</div>`;
+  }).join('');
+
+  // CPU gauge
+  html += `<div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
+    <div style="display:flex;justify-content:space-between;font-size:9px">
+      <span>CPU</span><span style="font-family:var(--font-m)">${sys.cpu_percent}%</span>
+    </div>
+    ${gaugeBar(sys.cpu_percent)}
+    <span class="proc-ver">load: ${sys.cpu_load_1m.toFixed(1)} / ${sys.cpu_load_5m.toFixed(1)} / ${sys.cpu_load_15m.toFixed(1)}</span>
   </div>`;
+
+  // Memory gauge
+  html += `<div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
+    <div style="display:flex;justify-content:space-between;font-size:9px">
+      <span>Memory</span><span style="font-family:var(--font-m)">${sys.memory_percent}%</span>
+    </div>
+    ${gaugeBar(sys.memory_percent)}
+    <span class="proc-ver">${sys.memory_used_mb}/${sys.memory_total_mb} MB</span>
+  </div>`;
+
+  // USB buses
+  if (sys.usb_buses?.length) {
+    html += sys.usb_buses.map(b => {
+      const load = Math.min(b.device_count / 8 * 100, 100);
+      return `<div class="proc-pill" style="min-width:140px;flex-direction:column;align-items:stretch;gap:3px">
+        <div style="display:flex;justify-content:space-between;font-size:9px">
+          <span>${b.bus}</span><span style="font-family:var(--font-m)">${b.device_count} dev</span>
+        </div>
+        ${gaugeBar(load, 'var(--purple)')}
+        <span class="proc-ver">${b.devices.slice(0,3).map(d => d.split(' ').slice(0,3).join(' ')).join(', ')}</span>
+      </div>`;
+    }).join('');
+  }
+
+  el.innerHTML = html;
 }
 refreshSystemStatus();
-setInterval(refreshSystemStatus, 10000);
+setInterval(refreshSystemStatus, 5000);
 
 // Auto-sync bluealsa bridges every 10s (restart dead bridges after pause/resume)
 setInterval(async () => {
-  await api('/bluealsa/sync', { method: 'POST' });
+  const buf = document.getElementById('bt-buffer-slider')?.value || 50;
+  await api(`/bluealsa/sync?buffer_ms=${buf}`, { method: 'POST' });
 }, 10000);
 
 // ── Modals ───────────────────────────────────────────

@@ -91,7 +91,9 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
     return list(seen.values())
 
 
-async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, object]:
+async def create_bridge(
+    mac: str, name: str, device_type: str, buffer_ms: int = 50
+) -> dict[str, object]:
     """Create a PipeWire null sink bridged to a BlueALSA device."""
     safe_name = name.replace(" ", "-").replace("(", "").replace(")", "")
     key = f"{mac}_{device_type}"
@@ -130,12 +132,13 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
 
+        period_48 = int(48000 * buffer_ms / 1000)
         bridge_cmd = (
             f"while true; do "
             f"parec --device=bt_{safe_name}.monitor --format=s16le --rate=48000 --channels=2 "
-            f"--latency-msec=50 "
-            f"| aplay -D \"bluealsa:DEV={mac},PROFILE=a2dp\" -f S16_LE -r 48000 -c 2 "
-            f"--period-size=2400 --buffer-size=4800 -; "
+            f"--latency-msec={buffer_ms} "
+            f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 48000 -c 2 '
+            f"--period-size={period_48} --buffer-size={period_48 * 2} -; "
             f"sleep 1; done"
         )
         proc = await asyncio.create_subprocess_shell(
@@ -167,10 +170,11 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
 
         # Bridge: bluealsa capture → pacat into the null sink
         # The null sink's MONITOR becomes the source in PipeWire
+        period_44 = int(44100 * buffer_ms / 1000)
         bridge_cmd = (
             f"while true; do "
-            f"arecord -D \"bluealsa:DEV={mac},PROFILE=a2dp\" -f S16_LE -r 44100 -c 2 "
-            f"--period-size=2205 --buffer-size=4410 - "
+            f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 44100 -c 2 '
+            f"--period-size={period_44} --buffer-size={period_44 * 2} - "
             f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2 "
             f"--latency-msec=50; "
             f"sleep 1; done"
@@ -212,7 +216,7 @@ async def destroy_bridge(mac: str, device_type: str) -> dict[str, str]:
 
 
 @router.post("/sync")
-async def sync_bridges(request: Request) -> dict[str, object]:
+async def sync_bridges(request: Request, buffer_ms: int = 50) -> dict[str, object]:
     """Auto-create bridges for all connected BlueALSA devices."""
     pcms = await _list_bluealsa_pcms()
     results = []
@@ -225,7 +229,7 @@ async def sync_bridges(request: Request) -> dict[str, object]:
         if not mac or not dtype:
             continue
         active_keys.add(f"{mac}_{dtype}")
-        result = await create_bridge(mac, name, dtype)
+        result = await create_bridge(mac, name, dtype, buffer_ms)
         results.append(result)
 
     # Destroy bridges for disconnected devices

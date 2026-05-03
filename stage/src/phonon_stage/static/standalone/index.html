@@ -789,6 +789,11 @@ async function refreshSystemStatus() {
 refreshSystemStatus();
 setInterval(refreshSystemStatus, 10000);
 
+// Auto-sync bluealsa bridges every 10s (restart dead bridges after pause/resume)
+setInterval(async () => {
+  await api('/bluealsa/sync', { method: 'POST' });
+}, 10000);
+
 // ── Modals ───────────────────────────────────────────
 async function showModal(type) {
   let overlay = document.getElementById('modal-overlay');

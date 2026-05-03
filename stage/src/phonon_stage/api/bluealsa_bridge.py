@@ -133,7 +133,9 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
         bridge_cmd = (
             f"while true; do "
             f"parec --device=bt_{safe_name}.monitor --format=s16le --rate=48000 --channels=2 "
-            f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 48000 -c 2 -; '
+            f"--latency-msec=50 "
+            f"| aplay -D \"bluealsa:DEV={mac},PROFILE=a2dp\" -f S16_LE -r 48000 -c 2 "
+            f"--period-size=2400 --buffer-size=4800 -; "
             f"sleep 1; done"
         )
         proc = await asyncio.create_subprocess_shell(
@@ -167,8 +169,10 @@ async def create_bridge(mac: str, name: str, device_type: str) -> dict[str, obje
         # The null sink's MONITOR becomes the source in PipeWire
         bridge_cmd = (
             f"while true; do "
-            f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 44100 -c 2 - '
-            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2; "
+            f"arecord -D \"bluealsa:DEV={mac},PROFILE=a2dp\" -f S16_LE -r 44100 -c 2 "
+            f"--period-size=2205 --buffer-size=4410 - "
+            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2 "
+            f"--latency-msec=50; "
             f"sleep 1; done"
         )
         proc = await asyncio.create_subprocess_shell(

@@ -260,6 +260,11 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 <script>
 const API = window.location.origin;
+console.log('[Phonon] Script starting...');
+window.onerror = function(msg, url, line, col, err) {
+  document.getElementById('bt-status').textContent = 'JS ERROR: ' + msg + ' L' + line;
+  console.error('[Phonon] Error:', msg, 'at line', line);
+};
 let state = {
   selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
   btControllers: [], btSelectedController: null, pairedDevices: [],

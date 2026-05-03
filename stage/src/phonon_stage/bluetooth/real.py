@@ -182,23 +182,18 @@ class RealBluetoothBackend:
         return "", ""
 
     async def set_power(self, controller_address: str, powered: bool) -> None:
+        hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
         if powered:
-            # Power on: rfkill unblock + hciconfig up + bluetoothctl power on
-            hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
             if rfk_idx:
                 await self._run_root("rfkill", "unblock", rfk_idx)
             if hci:
                 await self._run_root("hciconfig", hci, "up")
-            await self._bluetoothctl("select", controller_address)
-            await self._bluetoothctl("power", "on")
         else:
-            # Power off: bluetoothctl power off, then rfkill block as fallback
-            await self._bluetoothctl("select", controller_address)
-            await self._bluetoothctl("power", "off")
-            hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
+            if hci:
+                await self._run_root("hciconfig", hci, "down")
             if rfk_idx:
                 await self._run_root("rfkill", "block", rfk_idx)
-        logger.info("bluetooth.power_set", controller=controller_address, powered=powered)
+        logger.info("bluetooth.power_set", controller=controller_address, powered=powered, hci=hci)
 
     async def _run_root(self, *args: str) -> str:
         """Run a command that may need root (via sudo if available)."""

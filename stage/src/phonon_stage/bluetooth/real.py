@@ -307,18 +307,28 @@ class RealBluetoothBackend:
             return ""
 
     async def connect(self, device_address: str) -> None:
-        result = await self._bluetoothctl_interactive(
-            "agent on",
-            "default-agent",
-            f"connect {device_address}",
-        )
-        logger.info("bluetooth.connected", device=device_address, result=result[:200])
+        bus = await self._get_bus()
+        try:
+            path = await self._find_device_path(bus, device_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            device = proxy.get_interface(_DEVICE_INTERFACE)
+            await device.call_connect()  # type: ignore[attr-defined]
+            logger.info("bluetooth.connected", device=device_address)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
 
     async def disconnect(self, device_address: str) -> None:
-        result = await self._bluetoothctl_interactive(
-            f"disconnect {device_address}",
-        )
-        logger.info("bluetooth.disconnected", device=device_address, result=result[:200])
+        bus = await self._get_bus()
+        try:
+            path = await self._find_device_path(bus, device_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            device = proxy.get_interface(_DEVICE_INTERFACE)
+            await device.call_disconnect()  # type: ignore[attr-defined]
+            logger.info("bluetooth.disconnected", device=device_address)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
 
     async def list_paired_devices(self, controller_address: str) -> list[BluetoothDevice]:
         bus = await self._get_bus()

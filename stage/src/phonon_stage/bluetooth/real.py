@@ -134,6 +134,20 @@ class RealBluetoothBackend:
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
+    async def unpair(self, device_address: str) -> None:
+        bus = await self._get_bus()
+        try:
+            device_path = await self._find_device_path(bus, device_address)
+            # Find the adapter path (parent of device)
+            adapter_path = "/".join(device_path.split("/")[:-1])
+            introspection = await bus.introspect("org.bluez", adapter_path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", adapter_path, introspection)  # type: ignore[attr-defined]
+            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
+            await adapter.call_remove_device(device_path)  # type: ignore[attr-defined]
+            logger.info("bluetooth.unpaired", device=device_address)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
+
     async def connect(self, device_address: str) -> None:
         bus = await self._get_bus()
         try:

@@ -38,6 +38,10 @@ class FakeBluetoothBackend:
     async def pair(self, device_address: str) -> None:
         self.call_log.append(f"pair:{device_address}")
 
+    async def unpair(self, device_address: str) -> None:
+        self.call_log.append(f"unpair:{device_address}")
+        self._devices = [d for d in self._devices if d.address != device_address]
+
     async def connect(self, device_address: str) -> None:
         self.call_log.append(f"connect:{device_address}")
 

@@ -601,6 +601,7 @@ function renderBtPairedDevices(devices) {
       const actions = d.connected
         ? `<button class="btn" onclick="btDisconnect('${d.address}')">Disconnect</button>`
         : `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>`;
+      const unpairBtn = `<button class="btn-del" title="Unpair" onclick="btUnpair('${d.address}')" style="font-size:9px">✕</button>`;
 
       // Match PipeWire node for extended BT info
       const pwNode = state.nodes.find(n => n.bt_address === d.address);
@@ -624,6 +625,7 @@ function renderBtPairedDevices(devices) {
         </div>
         <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d._controller || '?'} → ${d.address}</span>
         ${actions}
+        ${unpairBtn}
         ${infoLine}
       </div>`;
     }).join('');
@@ -653,6 +655,12 @@ async function btConnect(addr) {
 async function btDisconnect(addr) {
   document.getElementById('bt-status').textContent = 'Disconnecting...';
   await api('/bluetooth/disconnect', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+  await refreshAll();
+}
+async function btUnpair(addr) {
+  if (!confirm('Remove pairing for ' + addr + '?')) return;
+  document.getElementById('bt-status').textContent = 'Unpairing...';
+  await api('/bluetooth/unpair', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
   await refreshAll();
 }
 

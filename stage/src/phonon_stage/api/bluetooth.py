@@ -87,6 +87,15 @@ async def disconnect_device(request: Request, body: DeviceRequest) -> dict[str, 
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.delete("/unpair", status_code=200)
+async def unpair_device(request: Request, body: DeviceRequest) -> dict[str, str]:
+    try:
+        await request.app.state.bt_backend.unpair(body.device_address)
+        return {"status": "unpaired", "device": body.device_address}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/devices", response_model=list[BluetoothDeviceResponse])
 async def list_paired_devices(
     request: Request, controller_address: str

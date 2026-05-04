@@ -702,6 +702,12 @@ function renderBtPairedDevices(devices) {
         if (baDevice.rate) parts.push(`${(parseInt(baDevice.rate) / 1000).toFixed(1)}kHz`);
         if (baDevice.channels) parts.push(`${baDevice.channels}ch`);
         if (baDevice.type) parts.push(baDevice.type === 'playback' ? 'OUTPUT' : 'INPUT');
+        if (baDevice.total_latency_ms) {
+          const lat = parseInt(baDevice.total_latency_ms);
+          const color = lat > 200 ? 'var(--yellow)' : lat > 100 ? 'var(--text-mid)' : 'var(--green)';
+          parts.push(`<span style="color:${color}">${lat}ms</span>`);
+          parts.push(`<span style="color:var(--text-fade)">(codec ${baDevice.codec_latency_ms}ms + buf ${baDevice.bridge_buffer_ms}ms)</span>`);
+        }
         if (parts.length) {
           infoLine = `<div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-top:2px;margin-left:14px">${parts.join(' · ')}</div>`;
         }

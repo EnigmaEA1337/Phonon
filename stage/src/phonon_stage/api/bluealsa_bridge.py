@@ -100,6 +100,25 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
         if key not in seen:
             seen[key] = current_entry
 
+    # Estimate latency per codec
+    codec_latency_ms = {
+        "SBC": 150,
+        "AAC": 120,
+        "aptX": 70,
+        "aptX HD": 130,
+        "aptX-LL": 32,
+        "LDAC": 200,
+        "LC3": 30,
+    }
+    for entry in seen.values():
+        codec = entry.get("codec", "SBC")
+        bt_latency = codec_latency_ms.get(codec, 150)
+        # Total = codec latency + bridge buffer (estimated from active bridges)
+        bridge_buf = 50  # default
+        entry["codec_latency_ms"] = str(bt_latency)
+        entry["bridge_buffer_ms"] = str(bridge_buf)
+        entry["total_latency_ms"] = str(bt_latency + bridge_buf)
+
     return list(seen.values())
 
 

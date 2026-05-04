@@ -684,47 +684,46 @@ function renderBtPairedDevices(devices) {
     return;
   }
   el.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Paired devices</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
     devices.map(d => {
       const led = d.connected ? 'background:var(--green);box-shadow:0 0 6px var(--green)' : 'background:var(--text-fade)';
       const status = d.connected ? 'connected' : 'paired';
       const statusColor = d.connected ? 'var(--green)' : 'var(--yellow)';
       const actions = d.connected
-        ? `<button class="btn" onclick="btDisconnect('${d.address}')">Disconnect</button>`
-        : `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>`;
-      const unpairBtn = `<button class="btn-del" title="Unpair" onclick="btUnpair('${d.address}')" style="font-size:9px">✕</button>`;
+        ? `<button class="btn" onclick="btDisconnect('${d.address}')" style="font-size:8px;padding:2px 6px">Disconnect</button>`
+        : `<button class="btn btn-primary" onclick="btConnect('${d.address}')" style="font-size:8px;padding:2px 6px">Connect</button>`;
 
       // Match BlueALSA device info for codec/rate
       const baDevice = (state.btAudioDevices || []).find(bd => bd.mac === d.address);
-      let infoLine = '';
+      let infoHtml = '';
       if (baDevice && d.connected) {
         const parts = [];
         if (baDevice.codec) parts.push(`<span style="color:var(--cyan);font-weight:600">${baDevice.codec}</span>`);
         if (baDevice.rate) parts.push(`${(parseInt(baDevice.rate) / 1000).toFixed(1)}kHz`);
         if (baDevice.channels) parts.push(`${baDevice.channels}ch`);
         if (baDevice.type) parts.push(baDevice.type === 'playback' ? 'OUTPUT' : 'INPUT');
+        if (parts.length) infoHtml += `<div class="card-meta">${parts.join(' · ')}</div>`;
         if (baDevice.total_latency_ms) {
           const lat = parseInt(baDevice.total_latency_ms);
           const color = lat > 200 ? 'var(--yellow)' : lat > 100 ? 'var(--text-mid)' : 'var(--green)';
-          parts.push(`<span style="color:${color}">${lat}ms</span>`);
-          parts.push(`<span style="color:var(--text-fade)">(codec ${baDevice.codec_latency_ms}ms + buf ${baDevice.bridge_buffer_ms}ms)</span>`);
-        }
-        if (parts.length) {
-          infoLine = `<div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-top:2px;width:100%">${parts.join(' · ')}</div>`;
+          infoHtml += `<div class="card-meta"><span style="color:${color}">${lat}ms</span> <span style="color:var(--text-fade)">(codec ${baDevice.codec_latency_ms} + buf ${baDevice.bridge_buffer_ms})</span></div>`;
         }
       }
 
-      return `<div class="bt-row" style="flex-wrap:wrap">
-        <div class="bt-device">
-          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;${led}"></span>
-          ${d.alias || d.name}
-          <span class="bt-status" style="color:${statusColor}">${status}</span>
+      return `<div class="card" style="min-width:200px;padding:8px 10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;${led}"></span>
+          <span style="font-size:11px;font-weight:600">${d.alias || d.name}</span>
+          <span style="font-size:8px;color:${statusColor};font-weight:600;border:1px solid ${statusColor};padding:0 4px;border-radius:2px">${status}</span>
         </div>
-        ${infoLine}
-        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d._controller || '?'} → ${d.address}</span>
-        ${actions}
-        ${unpairBtn}
+        ${infoHtml}
+        <div class="card-meta">${d._controller || '?'} → ${d.address}</div>
+        <div style="margin-top:6px;display:flex;gap:4px">
+          ${actions}
+          <button class="btn-del" title="Unpair" onclick="btUnpair('${d.address}')" style="font-size:9px">✕</button>
+        </div>
       </div>`;
-    }).join('');
+    }).join('') + '</div>';
 }
 
 function renderBtScanResults(devices) {

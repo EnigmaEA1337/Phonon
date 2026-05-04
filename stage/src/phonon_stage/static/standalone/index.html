@@ -224,7 +224,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
           style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-m);font-size:10px"></select>
         <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
         <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
-        <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Audio</button>
+        <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Inputs/Outputs</button>
         <span style="font-size:9px;color:var(--text-dim)">Buffer</span>
         <input type="range" min="20" max="200" step="10" value="50" id="bt-buffer-slider"
           style="width:60px;accent-color:var(--cyan)" oninput="document.getElementById('bt-buffer-val').textContent=this.value+'ms'">

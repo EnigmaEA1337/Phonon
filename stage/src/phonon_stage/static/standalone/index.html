@@ -563,7 +563,7 @@ function renderBtControllerSelect(controllers) {
   // Render controller cards with role toggle
   const cardsEl = document.getElementById('bt-controllers-cards');
   cardsEl.innerHTML = controllers.map(c => {
-    const role = c.discoverable && c.pairable ? 'receiver' : 'transmitter';
+    const role = c.discoverable ? 'receiver' : 'transmitter';
     const roleColor = role === 'receiver' ? 'var(--green)' : 'var(--pink)';
     const roleLabel = role === 'receiver' ? 'RX' : 'TX';
     const hw = c.hw_name ? c.hw_name.split(',')[0] : '';

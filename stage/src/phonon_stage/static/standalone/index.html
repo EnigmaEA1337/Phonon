@@ -719,10 +719,10 @@ function renderBtPairedDevices(devices) {
           ${d.alias || d.name}
           <span class="bt-status" style="color:${statusColor}">${status}</span>
         </div>
+        ${infoLine}
         <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d._controller || '?'} → ${d.address}</span>
         ${actions}
         ${unpairBtn}
-        ${infoLine}
       </div>`;
     }).join('');
 }

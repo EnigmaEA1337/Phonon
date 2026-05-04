@@ -121,6 +121,77 @@ chmod 0755 "${LOG_DIR}" "${CONFIG_DIR}"
 
 echo "  Directories OK"
 
+# -- Pi Tuning (Stage 1 optimizations) ----------------------------------------
+
+if [ "${PLATFORM}" = "arm64" ]; then
+    echo "[4b] Applying Pi tuning..."
+
+    # Disable useless services
+    for svc in triggerhappy ModemManager hciuart keyboard-setup console-setup; do
+        systemctl disable --now "${svc}.service" 2>/dev/null || true
+    done
+    # Disable wpa_supplicant only if no WiFi interface is active
+    if ! ip link show wlan0 &>/dev/null; then
+        systemctl disable --now wpa_supplicant.service 2>/dev/null || true
+    fi
+    echo "    Useless services disabled"
+
+    # Disable onboard BT + WiFi
+    for overlay in disable-bt disable-wifi; do
+        if ! grep -q "dtoverlay=${overlay}" /boot/firmware/config.txt 2>/dev/null; then
+            echo "dtoverlay=${overlay}" >> /boot/firmware/config.txt
+        fi
+    done
+    echo "    Onboard BT + WiFi disabled (next reboot)"
+
+    # CPU governor performance
+    echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+    cat > /etc/systemd/system/cpu-performance.service <<'CPUSVC'
+[Unit]
+Description=Set CPU governor to performance
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+CPUSVC
+    systemctl daemon-reload
+    systemctl enable cpu-performance.service --quiet 2>/dev/null
+    echo "    CPU governor: performance"
+
+    # GPU memory 32MB
+    if grep -q "^gpu_mem=" /boot/firmware/config.txt 2>/dev/null; then
+        sed -i 's/^gpu_mem=.*/gpu_mem=32/' /boot/firmware/config.txt
+    else
+        echo "gpu_mem=32" >> /boot/firmware/config.txt
+    fi
+    echo "    GPU memory: 32MB (next reboot)"
+
+    # fstab: nodiratime + commit=120
+    if ! grep -q "nodiratime" /etc/fstab; then
+        sed -i 's/defaults,noatime/defaults,noatime,nodiratime,commit=120/' /etc/fstab
+        echo "    fstab: added nodiratime,commit=120"
+    fi
+
+    # Disable swap
+    swapoff -a 2>/dev/null || true
+    rm -f /var/swap
+    systemctl disable dphys-swapfile 2>/dev/null || true
+    echo "    Swap disabled"
+
+    # Fast boot
+    systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+    systemctl disable apt-daily.service apt-daily.timer 2>/dev/null || true
+    systemctl disable apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null || true
+    echo "    Fast boot enabled"
+
+    echo "  Pi tuning applied"
+else
+    echo "[4b] Skipping Pi tuning (not arm64)"
+fi
+
 # ── Step 5/7: Python venv + install package ──────────────────────────────
 
 echo "[5/7] Setting up Python venv and installing phonon-stage..."

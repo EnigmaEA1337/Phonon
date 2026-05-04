@@ -136,6 +136,40 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .modal-body dd { color: var(--text); margin-left: 0; font-family: var(--font-m); font-size: 10px; }
 .sec-ok { color: var(--green); } .sec-warn { color: var(--yellow); } .sec-bad { color: var(--red); }
 
+/* ── Strip / Channel Strip ──────────────────────────── */
+.strip { width: 90px; background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px; display: flex;
+  flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
+.strip-name { font-size: 8px; font-weight: 600; text-align: center; line-height: 1.2;
+  max-width: 80px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.strip-route { font-size: 7px; color: var(--text-dim); text-align: center; }
+
+/* Knob */
+.knob-wrap { position: relative; width: 40px; height: 40px; cursor: pointer; touch-action: none; }
+.knob-svg { width: 100%; height: 100%; }
+.knob-val { font-family: var(--font-m); font-size: 8px; color: var(--text-mid);
+  text-align: center; margin-top: 1px; }
+
+/* Vertical Fader */
+.fader-area { display: flex; gap: 2px; align-items: flex-end; height: 160px; }
+.vu-bar { width: 8px; height: 100%; background: #050a10; border-radius: 2px;
+  display: flex; flex-direction: column-reverse; gap: 1px; padding: 1px; overflow: hidden; }
+.vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; border-radius: 0.5px; min-height: 2px; }
+.fader-col { width: 22px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+.fader-rail { position: absolute; left: 50%; top: 4px; bottom: 4px; width: 3px; transform: translateX(-50%);
+  background: linear-gradient(180deg, #050a10, #1a2230 50%, #050a10); border: 1px solid #050a10; border-radius: 1px; }
+.fader-fill { position: absolute; left: 50%; transform: translateX(-50%); width: 4px; bottom: 4px;
+  background: linear-gradient(180deg, var(--cyan) 0%, rgba(6,182,212,0.3) 100%); border-radius: 1px; }
+.fader-handle { position: absolute; left: 50%; width: 20px; height: 10px; transform: translate(-50%, -50%);
+  background: linear-gradient(180deg, #3a5078, #1a2230 50%, #060a10); border: 1px solid #050a10;
+  border-top-color: #4a6088; border-radius: 2px; cursor: grab; z-index: 2; }
+.fader-handle::before { content: ''; position: absolute; left: 3px; right: 3px; top: 50%; height: 1px;
+  background: var(--text); transform: translateY(-50%); }
+.fader-ticks { position: absolute; right: -18px; top: 4px; bottom: 4px; display: flex;
+  flex-direction: column; justify-content: space-between; font-family: var(--font-m); font-size: 6px; color: var(--text-fade); }
+.fader-ticks .unity { color: var(--cyan); font-weight: 700; }
+.strip-db { font-family: var(--font-m); font-size: 9px; color: var(--text-mid); text-align: center; }
+
 /* ── Mode Toggle (LIVE/EDIT) ────────────────────────── */
 .mode-toggle { display: flex; background: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 3px; overflow: hidden; }
 .mode-btn { height: 26px; padding: 0 12px; background: transparent; border: none; color: var(--text-dim);
@@ -551,53 +585,149 @@ function renderMappings(mappings) {
 
   if (!mappings.length) { el.innerHTML = '<div class="mapping-empty">No active mappings</div>'; return; }
 
-  el.innerHTML = mappings.map(m => {
+  // VU segments for vertical bars (20 segments)
+  const vuSegs = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('');
+  // Fader position: map dB (-90..+12) to % (100..0)
+  const dbToY = (db) => Math.max(0, Math.min(100, (1 - (db + 90) / 102) * 100));
+  // Knob angle: map 0-50ms to 0-270 degrees
+  const delayToAngle = (ms) => Math.min(ms / 50, 1) * 270;
+
+  el.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 0">' +
+    mappings.map(m => {
     const srcNode = state.nodes.find(n => n.id === m.source_node_id);
     const sinkNode = state.nodes.find(n => n.id === m.sink_node_id);
-    const srcName = srcNode?.nick || srcNode?.name || `Node #${m.source_node_id}`;
-    const sinkName = sinkNode?.nick || sinkNode?.name || `Node #${m.sink_node_id}`;
-    const sinkBt = sinkNode?.bt_codec ? ` <span style="color:var(--cyan);font-size:8px">${sinkNode.bt_codec.toUpperCase()}</span>` : '';
-    const sinkLat = sinkNode?.latency_ms ? ` <span style="color:var(--text-fade);font-size:8px">${sinkNode.latency_ms}ms</span>` : '';
+    const srcName = srcNode?.nick || srcNode?.name || `#${m.source_node_id}`;
+    const sinkName = sinkNode?.nick || sinkNode?.name || `#${m.sink_node_id}`;
     const hasLinks = !m.mute && m.link_ids?.length > 0;
-    const srcRunning = srcNode?.state === 'running';
-    const active = hasLinks && srcRunning;
-    const ledStyle = hasLinks ? (srcRunning ? 'background:var(--green);box-shadow:0 0 4px var(--green)' : 'background:var(--yellow)') : 'background:var(--text-fade)';
+    const ledColor = hasLinks ? 'var(--green)' : m.mute ? 'var(--red)' : 'var(--text-fade)';
     const delayVal = (m.delay_ms || 0).toFixed(1);
+    const faderY = dbToY(m.gain_db);
+    const knobAngle = delayToAngle(m.delay_ms || 0);
 
-    // Build 20-segment VU meter HTML
-    const segs = 20;
-    let vuHtml = '';
-    for (let i = 0; i < segs; i++) { vuHtml += `<div class="vu-seg" data-idx="${i}"></div>`; }
+    // SVG knob
+    const knobR = 15, knobCx = 20, knobCy = 20;
+    const startAngle = 135, endAngle = startAngle + knobAngle;
+    const toRad = a => (a - 90) * Math.PI / 180;
+    const arcEnd = { x: knobCx + knobR * Math.cos(toRad(endAngle)), y: knobCy + knobR * Math.sin(toRad(endAngle)) };
+    const largeArc = knobAngle > 180 ? 1 : 0;
+    const arcStart = { x: knobCx + knobR * Math.cos(toRad(startAngle)), y: knobCy + knobR * Math.sin(toRad(startAngle)) };
+    const knobPath = knobAngle > 0.5 ? `M${arcStart.x},${arcStart.y} A${knobR},${knobR} 0 ${largeArc} 1 ${arcEnd.x},${arcEnd.y}` : '';
+    // Indicator dot
+    const dotAngle = toRad(endAngle);
+    const dotX = knobCx + (knobR - 4) * Math.cos(dotAngle);
+    const dotY = knobCy + (knobR - 4) * Math.sin(dotAngle);
 
-    return `<div class="mapping-row" style="flex-direction:column;gap:6px;padding:10px 0" data-mapping-id="${m.id}" data-active="${active}" data-gain="${m.gain_db}">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;${ledStyle}"></span>
-        <div class="mapping-route">${srcName} <span style="color:var(--cyan)">→</span> ${sinkName}${sinkBt}${sinkLat}</div>
-        <button class="btn-mute${m.mute ? ' active' : ''}" onclick="toggleMute('${m.id}', ${!m.mute})">M</button>
-        <button class="btn-del edit-only" onclick="deleteMapping('${m.id}')">✕</button>
+    return `<div class="strip" data-mapping-id="${m.id}" data-active="${hasLinks}" data-gain="${m.gain_db}">
+      <!-- Header -->
+      <div style="display:flex;align-items:center;gap:3px;width:100%">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <button class="btn-mute${m.mute ? ' active' : ''}" onclick="toggleMute('${m.id}', ${!m.mute})" style="width:18px;height:14px;font-size:7px">M</button>
+        <button class="btn-del edit-only" onclick="deleteMapping('${m.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;padding-left:14px">
-        <span class="vu-label">L</span>
-        <div class="vu-meter" data-ch="L">${vuHtml}</div>
+      <div class="strip-name" title="${srcName} → ${sinkName}">${srcName}</div>
+      <div class="strip-route">→ ${sinkName}</div>
+
+      <!-- Delay Knob -->
+      <div class="knob-wrap" data-mapping="${m.id}" data-param="delay" data-value="${delayVal}">
+        <svg class="knob-svg" viewBox="0 0 40 40">
+          <circle cx="${knobCx}" cy="${knobCy}" r="${knobR}" fill="none" stroke="#1a2230" stroke-width="3"/>
+          ${knobPath ? `<path d="${knobPath}" fill="none" stroke="var(--cyan)" stroke-width="3" stroke-linecap="round"/>` : ''}
+          <circle cx="${knobCx}" cy="${knobCy}" r="8" fill="#1a2230" stroke="#2a3850" stroke-width="1"/>
+          <circle cx="${dotX}" cy="${dotY}" r="2" fill="var(--text)"/>
+        </svg>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;padding-left:14px">
-        <span class="vu-label">R</span>
-        <div class="vu-meter" data-ch="R">${vuHtml}</div>
+      <div class="knob-val" id="dv-${m.id}">${delayVal}ms</div>
+
+      <!-- VU L + VU R + Fader -->
+      <div class="fader-area">
+        <div class="vu-bar" data-ch="L">${vuSegs}</div>
+        <div class="vu-bar" data-ch="R">${vuSegs}</div>
+        <div class="fader-col" data-mapping="${m.id}" data-param="gain">
+          <div class="fader-rail"></div>
+          <div class="fader-fill" style="top:${faderY}%"></div>
+          <div class="fader-handle" style="top:${faderY}%"></div>
+        </div>
+        <div class="fader-ticks">
+          <span>+12</span><span>+6</span><span class="unity">0</span><span>-6</span>
+          <span>-10</span><span>-20</span><span>-40</span><span>-∞</span>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;padding-left:14px">
-        <span style="font-size:9px;color:var(--text-dim);width:32px">Gain</span>
-        <input type="range" class="gain-slider" min="-90" max="12" step="0.5" value="${m.gain_db}"
-          oninput="updateGain('${m.id}', this.value)">
-        <span class="gain-val" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;padding-left:14px">
-        <span style="font-size:9px;color:var(--text-dim);width:32px">Delay</span>
-        <input type="range" class="gain-slider" min="0" max="50" step="0.1" value="${delayVal}"
-          oninput="updateDelay('${m.id}', this.value)">
-        <span class="gain-val" id="dv-${m.id}">${delayVal} ms</span>
-      </div>
+      <div class="strip-db" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</div>
     </div>`;
-  }).join('');
+  }).join('') + '</div>';
+
+  // Setup fader drag handlers
+  el.querySelectorAll('.fader-col').forEach(setupFaderDrag);
+  el.querySelectorAll('.knob-wrap').forEach(setupKnobDrag);
+}
+
+function setupFaderDrag(faderEl) {
+  const mid = faderEl.dataset.mapping;
+  let dragging = false, startY = 0, startVal = 0;
+  const handle = faderEl.querySelector('.fader-handle');
+  const fill = faderEl.querySelector('.fader-fill');
+
+  const yToDb = (pct) => -90 + (1 - pct / 100) * 102;
+  const dbToY = (db) => Math.max(0, Math.min(100, (1 - (db + 90) / 102) * 100));
+
+  const onDown = (e) => {
+    dragging = true;
+    startY = e.touches ? e.touches[0].clientY : e.clientY;
+    startVal = parseFloat(handle.style.top) || 50;
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const rect = faderEl.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(100, startVal + ((y - startY) / rect.height) * 100));
+    handle.style.top = pct + '%';
+    fill.style.top = pct + '%';
+    const db = yToDb(pct);
+    const dbEl = document.getElementById('gv-' + mid);
+    if (dbEl) dbEl.textContent = db.toFixed(1) + ' dB';
+    updateGain(mid, db.toFixed(1));
+    e.preventDefault();
+  };
+  const onUp = () => { dragging = false; };
+
+  handle.addEventListener('mousedown', onDown);
+  handle.addEventListener('touchstart', onDown, {passive: false});
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('touchmove', onMove, {passive: false});
+  window.addEventListener('mouseup', onUp);
+  window.addEventListener('touchend', onUp);
+}
+
+function setupKnobDrag(knobEl) {
+  const mid = knobEl.dataset.mapping;
+  let dragging = false, startY = 0, startVal = 0;
+
+  const onDown = (e) => {
+    dragging = true;
+    startY = e.touches ? e.touches[0].clientY : e.clientY;
+    startVal = parseFloat(knobEl.dataset.value) || 0;
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const delta = (startY - y) * 0.3;
+    const val = Math.max(0, Math.min(50, startVal + delta));
+    knobEl.dataset.value = val.toFixed(1);
+    const dvEl = document.getElementById('dv-' + mid);
+    if (dvEl) dvEl.textContent = val.toFixed(1) + 'ms';
+    updateDelay(mid, val.toFixed(1));
+    e.preventDefault();
+  };
+  const onUp = () => { dragging = false; };
+
+  knobEl.addEventListener('mousedown', onDown);
+  knobEl.addEventListener('touchstart', onDown, {passive: false});
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('touchmove', onMove, {passive: false});
+  window.addEventListener('mouseup', onUp);
+  window.addEventListener('touchend', onUp);
 }
 
 let gainTimeout = {};
@@ -876,35 +1006,40 @@ setInterval(fetchLevels, 300);
 
 function animateVU() {
   try {
-    document.querySelectorAll('.vu-meter').forEach(meter => {
-      const row = meter.closest('[data-mapping-id]');
-      if (!row) return;
-      const mappingId = row.getAttribute('data-mapping-id');
-      const segs = meter.children;
+    // Get max level from all bridges
+    let maxLevel = 0;
+    for (const val of Object.values(vuLevels)) {
+      if (val > maxLevel) maxLevel = val;
+    }
+    if (maxLevel > 0.01) maxLevel = Math.min(1.0, maxLevel + (Math.random() - 0.5) * 0.05);
+
+    // Apply to all VU bars (vertical: fill from bottom)
+    document.querySelectorAll('.vu-bar').forEach(bar => {
+      const segs = bar.children;
       const total = segs.length;
       if (!total) return;
-
-      // Find matching level — check all bridge keys for this mapping's source/sink
-      let level = 0;
-      const srcId = row.getAttribute('data-src');
-      const sinkId = row.getAttribute('data-sink');
-      for (const [key, val] of Object.entries(vuLevels)) {
-        // key is "MAC_type", level is 0.0-1.0
-        if (val > level) level = val;
-      }
-
-      // Add small jitter for visual liveliness when audio is present
-      if (level > 0.01) level = Math.min(1.0, level + (Math.random() - 0.5) * 0.05);
-
-      const lit = Math.floor(level * total);
+      const lit = Math.floor(maxLevel * total);
+      // Segments are in column-reverse order (bottom first)
       for (let i = 0; i < total; i++) {
         if (i < lit) {
-          if (i >= total * 0.9) segs[i].style.background = '#f87171';
-          else if (i >= total * 0.7) segs[i].style.background = '#fbbf24';
+          const pos = i / total;
+          if (pos >= 0.9) segs[i].style.background = '#f87171';
+          else if (pos >= 0.7) segs[i].style.background = '#fbbf24';
           else segs[i].style.background = '#34d399';
         } else {
           segs[i].style.background = '#0a141c';
         }
+      }
+    });
+
+    // Also handle old horizontal vu-meter if any remain
+    document.querySelectorAll('.vu-meter').forEach(meter => {
+      const segs = meter.children;
+      const total = segs.length;
+      if (!total) return;
+      const lit = Math.floor(maxLevel * total);
+      for (let i = 0; i < total; i++) {
+        segs[i].style.background = i < lit ? (i >= total * 0.9 ? '#f87171' : i >= total * 0.7 ? '#fbbf24' : '#34d399') : '#0a141c';
       }
     });
   } catch(e) { /* ignore */ }

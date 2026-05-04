@@ -262,9 +262,9 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
-  <!-- Active Mappings -->
+  <!-- Mixer -->
   <div class="section">
-    <div class="section-head">Active Mappings <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span></div>
+    <div class="section-head">Mixer <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span></div>
     <div class="section-body" id="mappings-list">
       <div class="mapping-empty">No active mappings</div>
     </div>
@@ -582,7 +582,7 @@ async function createMapping() {
 // ── Render: Mappings ─────────────────────────────────
 function renderMappings(mappings) {
   const el = document.getElementById('mappings-list');
-  document.getElementById('mapping-count').textContent = `(${mappings.length}/8)`;
+  document.getElementById('mapping-count').textContent = `(Active Mappings ${mappings.length}/8)`;
 
   if (!mappings.length) { el.innerHTML = '<div class="mapping-empty">No active mappings</div>'; return; }
 

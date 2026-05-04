@@ -33,6 +33,11 @@ class RoleRequest(BaseModel):
     role: str  # "receiver" or "transmitter"
 
 
+class PairingWindowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    duration: int = 60  # seconds
+
+
 class AliasRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     alias: str
@@ -45,6 +50,21 @@ async def set_alias(
     try:
         await request.app.state.bt_backend.set_alias(controller_address, body.alias)
         return {"controller": controller_address, "alias": body.alias}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{controller_address}/pairing", status_code=200)
+async def open_pairing_window(
+    request: Request, controller_address: str, body: PairingWindowRequest
+) -> dict[str, object]:
+    try:
+        await request.app.state.bt_backend.open_pairing_window(controller_address, body.duration)
+        return {
+            "controller": controller_address,
+            "pairing_open": True,
+            "duration": body.duration,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

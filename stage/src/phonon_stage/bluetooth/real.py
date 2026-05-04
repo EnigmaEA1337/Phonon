@@ -203,6 +203,29 @@ class RealBluetoothBackend:
         finally:
             bus.disconnect()  # type: ignore[attr-defined]
 
+    async def open_pairing_window(self, controller_address: str, duration: int = 60) -> None:
+        """Open a temporary pairing window. After duration seconds, pairable is turned off."""
+        bus = await self._get_bus()
+        try:
+            from dbus_fast import Variant
+
+            path = await self._find_adapter_path(bus, controller_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            props = proxy.get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set(_ADAPTER_INTERFACE, "Discoverable", Variant("b", True))
+            await props.call_set(_ADAPTER_INTERFACE, "Pairable", Variant("b", True))
+            # Use BlueZ PairableTimeout to auto-close
+            await props.call_set(_ADAPTER_INTERFACE, "PairableTimeout", Variant("u", duration))
+            # DiscoverableTimeout stays at 0 (always visible for reconnections)
+            logger.info(
+                "bluetooth.pairing_window_opened",
+                controller=controller_address,
+                duration=duration,
+            )
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
+
     async def set_power(self, controller_address: str, powered: bool) -> None:
         hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
         if powered:
@@ -230,7 +253,8 @@ class RealBluetoothBackend:
 
             is_receiver = role == "receiver"
             await props.call_set(_ADAPTER_INTERFACE, "Discoverable", Variant("b", is_receiver))
-            await props.call_set(_ADAPTER_INTERFACE, "Pairable", Variant("b", is_receiver))
+            # Receiver: discoverable but NOT pairable by default (use pairing window)
+            await props.call_set(_ADAPTER_INTERFACE, "Pairable", Variant("b", False))
             if is_receiver:
                 await props.call_set(_ADAPTER_INTERFACE, "DiscoverableTimeout", Variant("u", 0))
             logger.info("bluetooth.role_set", controller=controller_address, role=role)

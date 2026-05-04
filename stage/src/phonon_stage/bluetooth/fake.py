@@ -25,6 +25,9 @@ class FakeBluetoothBackend:
     async def list_controllers(self) -> list[BluetoothController]:
         return list(self._controllers)
 
+    async def open_pairing_window(self, controller_address: str, duration: int = 60) -> None:
+        self.call_log.append(f"pairing_window:{controller_address}:{duration}")
+
     async def set_alias(self, controller_address: str, alias: str) -> None:
         self.call_log.append(f"alias:{controller_address}:{alias}")
 

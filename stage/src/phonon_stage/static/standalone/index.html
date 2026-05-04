@@ -577,14 +577,46 @@ function renderBtControllerSelect(controllers) {
       </div>
       <div class="card-meta">${hw}</div>
       <div class="card-meta">${c.address}</div>
-      <div style="margin-top:6px;display:flex;gap:4px">
+      <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn${role === 'receiver' ? ' btn-primary' : ''}" style="font-size:8px;padding:2px 6px"
           onclick="btSetRole('${c.address}','receiver')">Receiver</button>
         <button class="btn${role === 'transmitter' ? ' btn-primary' : ''}" style="font-size:8px;padding:2px 6px"
           onclick="btSetRole('${c.address}','transmitter')">Transmitter</button>
+        ${role === 'receiver' ? `<button class="btn" style="font-size:8px;padding:2px 6px;${c.pairable ? 'background:var(--green);color:var(--bg-0);border-color:var(--green)' : ''}"
+          onclick="btOpenPairing('${c.address}')" id="pair-btn-${c.address}">${c.pairable ? 'Pairing ouvert...' : 'Ouvrir appairage'}</button>` : ''}
       </div>
     </div>`;
   }).join('');
+}
+
+async function btOpenPairing(addr) {
+  const duration = 60;
+  await api(`/bluetooth/${addr}/pairing`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ duration }),
+  });
+  document.getElementById('bt-status').textContent = `Pairing ouvert ${duration}s...`;
+  // Countdown in button
+  const btn = document.getElementById('pair-btn-' + addr);
+  if (btn) {
+    let remaining = duration;
+    btn.textContent = `Pairing ${remaining}s`;
+    btn.style.background = 'var(--green)';
+    btn.style.color = 'var(--bg-0)';
+    const timer = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(timer);
+        btn.textContent = 'Ouvrir appairage';
+        btn.style.background = '';
+        btn.style.color = '';
+        document.getElementById('bt-status').textContent = 'Pairing fermé';
+        refreshAll();
+      } else {
+        btn.textContent = `Pairing ${remaining}s`;
+      }
+    }, 1000);
+  }
 }
 
 async function btSetAlias(addr, alias) {

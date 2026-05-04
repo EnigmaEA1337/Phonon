@@ -17,6 +17,7 @@ from phonon_stage.api.bluetooth import router as bluetooth_router
 from phonon_stage.api.browse import router as browse_router
 from phonon_stage.api.capabilities import router as capabilities_router
 from phonon_stage.api.health import router as health_router
+from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
 from phonon_stage.api.pipewire import router as pipewire_router
 from phonon_stage.api.system import router as system_router
@@ -127,6 +128,7 @@ def create_app(
     app.include_router(browse_router)
     app.include_router(system_router)
     app.include_router(bluealsa_router)
+    app.include_router(levels_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

@@ -863,28 +863,40 @@ function renderStages(stages) {
   </div>`).join('');
 }
 
-// ── VU Meter Animation ───────────────────────────────
+// ── VU Meter — real levels from /levels endpoint ─────
+let vuLevels = {};
+
+async function fetchLevels() {
+  try {
+    const data = await api('/levels');
+    if (data) vuLevels = data;
+  } catch(e) { /* ignore */ }
+}
+setInterval(fetchLevels, 300);
+
 function animateVU() {
   try {
     document.querySelectorAll('.vu-meter').forEach(meter => {
-      const row = meter.closest('[data-active]');
+      const row = meter.closest('[data-mapping-id]');
       if (!row) return;
-      const active = row.getAttribute('data-active') === 'true';
-      const gainDb = parseFloat(row.getAttribute('data-gain') || '-90');
+      const mappingId = row.getAttribute('data-mapping-id');
       const segs = meter.children;
       const total = segs.length;
       if (!total) return;
 
-      if (!active) {
-        for (let i = 0; i < total; i++) segs[i].style.background = '#0a141c';
-        return;
+      // Find matching level — check all bridge keys for this mapping's source/sink
+      let level = 0;
+      const srcId = row.getAttribute('data-src');
+      const sinkId = row.getAttribute('data-sink');
+      for (const [key, val] of Object.entries(vuLevels)) {
+        // key is "MAC_type", level is 0.0-1.0
+        if (val > level) level = val;
       }
 
-      const gainLin = Math.pow(10, gainDb / 20);
-      const base = Math.min(gainLin * 0.7, 0.95);
-      const level = Math.max(0.05, Math.min(1.0, base + (Math.random() - 0.5) * 0.15));
-      const lit = Math.floor(level * total);
+      // Add small jitter for visual liveliness when audio is present
+      if (level > 0.01) level = Math.min(1.0, level + (Math.random() - 0.5) * 0.05);
 
+      const lit = Math.floor(level * total);
       for (let i = 0; i < total; i++) {
         if (i < lit) {
           if (i >= total * 0.9) segs[i].style.background = '#f87171';
@@ -897,7 +909,7 @@ function animateVU() {
     });
   } catch(e) { /* ignore */ }
 }
-setInterval(animateVU, 80);
+setInterval(animateVU, 100);
 
 // ── Init ─────────────────────────────────────────────
 refreshAll();

@@ -152,9 +152,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 /* Vertical Fader */
 .fader-area { display: flex; gap: 2px; align-items: flex-end; height: 160px; }
-.vu-bar { width: 8px; height: 100%; background: #050a10; border-radius: 2px;
-  display: flex; flex-direction: column-reverse; gap: 1px; padding: 1px; overflow: hidden; }
-.vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; border-radius: 0.5px; min-height: 2px; }
+/* Ardour/console-style vertical meter */
+.vu-bar { width: 8px; height: 100%; background: #020409; border-radius: 1px;
+  display: flex; flex-direction: column-reverse; gap: 0; padding: 1px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.95); overflow: hidden; }
+.vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; min-height: 1px;
+  transition: background 30ms linear; }
 .fader-col { width: 22px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
 .fader-rail { position: absolute; left: 50%; top: 4px; bottom: 4px; width: 3px; transform: translateX(-50%);
   background: linear-gradient(180deg, #050a10, #1a2230 50%, #050a10); border: 1px solid #050a10; border-radius: 1px; }
@@ -1014,6 +1017,9 @@ async function fetchLevels() {
 }
 setInterval(fetchLevels, 300);
 
+// Peak hold state per bar
+const peakHolds = new WeakMap();
+
 function animateVU() {
   try {
     // Get max level from all bridges
@@ -1021,35 +1027,51 @@ function animateVU() {
     for (const val of Object.values(vuLevels)) {
       if (val > maxLevel) maxLevel = val;
     }
-    if (maxLevel > 0.01) maxLevel = Math.min(1.0, maxLevel + (Math.random() - 0.5) * 0.05);
+    if (maxLevel > 0.01) maxLevel = Math.min(1.0, maxLevel + (Math.random() - 0.5) * 0.03);
 
-    // Apply to all VU bars (vertical: fill from bottom)
+    // Console-style colors (Ardour/PreSonus inspired)
+    const segColor = (pos) => {
+      if (pos >= 0.95) return '#ff4444';                    // clip red
+      if (pos >= 0.85) return '#f87171';                    // hot red
+      if (pos >= 0.7) return '#fbbf24';                     // yellow
+      if (pos >= 0.5) return '#86efac';                     // bright green
+      return '#34d399';                                     // green
+    };
+    const segGlow = (pos) => {
+      if (pos >= 0.85) return 'inset 0 0 2px rgba(248,113,113,0.4)';
+      if (pos >= 0.7) return 'inset 0 0 1px rgba(251,191,36,0.3)';
+      return 'inset 0 0 1px rgba(52,211,153,0.15)';
+    };
+
+    // Apply to vertical VU bars (column-reverse = bottom first)
     document.querySelectorAll('.vu-bar').forEach(bar => {
       const segs = bar.children;
       const total = segs.length;
       if (!total) return;
+
+      // Peak hold
+      let peak = peakHolds.get(bar) || { val: 0, decay: 0 };
+      if (maxLevel > peak.val) { peak.val = maxLevel; peak.decay = 8; }
+      else if (peak.decay > 0) { peak.decay--; }
+      else { peak.val = Math.max(0, peak.val - 0.03); }
+      peakHolds.set(bar, peak);
+
       const lit = Math.floor(maxLevel * total);
-      // Segments are in column-reverse order (bottom first)
+      const peakSeg = Math.floor(peak.val * total);
+
       for (let i = 0; i < total; i++) {
         if (i < lit) {
           const pos = i / total;
-          if (pos >= 0.9) segs[i].style.background = '#f87171';
-          else if (pos >= 0.7) segs[i].style.background = '#fbbf24';
-          else segs[i].style.background = '#34d399';
+          segs[i].style.background = segColor(pos);
+          segs[i].style.boxShadow = segGlow(pos);
+        } else if (i === peakSeg && peakSeg > 0) {
+          // Peak hold indicator — bright cyan
+          segs[i].style.background = '#67e8f9';
+          segs[i].style.boxShadow = '0 0 3px #67e8f9';
         } else {
           segs[i].style.background = '#0a141c';
+          segs[i].style.boxShadow = 'none';
         }
-      }
-    });
-
-    // Also handle old horizontal vu-meter if any remain
-    document.querySelectorAll('.vu-meter').forEach(meter => {
-      const segs = meter.children;
-      const total = segs.length;
-      if (!total) return;
-      const lit = Math.floor(maxLevel * total);
-      for (let i = 0; i < total; i++) {
-        segs[i].style.background = i < lit ? (i >= total * 0.9 ? '#f87171' : i >= total * 0.7 ? '#fbbf24' : '#34d399') : '#0a141c';
       }
     });
   } catch(e) { /* ignore */ }

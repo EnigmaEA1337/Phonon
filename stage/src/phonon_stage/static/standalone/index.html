@@ -719,7 +719,7 @@ function renderBtPairedDevices(devices) {
           ${d.alias || d.name}
           <span class="bt-status" style="color:${statusColor}">${status}</span>
         </div>
-        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${(() => { const c = state.btControllers.find(cc => cc.address === d._controller); const hw = c?.hw_name ? ` [${c.hw_name}]` : ''; return (c ? c.alias || c.name : '?') + hw; })()} (${d._controller || '?'}) → ${d.address}</span>
+        <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d._controller || '?'} → ${d.address}</span>
         ${actions}
         ${unpairBtn}
         ${infoLine}

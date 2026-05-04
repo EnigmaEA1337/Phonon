@@ -558,8 +558,10 @@ function renderMappings(mappings) {
     const sinkName = sinkNode?.nick || sinkNode?.name || `Node #${m.sink_node_id}`;
     const sinkBt = sinkNode?.bt_codec ? ` <span style="color:var(--cyan);font-size:8px">${sinkNode.bt_codec.toUpperCase()}</span>` : '';
     const sinkLat = sinkNode?.latency_ms ? ` <span style="color:var(--text-fade);font-size:8px">${sinkNode.latency_ms}ms</span>` : '';
-    const active = !m.mute && m.link_ids?.length > 0;
-    const ledStyle = active ? 'background:var(--green);box-shadow:0 0 4px var(--green)' : 'background:var(--text-fade)';
+    const hasLinks = !m.mute && m.link_ids?.length > 0;
+    const srcRunning = srcNode?.state === 'running';
+    const active = hasLinks && srcRunning;
+    const ledStyle = hasLinks ? (srcRunning ? 'background:var(--green);box-shadow:0 0 4px var(--green)' : 'background:var(--yellow)') : 'background:var(--text-fade)';
     const delayVal = (m.delay_ms || 0).toFixed(1);
 
     // Build 20-segment VU meter HTML

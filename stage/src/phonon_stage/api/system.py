@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import platform
 from pathlib import Path
@@ -49,6 +50,8 @@ class SystemStatusResponse(BaseModel):
     cpu_load_5m: float = 0.0
     cpu_load_15m: float = 0.0
     cpu_percent: float = 0.0
+    throttled: int = 0
+    alerts: list[str] = []
     processes: list[ProcessStatus]
     usb_buses: list[UsbBusInfo] = []
 
@@ -142,6 +145,50 @@ async def system_status(request: Request) -> SystemStatusResponse:
         rate = await _run(f"{pw_r_cmd} | grep -o 'value:[0-9]*' | cut -d: -f2")
         pw = pw.model_copy(update={"details": f"quantum={quantum or '?'} rate={rate or '?'}Hz"})
 
+    # Throttle / voltage check
+    throttled_raw = await _run("vcgencmd get_throttled 2>/dev/null")
+    throttled_val = 0
+    if "=" in throttled_raw:
+        with contextlib.suppress(ValueError):
+            throttled_val = int(throttled_raw.split("=")[1], 16)
+
+    alerts: list[str] = []
+    # Check each flag
+    if throttled_val & 0x1:
+        alerts.append("UNDER-VOLTAGE NOW — change power supply!")
+    elif throttled_val & 0x10000:
+        alerts.append("Under-voltage occurred since boot")
+    if throttled_val & 0x4:
+        alerts.append("CPU THROTTLED NOW")
+    elif throttled_val & 0x40000:
+        alerts.append("CPU throttled since boot")
+    if throttled_val & 0x2:
+        alerts.append("CPU frequency capped NOW")
+    elif throttled_val & 0x20000:
+        alerts.append("CPU frequency was capped")
+    # Memory check
+    if mem_total and mem_avail < mem_total * 0.15:
+        alerts.append(f"Low memory: {mem_avail}MB available")
+    # CPU check
+    cpu_pct = round(os.getloadavg()[0] / (os.cpu_count() or 1) * 100, 1)
+    if cpu_pct > 90:
+        alerts.append(f"High CPU: {cpu_pct}%")
+    # Process check
+    for p in [pw, wp, bluez, avahi]:
+        if not p.running:
+            alerts.append(f"{p.name} is DOWN")
+    # Temperature
+    temp_raw = await _run("vcgencmd measure_temp 2>/dev/null")
+    if "=" in temp_raw:
+        try:
+            temp = float(temp_raw.split("=")[1].replace("'C", ""))
+            if temp > 80:
+                alerts.append(f"OVERHEATING: {temp}°C")
+            elif temp > 70:
+                alerts.append(f"High temp: {temp}°C")
+        except ValueError:
+            pass
+
     result = SystemStatusResponse(
         agent_version=__version__,
         hostname=platform.node(),
@@ -159,6 +206,8 @@ async def system_status(request: Request) -> SystemStatusResponse:
         cpu_load_5m=os.getloadavg()[1],
         cpu_load_15m=os.getloadavg()[2],
         cpu_percent=round(os.getloadavg()[0] / (os.cpu_count() or 1) * 100, 1),
+        throttled=throttled_val,
+        alerts=alerts,
         processes=[pw, wp, bluez, avahi],
         usb_buses=await _get_usb_buses(),
     )

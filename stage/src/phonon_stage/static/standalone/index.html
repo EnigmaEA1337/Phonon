@@ -229,7 +229,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- System Processes -->
   <div class="section edit-only">
-    <div class="section-head">System</div>
+    <div class="section-head">System <span id="sys-status" style="font-weight:400;font-size:10px;margin-left:8px"></span></div>
     <div class="section-body">
       <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
     </div>
@@ -1158,6 +1158,19 @@ async function refreshSystemStatus() {
   }
 
   el.innerHTML = html;
+
+  // Update system status badge
+  const statusEl = document.getElementById('sys-status');
+  if (statusEl) {
+    if (!sys.alerts || sys.alerts.length === 0) {
+      statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">OK</span>';
+    } else {
+      const isNow = sys.alerts.some(a => a.includes('NOW') || a.includes('DOWN') || a.includes('OVER'));
+      const color = isNow ? 'var(--red)' : 'var(--yellow)';
+      statusEl.innerHTML = `<span style="color:${color};font-weight:600">${sys.alerts[0]}</span>` +
+        (sys.alerts.length > 1 ? `<span style="color:var(--text-fade)"> +${sys.alerts.length - 1}</span>` : '');
+    }
+  }
 }
 refreshSystemStatus();
 setInterval(refreshSystemStatus, 30000);

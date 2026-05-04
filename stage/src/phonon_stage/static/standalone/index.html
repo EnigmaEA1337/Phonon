@@ -588,7 +588,7 @@ function renderMappings(mappings) {
   // VU segments for vertical bars (20 segments)
   const vuSegs = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('');
   // Fader position: map dB (-90..+12) to % (100..0)
-  const dbToY = (db) => Math.max(0, Math.min(100, (1 - (db + 90) / 102) * 100));
+  const dbToY = (db) => faderDbToY(db);
   // Knob angle: map 0-50ms to 0-270 degrees
   const delayToAngle = (ms) => Math.min(ms / 50, 1) * 270;
 
@@ -638,8 +638,11 @@ function renderMappings(mappings) {
       </div>
       <div class="knob-val" id="dv-${m.id}">${delayVal}ms</div>
 
-      <!-- VU L + VU R + Fader -->
+      <!-- VU L + VU R + Fader + ticks -->
       <div class="fader-area">
+        <div style="display:flex;flex-direction:column;justify-content:space-between;height:100%;font-family:var(--font-m);font-size:5px;color:var(--text-fade);text-align:right;padding:2px 0">
+          <span>0</span><span>-6</span><span>-12</span><span>-20</span><span>-40</span><span>-60</span>
+        </div>
         <div class="vu-bar" data-ch="L">${vuSegs}</div>
         <div class="vu-bar" data-ch="R">${vuSegs}</div>
         <div class="fader-col" data-mapping="${m.id}" data-param="gain">
@@ -661,14 +664,21 @@ function renderMappings(mappings) {
   el.querySelectorAll('.knob-wrap').forEach(setupKnobDrag);
 }
 
+// Audio-curve fader mapping: top 70% = +12 to -40dB, bottom 30% = -40 to -90dB
+function faderYToDb(pct) {
+  if (pct <= 70) return 12 - (pct / 70) * 52;  // +12 to -40
+  return -40 - ((pct - 70) / 30) * 50;          // -40 to -90
+}
+function faderDbToY(db) {
+  if (db >= -40) return Math.max(0, Math.min(70, (12 - db) / 52 * 70));
+  return Math.min(100, 70 + (-40 - db) / 50 * 30);
+}
+
 function setupFaderDrag(faderEl) {
   const mid = faderEl.dataset.mapping;
   let dragging = false, startY = 0, startVal = 0;
   const handle = faderEl.querySelector('.fader-handle');
   const fill = faderEl.querySelector('.fader-fill');
-
-  const yToDb = (pct) => -90 + (1 - pct / 100) * 102;
-  const dbToY = (db) => Math.max(0, Math.min(100, (1 - (db + 90) / 102) * 100));
 
   const onDown = (e) => {
     dragging = true;
@@ -683,7 +693,7 @@ function setupFaderDrag(faderEl) {
     const pct = Math.max(0, Math.min(100, startVal + ((y - startY) / rect.height) * 100));
     handle.style.top = pct + '%';
     fill.style.top = pct + '%';
-    const db = yToDb(pct);
+    const db = faderYToDb(pct);
     const dbEl = document.getElementById('gv-' + mid);
     if (dbEl) dbEl.textContent = db.toFixed(1) + ' dB';
     updateGain(mid, db.toFixed(1));

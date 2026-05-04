@@ -53,8 +53,13 @@ async def _read_peak(sink_name: str, duration_ms: int = 50) -> float:
             return 0.0
 
         samples = struct.unpack(f"<{len(data) // 2}h", data)
-        rms = math.sqrt(sum(s * s for s in samples) / len(samples)) / 32768.0
-        return min(rms * 2.0, 1.0)  # Scale up for visibility
+        # Use peak instead of RMS for more visible metering
+        peak = max(abs(s) for s in samples) / 32768.0 if samples else 0.0
+        if peak < 0.001:
+            return 0.0
+        # Convert to dB scale, map -60dB..0dB to 0.0..1.0
+        db = 20 * math.log10(max(peak, 1e-10))
+        return max(0.0, min(1.0, (db + 60) / 60))
 
     except Exception:
         return 0.0

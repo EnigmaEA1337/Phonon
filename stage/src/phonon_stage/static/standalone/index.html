@@ -143,9 +143,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .mode-btn.active-live { background: linear-gradient(180deg, #22d3ee, #0e7490); color: var(--bg-0); }
 .mode-btn.active-edit { background: linear-gradient(180deg, #e879f9, #9333ea); color: var(--bg-0); }
 
-/* LIVE mode: lock everything except mapping controls */
-body.mode-live .edit-only { opacity: 0.3; pointer-events: none; filter: grayscale(0.5); }
+/* LIVE mode: visible but locked (no clicks) */
+body.mode-live .edit-only { pointer-events: none; }
 body.mode-live .edit-only * { pointer-events: none; }
+body.mode-live .edit-only button,
+body.mode-live .edit-only input,
+body.mode-live .edit-only select { opacity: 0.4; }
 
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 640px) {

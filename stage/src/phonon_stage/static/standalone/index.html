@@ -136,6 +136,17 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .modal-body dd { color: var(--text); margin-left: 0; font-family: var(--font-m); font-size: 10px; }
 .sec-ok { color: var(--green); } .sec-warn { color: var(--yellow); } .sec-bad { color: var(--red); }
 
+/* ── Mode Toggle (LIVE/EDIT) ────────────────────────── */
+.mode-toggle { display: flex; background: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 3px; overflow: hidden; }
+.mode-btn { height: 26px; padding: 0 12px; background: transparent; border: none; color: var(--text-dim);
+  font-family: var(--font-d); font-size: 11px; font-weight: 600; cursor: pointer; letter-spacing: 0.5px; }
+.mode-btn.active-live { background: linear-gradient(180deg, #22d3ee, #0e7490); color: var(--bg-0); }
+.mode-btn.active-edit { background: linear-gradient(180deg, #e879f9, #9333ea); color: var(--bg-0); }
+
+/* LIVE mode: lock everything except mapping controls */
+body.mode-live .edit-only { opacity: 0.3; pointer-events: none; filter: grayscale(0.5); }
+body.mode-live .edit-only * { pointer-events: none; }
+
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 640px) {
   .patch-grid { grid-template-columns: 1fr; }
@@ -161,10 +172,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     PHONON
   </div>
   <span class="badge">STANDALONE</span>
+  <div class="mode-toggle">
+    <button class="mode-btn active-live" id="mode-live" onclick="setMode('live')">LIVE</button>
+    <button class="mode-btn" id="mode-edit" onclick="setMode('edit')">EDIT</button>
+  </div>
   <span class="tb-info" id="stage-id">—</span>
   <div class="tb-spacer"></div>
-  <button class="btn" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
-  <button class="btn" style="font-size:9px;padding:2px 6px" onclick="showModal('security')">Security</button>
+  <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
+  <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('security')">Security</button>
   <span class="tb-led"></span>
   <span class="tb-info" id="uptime">—</span>
   <span class="tb-clock" id="clock">--:--:--</span>
@@ -173,7 +188,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 <div class="container">
 
   <!-- System Processes -->
-  <div class="section">
+  <div class="section edit-only">
     <div class="section-head">System</div>
     <div class="section-body">
       <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
@@ -181,7 +196,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   </div>
 
   <!-- Capabilities -->
-  <div class="section">
+  <div class="section edit-only">
     <div class="section-head">Audio Devices</div>
     <div class="section-body">
       <div class="card-grid" id="audio-devices"></div>
@@ -189,7 +204,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   </div>
 
   <!-- Patch Bay -->
-  <div class="section">
+  <div class="section edit-only">
     <div class="section-head">Patch Bay <span style="font-weight:400;color:var(--text-dim);font-size:10px">(max 8 mappings)</span></div>
     <div class="section-body">
       <div class="patch-grid">
@@ -216,7 +231,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   </div>
 
   <!-- Bluetooth -->
-  <div class="section">
+  <div class="section edit-only">
     <div class="section-head">Bluetooth</div>
     <div class="section-body">
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
@@ -238,7 +253,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   </div>
 
   <!-- Discovered Stages -->
-  <div class="section">
+  <div class="section edit-only">
     <div class="section-head">Network Stages</div>
     <div class="section-body" id="stages-list">
       <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
@@ -259,6 +274,16 @@ window.onerror = function(msg, url, line, col, err) {
   document.getElementById('bt-status').textContent = 'JS ERROR: ' + msg + ' L' + line;
   console.error('[Phonon] Error:', msg, 'at line', line);
 };
+
+// ── Mode LIVE/EDIT ──────────────────────────────────
+function setMode(mode) {
+  document.body.className = mode === 'live' ? 'mode-live' : '';
+  document.getElementById('mode-live').className = mode === 'live' ? 'mode-btn active-live' : 'mode-btn';
+  document.getElementById('mode-edit').className = mode === 'edit' ? 'mode-btn active-edit' : 'mode-btn';
+  localStorage.setItem('phonon-mode', mode);
+}
+// Restore mode from localStorage
+setMode(localStorage.getItem('phonon-mode') || 'live');
 let state = {
   selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
   btControllers: [], btSelectedController: null, pairedDevices: [], btAudioDevices: [],
@@ -490,7 +515,7 @@ function renderMappings(mappings) {
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;${ledStyle}"></span>
         <div class="mapping-route">${srcName} <span style="color:var(--cyan)">→</span> ${sinkName}${sinkBt}${sinkLat}</div>
         <button class="btn-mute${m.mute ? ' active' : ''}" onclick="toggleMute('${m.id}', ${!m.mute})">M</button>
-        <button class="btn-del" onclick="deleteMapping('${m.id}')">✕</button>
+        <button class="btn-del edit-only" onclick="deleteMapping('${m.id}')">✕</button>
       </div>
       <div style="display:flex;align-items:center;gap:6px;padding-left:14px">
         <span class="vu-label">L</span>

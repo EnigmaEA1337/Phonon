@@ -261,7 +261,7 @@ window.onerror = function(msg, url, line, col, err) {
 };
 let state = {
   selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
-  btControllers: [], btSelectedController: null, pairedDevices: [],
+  btControllers: [], btSelectedController: null, pairedDevices: [], btAudioDevices: [],
 };
 
 // ── Clock ────────────────────────────────────────────
@@ -323,6 +323,11 @@ async function refreshAll() {
       }
     }
     state.pairedDevices = allPaired;
+
+    // Fetch BlueALSA device info (codec, rate, channels)
+    const btAudio = await api('/bluealsa/devices');
+    if (btAudio) state.btAudioDevices = btAudio;
+
     renderBtPairedDevices(allPaired);
   }
 }
@@ -688,15 +693,15 @@ function renderBtPairedDevices(devices) {
         : `<button class="btn btn-primary" onclick="btConnect('${d.address}')">Connect</button>`;
       const unpairBtn = `<button class="btn-del" title="Unpair" onclick="btUnpair('${d.address}')" style="font-size:9px">✕</button>`;
 
-      // Match PipeWire node for extended BT info
-      const pwNode = state.nodes.find(n => n.bt_address === d.address);
+      // Match BlueALSA device info for codec/rate
+      const baDevice = (state.btAudioDevices || []).find(bd => bd.mac === d.address);
       let infoLine = '';
-      if (pwNode && d.connected) {
+      if (baDevice && d.connected) {
         const parts = [];
-        if (pwNode.bt_codec) parts.push(`<span style="color:var(--cyan);font-weight:600">${pwNode.bt_codec.toUpperCase()}</span>`);
-        if (pwNode.sample_rate) parts.push(`${pwNode.sample_rate / 1000}kHz`);
-        if (pwNode.channels) parts.push(`${pwNode.channels}ch`);
-        if (pwNode.latency_ms) parts.push(`<span style="color:${pwNode.latency_ms > 200 ? 'var(--yellow)' : 'var(--green)'}">${pwNode.latency_ms}ms</span>`);
+        if (baDevice.codec) parts.push(`<span style="color:var(--cyan);font-weight:600">${baDevice.codec}</span>`);
+        if (baDevice.rate) parts.push(`${(parseInt(baDevice.rate) / 1000).toFixed(1)}kHz`);
+        if (baDevice.channels) parts.push(`${baDevice.channels}ch`);
+        if (baDevice.type) parts.push(baDevice.type === 'playback' ? 'OUTPUT' : 'INPUT');
         if (parts.length) {
           infoLine = `<div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-top:2px;margin-left:14px">${parts.join(' · ')}</div>`;
         }

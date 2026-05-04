@@ -81,6 +81,18 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
             elif ", capture" in stripped:
                 current_entry["type"] = "capture"
                 current_entry["name"] = stripped.split(",")[0].strip()
+            elif "A2DP" in stripped or "SCO" in stripped:
+                # e.g. "A2DP (SBC): S16_LE 2 channels 48000 Hz"
+                current_entry["codec_info"] = stripped
+                if "(" in stripped and ")" in stripped:
+                    current_entry["codec"] = stripped.split("(")[1].split(")")[0]
+                if "channels" in stripped:
+                    parts = stripped.split()
+                    for i, p in enumerate(parts):
+                        if p == "channels" and i > 0:
+                            current_entry["channels"] = parts[i - 1]
+                        elif p == "Hz" and i > 0:
+                            current_entry["rate"] = parts[i - 1]
 
     # Don't forget the last one
     if current_mac and current_entry.get("type"):
@@ -252,3 +264,9 @@ async def list_bridges() -> dict[str, object]:
             for k, v in _active_bridges.items()
         ]
     }
+
+
+@router.get("/devices")
+async def list_bt_audio_devices() -> list[dict[str, str]]:
+    """List connected BT audio devices with codec/rate info from BlueALSA."""
+    return await _list_bluealsa_pcms()

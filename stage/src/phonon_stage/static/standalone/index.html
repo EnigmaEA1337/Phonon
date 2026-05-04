@@ -285,8 +285,55 @@ function applyMode(mode) {
   document.getElementById('mode-edit').className = mode === 'edit' ? 'mode-btn active-edit' : 'mode-btn';
 }
 async function setMode(mode) {
+  if (mode === 'edit') {
+    // Confirmation modal — type "EDIT" to unlock
+    let overlay = document.getElementById('edit-confirm-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'edit-confirm-overlay';
+      overlay.className = 'modal-overlay open';
+      overlay.innerHTML = `<div class="modal" style="max-width:360px">
+        <div class="modal-head"><h2>Switch to EDIT mode</h2></div>
+        <div class="modal-body" style="text-align:center">
+          <p style="font-size:12px;color:var(--text-mid);margin-bottom:12px">This will unlock all controls.<br>Type <strong style="color:var(--pink)">EDIT</strong> to confirm.</p>
+          <input type="text" id="edit-confirm-input" placeholder="Type EDIT..." autocomplete="off"
+            style="background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:14px;padding:8px 12px;border-radius:4px;text-align:center;width:150px;text-transform:uppercase">
+          <div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
+            <button class="btn" onclick="cancelEditMode()">Cancel</button>
+            <button class="btn btn-primary" id="edit-confirm-btn" onclick="confirmEditMode()" disabled>Confirm</button>
+          </div>
+        </div>
+      </div>`;
+      document.body.appendChild(overlay);
+      const input = document.getElementById('edit-confirm-input');
+      input.addEventListener('input', () => {
+        document.getElementById('edit-confirm-btn').disabled = input.value.toUpperCase() !== 'EDIT';
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && input.value.toUpperCase() === 'EDIT') confirmEditMode();
+        if (e.key === 'Escape') cancelEditMode();
+      });
+      input.focus();
+    } else {
+      overlay.classList.add('open');
+      document.getElementById('edit-confirm-input').value = '';
+      document.getElementById('edit-confirm-btn').disabled = true;
+      document.getElementById('edit-confirm-input').focus();
+    }
+    return;
+  }
   applyMode(mode);
   await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
+}
+
+async function confirmEditMode() {
+  document.getElementById('edit-confirm-overlay').classList.remove('open');
+  applyMode('edit');
+  await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode: 'edit' }) });
+}
+
+function cancelEditMode() {
+  document.getElementById('edit-confirm-overlay').classList.remove('open');
 }
 async function syncMode() {
   const r = await api('/mode');

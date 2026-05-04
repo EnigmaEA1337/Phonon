@@ -169,8 +169,8 @@ async def create_bridge(
             f"parec --device=bt_{safe_name}.monitor --format=s16le --rate=48000 --channels=2 "
             f"--latency-msec={buffer_ms} "
             f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 48000 -c 2 '
-            f"--period-size={period_48} --buffer-size={period_48 * 2} -; "
-            f"sleep 1; done"
+            f"--period-size={period_48} --buffer-size={period_48 * 2} - 2>/dev/null; "
+            f"sleep 0.5; done"
         )
         proc = await asyncio.create_subprocess_shell(
             bridge_cmd,
@@ -202,13 +202,17 @@ async def create_bridge(
         # Bridge: bluealsa capture → pacat into the null sink
         # The null sink's MONITOR becomes the source in PipeWire
         period_44 = int(44100 * buffer_ms / 1000)
+        # Use --duration=0 and let the while loop handle restart
+        # sleep 0.5 for fast restart after stream ends
         bridge_cmd = (
             f"while true; do "
-            f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 44100 -c 2 '
+            f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" '
+            f"-f S16_LE -r 44100 -c 2 "
             f"--period-size={period_44} --buffer-size={period_44 * 2} - "
+            f"2>/dev/null "
             f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2 "
-            f"--latency-msec=50; "
-            f"sleep 1; done"
+            f"--latency-msec={buffer_ms}; "
+            f"sleep 0.5; done"
         )
         proc = await asyncio.create_subprocess_shell(
             bridge_cmd,

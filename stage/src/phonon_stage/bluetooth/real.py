@@ -189,6 +189,20 @@ class RealBluetoothBackend:
                 return hci_name, ""
         return "", ""
 
+    async def set_alias(self, controller_address: str, alias: str) -> None:
+        bus = await self._get_bus()
+        try:
+            from dbus_fast import Variant
+
+            path = await self._find_adapter_path(bus, controller_address)
+            introspection = await bus.introspect("org.bluez", path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", path, introspection)  # type: ignore[attr-defined]
+            props = proxy.get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set(_ADAPTER_INTERFACE, "Alias", Variant("s", alias))
+            logger.info("bluetooth.alias_set", controller=controller_address, alias=alias)
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
+
     async def set_power(self, controller_address: str, powered: bool) -> None:
         hci, rfk_idx = await self._find_hci_and_rfkill(controller_address)
         if powered:

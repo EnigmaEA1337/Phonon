@@ -25,6 +25,9 @@ class FakeBluetoothBackend:
     async def list_controllers(self) -> list[BluetoothController]:
         return list(self._controllers)
 
+    async def set_alias(self, controller_address: str, alias: str) -> None:
+        self.call_log.append(f"alias:{controller_address}:{alias}")
+
     async def set_power(self, controller_address: str, powered: bool) -> None:
         self._powered[controller_address] = powered
         self.call_log.append(f"power:{controller_address}:{powered}")

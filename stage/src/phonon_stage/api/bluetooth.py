@@ -33,6 +33,22 @@ class RoleRequest(BaseModel):
     role: str  # "receiver" or "transmitter"
 
 
+class AliasRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str
+
+
+@router.post("/{controller_address}/alias", status_code=200)
+async def set_alias(
+    request: Request, controller_address: str, body: AliasRequest
+) -> dict[str, object]:
+    try:
+        await request.app.state.bt_backend.set_alias(controller_address, body.alias)
+        return {"controller": controller_address, "alias": body.alias}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/{controller_address}/role", status_code=200)
 async def set_role(
     request: Request, controller_address: str, body: RoleRequest

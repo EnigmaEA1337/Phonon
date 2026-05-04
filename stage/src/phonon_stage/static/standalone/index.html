@@ -568,10 +568,11 @@ function renderBtControllerSelect(controllers) {
     const roleLabel = role === 'receiver' ? 'RX' : 'TX';
     const hw = c.hw_name ? c.hw_name.split(',')[0] : '';
     const pwLed = c.powered ? 'background:var(--green);box-shadow:0 0 4px var(--green)' : 'background:var(--text-fade)';
-    return `<div class="card" style="min-width:200px;padding:8px 10px">
+    return `<div class="card" style="min-width:220px;padding:8px 10px">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;${pwLed}"></span>
-        <span style="font-size:11px;font-weight:600">${c.alias || c.name}</span>
+        <input type="text" value="${c.alias || c.name}" style="background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:11px;font-weight:600;font-family:var(--font-d);width:100px;padding:0 2px"
+          onchange="btSetAlias('${c.address}',this.value)">
         <span style="font-family:var(--font-m);font-size:8px;color:${roleColor};font-weight:700;border:1px solid ${roleColor};padding:0 4px;border-radius:2px">${roleLabel}</span>
       </div>
       <div class="card-meta">${hw}</div>
@@ -584,6 +585,14 @@ function renderBtControllerSelect(controllers) {
       </div>
     </div>`;
   }).join('');
+}
+
+async function btSetAlias(addr, alias) {
+  await api(`/bluetooth/${addr}/alias`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ alias }),
+  });
+  await refreshAll();
 }
 
 async function btSetRole(addr, role) {

@@ -136,8 +136,13 @@ async def pw_dump() -> list[dict[str, Any]]:
 
 
 async def pw_link_create(output_port_id: int, input_port_id: int) -> str:
-    """Create a PipeWire link. Returns raw output."""
-    return await run_command("pw-link", str(output_port_id), str(input_port_id))
+    """Create a PipeWire link. Returns raw output. Ignores 'File exists' (already linked)."""
+    try:
+        return await run_command("pw-link", str(output_port_id), str(input_port_id))
+    except PipeWireCliError as e:
+        if "File exists" in e.stderr:
+            return ""  # Link already exists, that's fine
+        raise
 
 
 async def pw_link_destroy(link_id: int) -> str:

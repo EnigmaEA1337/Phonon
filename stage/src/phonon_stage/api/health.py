@@ -1,4 +1,4 @@
-"""GET /health endpoint — liveness check with uptime and stage identity."""
+"""GET /health endpoint + UI mode sync."""
 
 from __future__ import annotations
 
@@ -6,6 +6,9 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
 router = APIRouter()
+
+# Server-side UI mode (synced across all browsers)
+_ui_mode: str = "live"
 
 
 class HealthResponse(BaseModel):
@@ -27,6 +30,18 @@ async def health(request: Request) -> HealthResponse:
         uptime_seconds=round(elapsed, 1),
         stage_id=state.config.stage_id,
     )
+
+
+@router.get("/mode")
+async def get_mode() -> dict[str, str]:
+    return {"mode": _ui_mode}
+
+
+@router.post("/mode")
+async def set_mode(body: dict[str, str]) -> dict[str, str]:
+    global _ui_mode
+    _ui_mode = body.get("mode", "live")
+    return {"mode": _ui_mode}
 
 
 @router.get("/debug/pw-test")

@@ -275,15 +275,22 @@ window.onerror = function(msg, url, line, col, err) {
   console.error('[Phonon] Error:', msg, 'at line', line);
 };
 
-// ── Mode LIVE/EDIT ──────────────────────────────────
-function setMode(mode) {
+// ── Mode LIVE/EDIT (synced across all browsers via server) ──
+function applyMode(mode) {
   document.body.className = mode === 'live' ? 'mode-live' : '';
   document.getElementById('mode-live').className = mode === 'live' ? 'mode-btn active-live' : 'mode-btn';
   document.getElementById('mode-edit').className = mode === 'edit' ? 'mode-btn active-edit' : 'mode-btn';
-  localStorage.setItem('phonon-mode', mode);
 }
-// Restore mode from localStorage
-setMode(localStorage.getItem('phonon-mode') || 'live');
+async function setMode(mode) {
+  applyMode(mode);
+  await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
+}
+async function syncMode() {
+  const r = await api('/mode');
+  if (r) applyMode(r.mode);
+}
+syncMode();
+setInterval(syncMode, 5000);
 let state = {
   selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
   btControllers: [], btSelectedController: null, pairedDevices: [], btAudioDevices: [],

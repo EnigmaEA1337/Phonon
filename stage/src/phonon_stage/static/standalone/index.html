@@ -360,24 +360,22 @@ async function setMode(mode) {
     return;
   }
   applyMode(mode);
-  await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'mode', data: {mode}}));
+  else await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
 }
 
 async function confirmEditMode() {
   document.getElementById('edit-confirm-overlay').classList.remove('open');
   applyMode('edit');
-  await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode: 'edit' }) });
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'mode', data: {mode: 'edit'}}));
+  else await api('/mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ mode: 'edit' }) });
 }
 
 function cancelEditMode() {
   document.getElementById('edit-confirm-overlay').classList.remove('open');
 }
-async function syncMode() {
-  const r = await api('/mode');
-  if (r) applyMode(r.mode);
-}
-syncMode();
-setInterval(syncMode, 5000);
+// Mode sync now handled via WebSocket
+(async () => { const r = await api('/mode'); if (r) applyMode(r.mode); })();
 let state = {
   selectedSource: null, selectedSink: null, nodes: [], ports: [], mappings: [],
   btControllers: [], btSelectedController: null, pairedDevices: [], btAudioDevices: [],
@@ -1018,16 +1016,34 @@ function renderStages(stages) {
   </div>`).join('');
 }
 
-// ── VU Meter — real levels from /levels endpoint ─────
+// ── WebSocket for real-time data (VU levels, mode, alerts) ──
 let vuLevels = {};
+let ws = null;
 
-async function fetchLevels() {
-  try {
-    const data = await api('/levels');
-    if (data) vuLevels = data;
-  } catch(e) { /* ignore */ }
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'levels') vuLevels = msg.data;
+      else if (msg.type === 'mode') applyMode(msg.data.mode);
+      else if (msg.type === 'alerts') {
+        const statusEl = document.getElementById('sys-status');
+        if (statusEl) {
+          if (!msg.data.length) statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">OK</span>';
+          else {
+            const isNow = msg.data.some(a => a.includes('NOW'));
+            statusEl.innerHTML = `<span style="color:${isNow ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${msg.data[0]}</span>`;
+          }
+        }
+      }
+    } catch(err) { /* ignore */ }
+  };
+  ws.onclose = () => { setTimeout(connectWS, 2000); };
+  ws.onerror = () => { ws.close(); };
 }
-setInterval(fetchLevels, 300);
+connectWS();
 
 // Peak hold state per bar
 const peakHolds = new WeakMap();

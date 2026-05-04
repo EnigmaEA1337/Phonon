@@ -60,12 +60,22 @@ async def run_command(*args: str) -> str:
     return stdout
 
 
+_pw_dump_cache: list[dict[str, Any]] = []
+_pw_dump_cache_time: float = 0.0
+_PW_DUMP_CACHE_TTL = 5.0  # seconds
+
+
 async def pw_dump() -> list[dict[str, Any]]:
     """Run pw-dump and return parsed JSON array of PipeWire objects.
 
+    Results are cached for 5 seconds to reduce subprocess overhead.
     pw-dump may stream continuously (monitoring mode). We read with a
     short timeout — once the initial dump is sent we parse whatever we got.
     """
+    global _pw_dump_cache, _pw_dump_cache_time
+    now = asyncio.get_event_loop().time()
+    if _pw_dump_cache and (now - _pw_dump_cache_time) < _PW_DUMP_CACHE_TTL:
+        return _pw_dump_cache
     proc = await asyncio.create_subprocess_exec(
         "pw-dump",
         stdout=asyncio.subprocess.PIPE,
@@ -109,16 +119,20 @@ async def pw_dump() -> list[dict[str, Any]]:
     # partial data from monitoring. Try to parse as-is, then try truncating
     # at the last top-level `]`.
     try:
-        return json.loads(full)  # type: ignore[no-any-return]
+        result = json.loads(full)
     except json.JSONDecodeError:
-        # Find the last `]\n` which closes the top-level array
         last_bracket = full.rfind("\n]\n")
         if last_bracket == -1:
             last_bracket = full.rfind("\n]")
         if last_bracket >= 0:
             truncated = full[: last_bracket + 2]
-            return json.loads(truncated)  # type: ignore[no-any-return]
-        raise PipeWireCliError("pw-dump", -1, "unparseable output") from None
+            result = json.loads(truncated)
+        else:
+            raise PipeWireCliError("pw-dump", -1, "unparseable output") from None
+
+    _pw_dump_cache = result
+    _pw_dump_cache_time = asyncio.get_event_loop().time()
+    return result  # type: ignore[no-any-return]
 
 
 async def pw_link_create(output_port_id: int, input_port_id: int) -> str:

@@ -160,31 +160,181 @@ else
     echo "  Config already exists, not overwriting"
 fi
 
-# ─�� Step 7/7: Install and start systemd service ─────────────────────────
+# -- Step 7/10: Disable old system service if present -------------------------
 
-echo "[7/7] Installing systemd service..."
+echo "[7/10] Cleaning up old system service..."
 
-cp "${SCRIPT_DIR}/systemd/phonon-stage.service" /etc/systemd/system/
+if systemctl is-enabled phonon-stage.service 2>/dev/null; then
+    systemctl stop phonon-stage.service 2>/dev/null
+    systemctl disable phonon-stage.service 2>/dev/null
+    echo "  Old system service disabled"
+else
+    echo "  No old system service found"
+fi
+
+# -- Step 8/10: Install BT auxiliary services ---------------------------------
+
+echo "[8/10] Installing BT auxiliary services..."
+
+# Install python3-dbus + python3-gi for bt-agent
+apt-get install -y -qq python3-dbus python3-gi bluez-alsa-utils 2>/dev/null || true
+
+# Disable bluealsa-aplay (Phonon manages routing itself)
+systemctl disable bluealsa-aplay 2>/dev/null || true
+systemctl stop bluealsa-aplay 2>/dev/null || true
+
+# BlueALSA D-Bus policy
+cat > /etc/dbus-1/system.d/bluealsa.conf <<'DBUSEOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root">
+    <allow own="org.bluealsa"/>
+    <allow send_destination="org.bluealsa"/>
+  </policy>
+  <policy user="phonon">
+    <allow own="org.bluealsa"/>
+    <allow send_destination="org.bluealsa"/>
+  </policy>
+  <policy context="default">
+    <allow send_destination="org.bluealsa"/>
+  </policy>
+</busconfig>
+DBUSEOF
+
+# BT Agent script (auto-accept pairing + auto-trust)
+cp "${REPO_ROOT}/deploy/bt-agent.py" /opt/phonon/bt-agent.py 2>/dev/null || true
+chmod +x /opt/phonon/bt-agent.py 2>/dev/null || true
+
+# BT Agent systemd service
+cat > /etc/systemd/system/phonon-bt-agent.service <<'BTAGENTSVC'
+[Unit]
+Description=Phonon Bluetooth Agent (auto-accept pairing)
+After=bluetooth.service
+Requires=bluetooth.service
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/phonon/bt-agent.py
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=bluetooth.target
+BTAGENTSVC
+
+# BT rfkill unblock service
+cat > /etc/systemd/system/phonon-bt-unblock.service <<'BTUNBLOCK'
+[Unit]
+Description=Unblock Bluetooth for Phonon
+Before=bluetooth.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+[Install]
+WantedBy=multi-user.target
+BTUNBLOCK
+
+# Sudoers for phonon (rfkill + hciconfig without password)
+cat > /etc/sudoers.d/phonon <<'SUDOERS'
+phonon ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
+phonon ALL=(ALL) NOPASSWD: /usr/sbin/hciconfig
+phonon ALL=(ALL) NOPASSWD: /usr/bin/rfkill
+phonon ALL=(ALL) NOPASSWD: /bin/hciconfig
+SUDOERS
+chmod 440 /etc/sudoers.d/phonon
+
+# Enable persistent journal
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null
+
+# Reload and enable
 systemctl daemon-reload
-systemctl enable phonon-stage.service --quiet
+systemctl enable phonon-bt-agent.service --quiet 2>/dev/null
+systemctl enable phonon-bt-unblock.service --quiet 2>/dev/null
+systemctl restart phonon-bt-agent.service 2>/dev/null
+systemctl start phonon-bt-unblock.service 2>/dev/null
+echo "  BT services installed"
 
-echo "  Starting phonon-stage..."
-systemctl restart phonon-stage.service
+# -- Step 9/10: Setup user service + linger -----------------------------------
 
-# Brief pause to let the service start
-sleep 1
+echo "[9/10] Installing phonon-stage user service..."
 
-if systemctl is-active --quiet phonon-stage.service; then
+PHONON_UID=$(id -u "${PHONON_USER}")
+
+# Set home dir (needed for systemd user config)
+usermod -d "${DATA_DIR}" "${PHONON_USER}" 2>/dev/null || true
+
+# Enable linger (PipeWire starts at boot without login)
+touch "/var/lib/systemd/linger/${PHONON_USER}" 2>/dev/null || true
+
+# Create user service
+mkdir -p "${DATA_DIR}/.config/systemd/user"
+cat > "${DATA_DIR}/.config/systemd/user/phonon-stage.service" <<USVC
+[Unit]
+Description=Phonon Stage Agent
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=exec
+ExecStart=${VENV_DIR}/bin/phonon-stage --config ${CONFIG_DIR}/stage.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+USVC
+
+# WirePlumber config (disable bluez5, use bluealsa instead)
+mkdir -p "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d"
+cat > "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d/90-phonon-bluetooth.conf" <<'WPCONF'
+wireplumber.profiles = {
+  main = {
+    monitor.bluez = disabled
+    monitor.bluez-midi = disabled
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+WPCONF
+
+chown -R "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}/.config"
+echo "  User service installed"
+
+# -- Step 10/10: Start everything ---------------------------------------------
+
+echo "[10/10] Starting services..."
+
+# Ensure runtime dir
+mkdir -p "/run/user/${PHONON_UID}"
+chown "${PHONON_USER}:${PHONON_GROUP}" "/run/user/${PHONON_UID}"
+chmod 700 "/run/user/${PHONON_UID}"
+
+# Start user instance
+systemctl start "user@${PHONON_UID}.service"
+sleep 3
+
+# Enable and start phonon-stage
+systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
+    -p PAMName=login --pipe --wait -- \
+    systemctl --user daemon-reload 2>&1 || true
+systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
+    -p PAMName=login --pipe --wait -- \
+    systemctl --user enable --now phonon-stage 2>&1 || true
+
+sleep 3
+
+# Detect bind IP for display
+BIND_IP=$(grep bind_address "${CONFIG_DIR}/stage.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "localhost")
+
+if curl -s -o /dev/null -w "%{http_code}" "http://${BIND_IP}:8401/health" 2>/dev/null | grep -q "200"; then
     echo ""
     echo "========================================="
     echo "  Phonon Stage Agent installed and running"
     echo "  Platform: ${PLATFORM} (${DISTRO} ${DISTRO_VERSION})"
     echo "  Config:   ${CONFIG_DIR}/stage.yaml"
-    echo "  Logs:     journalctl -u phonon-stage -f"
+    echo "  UI:       http://${BIND_IP}:8401/standalone/"
     echo "========================================="
 else
     echo ""
-    echo "[WARNING] Service installed but not running. Check:"
-    echo "  journalctl -u phonon-stage -e --no-pager"
-    exit 1
+    echo "[WARNING] UI not responding yet. Services may still be starting."
+    echo "  Check: systemd-run --uid=phonon -p PAMName=login --pipe --wait -- systemctl --user status phonon-stage"
 fi

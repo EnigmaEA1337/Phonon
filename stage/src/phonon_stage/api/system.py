@@ -96,8 +96,18 @@ async def _check_process(name: str, service: str, version_cmd: str = "") -> Proc
     return ProcessStatus(name=service, running=running, pid=pid, version=version)
 
 
+_sys_cache: SystemStatusResponse | None = None
+_sys_cache_time: float = 0
+
+
 @router.get("/status", response_model=SystemStatusResponse)
 async def system_status(request: Request) -> SystemStatusResponse:
+    import time
+
+    global _sys_cache, _sys_cache_time
+    now = time.monotonic()
+    if _sys_cache and (now - _sys_cache_time) < 10.0:
+        return _sys_cache
     # Memory info
     mem_total = mem_used = mem_avail = 0
     meminfo = await _run("cat /proc/meminfo")
@@ -132,7 +142,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
         rate = await _run(f"{pw_r_cmd} | grep -o 'value:[0-9]*' | cut -d: -f2")
         pw = pw.model_copy(update={"details": f"quantum={quantum or '?'} rate={rate or '?'}Hz"})
 
-    return SystemStatusResponse(
+    result = SystemStatusResponse(
         agent_version=__version__,
         hostname=platform.node(),
         os_name=await _run("cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'")
@@ -152,6 +162,9 @@ async def system_status(request: Request) -> SystemStatusResponse:
         processes=[pw, wp, bluez, avahi],
         usb_buses=await _get_usb_buses(),
     )
+    _sys_cache = result
+    _sys_cache_time = now
+    return result
 
 
 async def _get_usb_buses() -> list[UsbBusInfo]:

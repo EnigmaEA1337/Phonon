@@ -766,7 +766,7 @@ setInterval(animateVU, 80);
 
 // ── Init ─────────────────────────────────────────────
 refreshAll();
-setInterval(refreshAll, 3000);
+setInterval(refreshAll, 10000);
 
 // ── System Status ────────────────────────────────────
 function segBar(pct, segs, color) {
@@ -834,13 +834,13 @@ async function refreshSystemStatus() {
   el.innerHTML = html;
 }
 refreshSystemStatus();
-setInterval(refreshSystemStatus, 5000);
+setInterval(refreshSystemStatus, 30000);
 
-// Auto-sync bluealsa bridges every 10s (restart dead bridges after pause/resume)
+// Auto-sync bluealsa bridges every 30s (restart dead bridges after pause/resume)
 setInterval(async () => {
   const buf = document.getElementById('bt-buffer-slider')?.value || 50;
   await api(`/bluealsa/sync?buffer_ms=${buf}`, { method: 'POST' });
-}, 10000);
+}, 30000);
 
 // ── Modals ───────────────────────────────────────────
 async function showModal(type) {

@@ -189,6 +189,82 @@ class RealBluetoothBackend:
                 return hci_name, ""
         return "", ""
 
+    async def quick_pair(self, controller_address: str, device_address: str) -> dict[str, object]:
+        """Robust scan + trust + pair + connect in one sequence."""
+        bus = await self._get_bus()
+        try:
+            from dbus_fast import Variant
+
+            # 1. Start discovery on the specific adapter
+            adapter_path = await self._find_adapter_path(bus, controller_address)
+            intro = await bus.introspect("org.bluez", adapter_path)  # type: ignore[attr-defined]
+            proxy = bus.get_proxy_object("org.bluez", adapter_path, intro)  # type: ignore[attr-defined]
+            adapter = proxy.get_interface(_ADAPTER_INTERFACE)
+            await adapter.call_start_discovery()  # type: ignore[attr-defined]
+
+            # 2. Wait for device to appear (up to 15s)
+            dev_mac = device_address.replace(":", "_")
+            device_path = f"{adapter_path}/dev_{dev_mac}"
+            found = False
+            for _ in range(15):
+                await asyncio.sleep(1)
+                try:
+                    d_intro = await bus.introspect("org.bluez", device_path)  # type: ignore[attr-defined]
+                    found = True
+                    break
+                except Exception:
+                    continue
+
+            with contextlib.suppress(Exception):
+                await adapter.call_stop_discovery()  # type: ignore[attr-defined]
+
+            if not found:
+                return {"status": "not_found", "device": device_address}
+
+            # 3. Trust + Pair + Connect immediately
+            d_intro = await bus.introspect("org.bluez", device_path)  # type: ignore[attr-defined]
+            d_proxy = bus.get_proxy_object("org.bluez", device_path, d_intro)  # type: ignore[attr-defined]
+            d_props = d_proxy.get_interface("org.freedesktop.DBus.Properties")
+            device = d_proxy.get_interface(_DEVICE_INTERFACE)
+
+            await d_props.call_set(_DEVICE_INTERFACE, "Trusted", Variant("b", True))
+
+            pair_ok = False
+            try:
+                await device.call_pair()  # type: ignore[attr-defined]
+                pair_ok = True
+            except Exception as e:
+                logger.warning("bluetooth.quick_pair_pair_failed", error=str(e))
+
+            connect_ok = False
+            try:
+                await device.call_connect()  # type: ignore[attr-defined]
+                connect_ok = True
+            except Exception as e:
+                logger.warning("bluetooth.quick_pair_connect_failed", error=str(e))
+
+            # 4. Verify final state
+            await asyncio.sleep(2)
+            paired = await d_props.call_get(_DEVICE_INTERFACE, "Paired")
+            connected = await d_props.call_get(_DEVICE_INTERFACE, "Connected")
+
+            logger.info(
+                "bluetooth.quick_pair_done",
+                device=device_address,
+                paired=paired.value,
+                connected=connected.value,
+            )
+            return {
+                "status": "ok",
+                "device": device_address,
+                "paired": paired.value,
+                "connected": connected.value,
+                "pair_ok": pair_ok,
+                "connect_ok": connect_ok,
+            }
+        finally:
+            bus.disconnect()  # type: ignore[attr-defined]
+
     async def set_alias(self, controller_address: str, alias: str) -> None:
         bus = await self._get_bus()
         try:

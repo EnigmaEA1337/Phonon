@@ -91,6 +91,20 @@ async def set_power(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/quick-pair", status_code=200)
+async def quick_pair(
+    request: Request, body: DeviceRequest, controller_address: str
+) -> dict[str, object]:
+    """Scan + Trust + Pair + Connect in one robust sequence."""
+    try:
+        result = await request.app.state.bt_backend.quick_pair(
+            controller_address, body.device_address
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/scan", response_model=list[BluetoothDeviceResponse])
 async def scan_devices(
     request: Request, controller_address: str, timeout: float = 10.0

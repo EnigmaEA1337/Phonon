@@ -960,13 +960,25 @@ function renderBtScanResults(devices) {
     devices.map(d => `<div class="bt-row">
       <div class="bt-device">${d.alias || d.name || d.address}</div>
       <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
-      <button class="btn" onclick="btPair('${d.address}')">Pair</button>
+      <button class="btn btn-primary" onclick="btQuickPair('${d.address}')" id="qp-${d.address.replace(/:/g,'')}">Quick Pair</button>
     </div>`).join('');
 }
 
-async function btPair(addr) {
-  document.getElementById('bt-status').textContent = 'Pairing...';
-  await api('/bluetooth/pair', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})});
+async function btQuickPair(addr) {
+  const btn = document.getElementById('qp-' + addr.replace(/:/g,''));
+  if (btn) { btn.disabled = true; btn.textContent = 'Pairing...'; }
+  document.getElementById('bt-status').textContent = 'Quick Pair: scanning + pairing + connecting...';
+  const result = await api(`/bluetooth/quick-pair?controller_address=${state.btSelectedController}`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_address:addr})
+  });
+  if (result?.connected) {
+    document.getElementById('bt-status').textContent = 'Connected!';
+  } else if (result?.paired) {
+    document.getElementById('bt-status').textContent = 'Paired but not connected — try Sync Inputs/Outputs';
+  } else {
+    document.getElementById('bt-status').textContent = result?.status === 'not_found' ? 'Device not found — put it in pairing mode' : 'Pair failed: ' + JSON.stringify(result);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Quick Pair'; }
   await refreshAll();
 }
 async function btConnect(addr) {

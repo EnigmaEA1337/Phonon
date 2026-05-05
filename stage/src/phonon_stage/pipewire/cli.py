@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from typing import Any
 
@@ -34,10 +35,14 @@ async def run_command(*args: str) -> str:
     cmd_str = " ".join(args)
     logger.debug("pipewire.cli.run", cmd=cmd_str)
 
+    # Force C locale so error messages are stable English (pw-link's
+    # "File exists" check is locale-sensitive otherwise).
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -115,17 +120,18 @@ async def pw_dump() -> list[dict[str, Any]]:
 
     full = b"".join(chunks).decode()
 
-    # pw-dump output may be a complete JSON array, or may have trailing
-    # partial data from monitoring. Try to parse as-is, then try truncating
-    # at the last top-level `]`.
+    # pw-dump in monitoring mode may emit multiple successive JSON arrays
+    # (one per state change). On a busy PipeWire session this happens within
+    # the 2s read window, producing concatenated arrays. Keep only the first
+    # complete array — that's the initial full dump.
     try:
         result = json.loads(full)
     except json.JSONDecodeError:
-        last_bracket = full.rfind("\n]\n")
-        if last_bracket == -1:
-            last_bracket = full.rfind("\n]")
-        if last_bracket >= 0:
-            truncated = full[: last_bracket + 2]
+        first_close = full.find("\n]\n")
+        if first_close == -1:
+            first_close = full.find("\n]")
+        if first_close >= 0:
+            truncated = full[: first_close + 2]
             result = json.loads(truncated)
         else:
             raise PipeWireCliError("pw-dump", -1, "unparseable output") from None

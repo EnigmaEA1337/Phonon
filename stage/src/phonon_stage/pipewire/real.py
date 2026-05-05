@@ -99,6 +99,9 @@ class RealPipeWireBackend:
             output_port_id=output_port_id,
             input_port_id=input_port_id,
         )
+        # Invalidate cache so the freshly-created (or pre-existing) link is found
+        cli._pw_dump_cache = []
+        cli._pw_dump_cache_time = 0.0
         # pw-link doesn't return the link ID, so we find it by querying
         links = await self.list_links()
         for link in links:

@@ -70,8 +70,10 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
             current_entry = {"pcm": line}
             current_mac = ""
             for part in line.split(","):
-                if part.startswith("DEV="):
-                    current_mac = part.split("=")[1]
+                # bluez-alsa 4.0 emits SRV=...,DEV=... ; 4.1+ emits bluealsa:DEV=...
+                # Match DEV= anywhere in the part (after stripping prefix)
+                if "DEV=" in part:
+                    current_mac = part.split("DEV=", 1)[1]
                     current_entry["mac"] = current_mac
         elif current_entry and line.strip():
             stripped = line.strip()
@@ -168,6 +170,7 @@ async def create_bridge(
             f"while true; do "
             f"parec --device=bt_{safe_name}.monitor --format=s16le --rate=48000 --channels=2 "
             f"--latency-msec={buffer_ms} "
+            f"--property=node.dont-reconnect=true "
             f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 48000 -c 2 '
             f"--period-size={period_48} --buffer-size={period_48 * 2} - 2>/dev/null; "
             f"sleep 0.5; done"
@@ -211,7 +214,12 @@ async def create_bridge(
             f"--period-size={period_44} --buffer-size={period_44 * 2} - "
             f"2>/dev/null "
             f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2 "
-            f"--latency-msec={buffer_ms}; "
+            f"--latency-msec={buffer_ms} "
+            # Prevent WirePlumber session manager from auto-routing this stream
+            # to the default sink (otherwise audio leaks to speakers in addition
+            # to the intended null-sink target).
+            f"--property=node.dont-reconnect=true "
+            f"--property=node.passive=true; "
             f"sleep 0.5; done"
         )
         proc = await asyncio.create_subprocess_shell(

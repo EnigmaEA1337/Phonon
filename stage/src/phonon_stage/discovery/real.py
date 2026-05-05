@@ -7,7 +7,7 @@ import socket
 
 import structlog
 from zeroconf import IPVersion, ServiceInfo, ServiceStateChange, Zeroconf
-from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from phonon_stage import __version__
 from phonon_stage.discovery.backend import DiscoveredStage
@@ -60,17 +60,13 @@ class RealDiscoveryBackend:
             return []
 
         found: list[DiscoveredStage] = []
+        seen_names: set[str] = set()
+        loop = asyncio.get_running_loop()
 
-        def on_state_change(
-            zeroconf: Zeroconf,
-            service_type: str,
-            name: str,
-            state_change: ServiceStateChange,
-        ) -> None:
-            if state_change != ServiceStateChange.Added:
-                return
-            info = zeroconf.get_service_info(service_type, name)
-            if info is None:
+        async def _resolve(service_type: str, name: str) -> None:
+            info = AsyncServiceInfo(service_type, name)
+            ok = await info.async_request(self._azc.zeroconf, 2000)  # type: ignore[union-attr]
+            if not ok:
                 return
             props = {
                 k.decode() if isinstance(k, bytes) else k: v.decode()
@@ -80,8 +76,7 @@ class RealDiscoveryBackend:
             }
             sid = str(props.get("stage_id", ""))
             if sid == self._own_stage_id:
-                return  # Skip self
-
+                return
             addresses = info.parsed_addresses()
             host = addresses[0] if addresses else ""
             found.append(
@@ -93,6 +88,17 @@ class RealDiscoveryBackend:
                     mode=str(props.get("mode", "")),
                 )
             )
+
+        def on_state_change(
+            zeroconf: Zeroconf,
+            service_type: str,
+            name: str,
+            state_change: ServiceStateChange,
+        ) -> None:
+            if state_change != ServiceStateChange.Added or name in seen_names:
+                return
+            seen_names.add(name)
+            asyncio.run_coroutine_threadsafe(_resolve(service_type, name), loop)
 
         browser = AsyncServiceBrowser(self._azc.zeroconf, SERVICE_TYPE, handlers=[on_state_change])
         await asyncio.sleep(timeout)

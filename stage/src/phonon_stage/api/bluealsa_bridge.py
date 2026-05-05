@@ -33,8 +33,12 @@ async def cleanup_stale_bridges() -> None:
             mid = line.split()[0]
             await _run(f"pactl unload-module {mid}")
             logger.info("bluealsa.stale_bridge_cleaned", module=mid)
-    # Kill any orphan bridge processes
+    # Kill any orphan bridge processes — including the wrapping `while true`
+    # shell, otherwise it just respawns arecord+pacat after the sleep 0.5
+    # and we've leaked another bridge.
     await _run(
+        "pkill -f 'while true.*arecord.*bluealsa' 2>/dev/null; "
+        "pkill -f 'while true.*parec.*bt_' 2>/dev/null; "
         "pkill -f 'parec.*bt_' 2>/dev/null; pkill -f 'aplay.*bluealsa' 2>/dev/null; "
         "pkill -f 'arecord.*bluealsa' 2>/dev/null; pkill -f 'pacat.*bt_' 2>/dev/null"
     )

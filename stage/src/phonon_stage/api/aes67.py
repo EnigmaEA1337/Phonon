@@ -14,6 +14,7 @@ worth replacing with native protocol load-module later.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import socket
@@ -43,6 +44,34 @@ _discovered_streams: dict[str, dict[str, object]] = {}
 _DISCOVERED_TTL = 30.0  # seconds — drop entries not refreshed in this window
 _SAP_GROUP = "239.255.255.255"
 _SAP_PORT = 9875
+
+# Optional reference to the discovery backend so we can update mDNS TXT
+# records when stream count changes (STANDALONE ↔ MESH).
+_discovery_backend: object | None = None
+
+
+def set_discovery_backend(backend: object) -> None:
+    """Wire up the discovery backend so we can announce mode changes."""
+    global _discovery_backend
+    _discovery_backend = backend
+
+
+def current_mode() -> str:
+    """Compute the Stage's current network mode from active AES67 streams."""
+    return "MESH" if _active_streams else "STANDALONE"
+
+
+async def _announce_mode() -> None:
+    """Push the current mode to mDNS TXT if a discovery backend is wired up."""
+    if _discovery_backend is None:
+        return
+    update_mode = getattr(_discovery_backend, "update_mode", None)
+    if update_mode is None:
+        return
+    try:
+        await update_mode(current_mode())
+    except Exception:
+        logger.warning("aes67.mode_announce_failed", exc_info=True)
 
 
 class CreateStreamRequest(BaseModel):
@@ -126,6 +155,103 @@ def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
 """
 
 
+_sap_announcer_task: asyncio.Task[None] | None = None
+
+
+def _own_lan_ip(target_mcast: str = "239.255.255.255") -> str:
+    """Best-effort: pick the LAN IP we'd use to send to multicast."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((target_mcast, 1))
+        return str(s.getsockname()[0])
+    finally:
+        s.close()
+
+
+def _build_sdp(stream_name: str, src_ip: str, mcast: str, port: int,
+               channels: int, rate: int, audio_format: str) -> str:
+    import random as _r
+    session_id = _r.randint(1, 2**31)
+    fmt = "L16" if audio_format.upper() == "S16BE" else audio_format
+    return (
+        f"v=0\r\n"
+        f"o=- {session_id} 1 IN IP4 {src_ip}\r\n"
+        f"s={stream_name}\r\n"
+        f"c=IN IP4 {mcast}/32\r\n"
+        f"t=0 0\r\n"
+        f"a=recvonly\r\n"
+        f"a=tool:phonon-stage\r\n"
+        f"m=audio {port} RTP/AVP 96\r\n"
+        f"a=rtpmap:96 {fmt}/{rate}/{channels}\r\n"
+        f"a=ptime:1\r\n"
+        f"a=mediaclk:direct=0\r\n"
+    )
+
+
+def _build_sap_packet(sdp: str, src_ip: str) -> bytes:
+    import random as _r
+    flags = 0x20  # V=1, A=0 (IPv4), R=0, T=0 (announce), E=0, C=0
+    auth_len = 0
+    msg_id_hash = _r.randint(0, 0xFFFF)
+    src_addr = socket.inet_aton(src_ip)
+    header = struct.pack("!BBH", flags, auth_len, msg_id_hash) + src_addr
+    return header + b"application/sdp\x00" + sdp.encode("utf-8")
+
+
+async def _sap_announce_loop() -> None:
+    """Periodically announce every active send stream via SAP/SDP."""
+    from phonon_stage.api import settings as _settings_mod
+
+    src_ip = _own_lan_ip(_SAP_GROUP)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                        socket.inet_aton(src_ip))
+    except OSError:
+        pass
+    logger.info("aes67.sap_announcer_started", src_ip=src_ip)
+    while True:
+        cfg = _settings_mod.get().sap
+        try:
+            if cfg.announce_enabled:
+                for sid, s in list(_active_streams.items()):
+                    if s.get("kind") != "send":
+                        continue
+                    stream_name = f"phonon-{sid[:6]}-{s.get('name', '')}"
+                    sdp = _build_sdp(
+                        stream_name, src_ip,
+                        str(s.get("multicast_group", "")),
+                        int(s.get("port", 5004)),  # type: ignore[arg-type]
+                        int(s.get("channels", 2)),  # type: ignore[arg-type]
+                        int(s.get("sample_rate", 48000)),  # type: ignore[arg-type]
+                        str(s.get("audio_format", "S16BE")),
+                    )
+                    pkt = _build_sap_packet(sdp, src_ip)
+                    with contextlib.suppress(OSError):
+                        sock.sendto(pkt, (_SAP_GROUP, _SAP_PORT))
+        except Exception:
+            logger.warning("aes67.sap_announce_error", exc_info=True)
+        await asyncio.sleep(max(2, int(cfg.announce_interval_s)))
+
+
+async def start_sap_announcer() -> None:
+    """Start the background SAP announcer if not already running."""
+    global _sap_announcer_task
+    if _sap_announcer_task is not None and not _sap_announcer_task.done():
+        return
+    _sap_announcer_task = asyncio.create_task(_sap_announce_loop())
+
+
+async def settings_changed() -> None:
+    """Hook called by /settings PATCH so we react to runtime config changes."""
+    # Currently a no-op — the announcer reads settings each iteration so the
+    # interval and enabled flag take effect within the next ≤2s tick. If we
+    # add SAP listen toggle, that's where we'd start/stop the listener.
+    return
+
+
 async def _restart_pipewire() -> None:
     """Restart user-session PipeWire so config snippets are reloaded.
 
@@ -148,12 +274,37 @@ async def _restart_pipewire() -> None:
     await asyncio.sleep(2.5)
 
     # Auto re-create bluealsa bridges (null-sinks were wiped by PW restart).
-    # Bridge key format is "<MAC>_<type>" so we recover MAC from the key.
+    # IMPORTANT: kill the previous bridge shells *and* nuke any orphan
+    # arecord/pacat that survived. Otherwise each PW restart leaks a
+    # whole bridge-loop into background, and CPU explodes after ~10
+    # AES67 operations.
     try:
+        import contextlib
+        import signal
         from phonon_stage.api.bluealsa_bridge import _active_bridges, create_bridge
 
         snapshot = list(_active_bridges.items())
         _active_bridges.clear()
+
+        # Kill tracked bridge shells
+        for _, bridge in snapshot:
+            pid = bridge.get("bridge_pid")
+            if pid is not None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.kill(int(str(pid)), signal.SIGTERM)
+
+        # Belt-and-braces: kill any untracked orphans matching our bridge pattern
+        sweep = await asyncio.create_subprocess_shell(
+            "pkill -f 'while true.*arecord.*bluealsa' 2>/dev/null; "
+            "pkill -f 'arecord.*bluealsa' 2>/dev/null; "
+            "pkill -f 'pacat.*bt_' 2>/dev/null; "
+            "pkill -f 'parec.*bt_' 2>/dev/null",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await sweep.communicate()
+        await asyncio.sleep(0.3)
+
         for key, bridge in snapshot:
             parts = key.rsplit("_", 1)
             if len(parts) != 2:
@@ -266,6 +417,7 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
     }
 
     await _restart_pipewire()
+    await _announce_mode()
 
     return StreamInfo(
         id=stream_id,
@@ -292,6 +444,7 @@ async def delete_stream(stream_id: str) -> dict[str, str]:
     logger.info("aes67.stream_deleted", stream_id=stream_id)
 
     await _restart_pipewire()
+    await _announce_mode()
     return {"status": "deleted", "id": stream_id}
 
 

@@ -1,0 +1,5 @@
+bind_address: "127.0.0.1"
+port: 8401
+log_level: "INFO"
+mode: "STANDALONE"
+standalone_conf_path: "/home/sam/.local/share/phonon-dev/standalone.conf.json"

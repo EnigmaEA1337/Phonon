@@ -33,6 +33,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .logo .vertex { fill: currentColor; stroke: none; opacity: 0.55; }
 .badge { background: linear-gradient(135deg, var(--cyan), #0e7490); color: var(--bg-0);
   padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+.badge-mesh { background: linear-gradient(135deg, #fb923c, #c2410c); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .tb-spacer { flex: 1; }
 .tb-info { font-family: var(--font-m); font-size: 10px; color: var(--text-mid); }
 .tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
@@ -56,10 +58,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .tag-both { background: var(--cyan); color: var(--bg-0); }
 
 /* ── Patch Bay ──────────────────────────────────────── */
-.patch-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: start; }
+.patch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start;
+  position: relative; }
+.patch-links-svg { position: absolute; inset: 0; pointer-events: none; z-index: 1; overflow: visible; }
+.patch-link-line { fill: none; stroke-width: 2; stroke-linecap: round; opacity: 0.85;
+  filter: drop-shadow(0 0 3px currentColor); }
+.patch-link-line.muted { stroke-dasharray: 4 4; opacity: 0.4; }
 .patch-col { display: flex; flex-direction: column; gap: 6px; }
 .patch-col-head { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;
   letter-spacing: 1px; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.patch-icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.85; }
+.patch-icon.aes67 { color: #fb923c; }
+.patch-icon.bluetooth { color: #60a5fa; }
+.patch-icon.local { color: #34d399; }
+.patch-item-row { display: flex; align-items: center; gap: 8px; }
 .patch-item { padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px;
   cursor: pointer; font-size: 11px; transition: border-color 0.15s, background 0.15s; }
 .patch-item:hover { border-color: var(--cyan); background: var(--bg-3); }
@@ -211,7 +223,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </svg>
     PHONON
   </div>
-  <span class="badge">STANDALONE</span>
+  <span class="badge" id="mode-badge" title="No Controller, no AES67 streams">STANDALONE</span>
   <div class="mode-toggle">
     <button class="mode-btn active-live" id="mode-live" onclick="setMode('live')">LIVE</button>
     <button class="mode-btn" id="mode-edit" onclick="setMode('edit')">EDIT</button>
@@ -248,11 +260,11 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="section-head">Patch Bay <span style="font-weight:400;color:var(--text-dim);font-size:10px">(max 8 mappings)</span></div>
     <div class="section-body">
       <div class="patch-grid">
+        <svg class="patch-links-svg" id="patch-links"></svg>
         <div class="patch-col">
           <div class="patch-col-head">Sources (output ports)</div>
           <div id="patch-sources"></div>
         </div>
-        <div class="patch-arrow">→</div>
         <div class="patch-col">
           <div class="patch-col-head">Sinks (input ports)</div>
           <div id="patch-sinks"></div>
@@ -315,6 +327,22 @@ body.mode-live .edit-only select { opacity: 0.4; }
         <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
         <div id="aes67-discovered"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- PTP -->
+  <div class="section edit-only">
+    <div class="section-head">PTP <span style="font-weight:400;color:var(--text-dim);font-size:10px">IEEE 1588 sync</span></div>
+    <div class="section-body" id="ptp-status">
+      <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="section edit-only">
+    <div class="section-head">Settings <span style="font-weight:400;color:var(--text-dim);font-size:10px">SAP / PTP / AES67 defaults</span></div>
+    <div class="section-body" id="settings-form">
+      <div style="color:var(--text-fade);font-size:11px">Loading...</div>
     </div>
   </div>
 
@@ -424,10 +452,11 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
-    api('/aes67/streams'), api('/aes67/discovered'),
+    api('/aes67/streams'), api('/aes67/discovered'), api('/ptp/status'),
+    api('/settings'), api('/settings/network-interfaces'),
   ]);
 
   if (health) {
@@ -450,8 +479,12 @@ async function refreshAll() {
   if (ports) state.ports = ports;
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
-  if (aes67) renderAes67(aes67);
+  if (aes67) { state.aes67 = aes67; renderAes67(aes67); }
   if (aes67d) renderAes67Discovered(aes67d);
+  if (ptp) renderPtpStatus(ptp);
+  if (settings) { state.settings = settings; renderSettings(settings, ifaces || []); }
+  // MESH badge: STANDALONE + at least one AES67 stream OR another Stage seen
+  updateModeBadge(stages || [], aes67 || []);
 
   // Fetch paired BT devices from ALL controllers, deduplicate by address
   if (state.btControllers.length) {
@@ -525,6 +558,18 @@ function renderAudioDevices(devices, nodes) {
 }
 
 // ── Render: Patch Bay ────────────────────────────────
+const ICON_AES67 = `<svg class="patch-icon aes67" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><circle cx="4" cy="6" r="1.5"/><circle cx="20" cy="6" r="1.5"/><circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="18" r="1.5"/><line x1="5.3" y1="7" x2="10.5" y2="11"/><line x1="18.7" y1="7" x2="13.5" y2="11"/><line x1="5.3" y1="17" x2="10.5" y2="13"/><line x1="18.7" y1="17" x2="13.5" y2="13"/></svg>`;
+const ICON_BT = `<svg class="patch-icon bluetooth" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`;
+const ICON_LOCAL = `<svg class="patch-icon local" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><rect x="9" y="9" width="6" height="6" rx="0.5" fill="currentColor" fill-opacity="0.25"/><line x1="3" y1="9" x2="6" y2="9"/><line x1="3" y1="12" x2="6" y2="12"/><line x1="3" y1="15" x2="6" y2="15"/><line x1="18" y1="9" x2="21" y2="9"/><line x1="18" y1="12" x2="21" y2="12"/><line x1="18" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="6"/><line x1="12" y1="3" x2="12" y2="6"/><line x1="15" y1="3" x2="15" y2="6"/><line x1="9" y1="18" x2="9" y2="21"/><line x1="12" y1="18" x2="12" y2="21"/><line x1="15" y1="18" x2="15" y2="21"/></svg>`;
+
+function nodeKindIcon(n) {
+  const name = n.name || '';
+  if (name.startsWith('aes67-')) return ICON_AES67;
+  if (name.startsWith('bt_') || (n.nick && n.nick.includes('-BT'))) return ICON_BT;
+  if (name.startsWith('alsa_')) return ICON_LOCAL;
+  return '';
+}
+
 function nodeInfoBadge(n) {
   if (!n.bt_codec) return '';
   const parts = [n.bt_codec.toUpperCase()];
@@ -542,8 +587,9 @@ function renderPatchNodes(nodes, ports) {
   const srcEl = document.getElementById('patch-sources');
   srcEl.innerHTML = sources.length ? sources.map(n =>
     `<div class="patch-item${state.selectedSource?.id === n.id ? ' selected' : ''}"
+      data-source-id="${n.id}"
       onclick="selectSource(${n.id})" title="${n.media_class}">
-      ${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span>
+      <div class="patch-item-row">${nodeKindIcon(n)}<span>${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span></span></div>
       ${nodeInfoBadge(n)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sources</div>';
@@ -551,12 +597,47 @@ function renderPatchNodes(nodes, ports) {
   const sinkEl = document.getElementById('patch-sinks');
   sinkEl.innerHTML = sinks.length ? sinks.map(n =>
     `<div class="patch-item${state.selectedSink?.id === n.id ? ' selected' : ''}"
+      data-sink-id="${n.id}"
       onclick="selectSink(${n.id})" title="${n.media_class}">
-      ${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span>
+      <div class="patch-item-row">${nodeKindIcon(n)}<span>${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span></span></div>
       ${nodeInfoBadge(n)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sinks</div>';
+
+  drawPatchLinks();
 }
+
+const PATCH_LINK_COLORS = ['#06b6d4', '#34d399', '#fbbf24', '#f87171', '#a855f7', '#e879f9', '#67e8f9', '#fb923c'];
+
+function drawPatchLinks() {
+  const svg = document.getElementById('patch-links');
+  const grid = svg?.parentElement;
+  if (!svg || !grid) return;
+  const gridRect = grid.getBoundingClientRect();
+  svg.setAttribute('width', gridRect.width);
+  svg.setAttribute('height', gridRect.height);
+  const mappings = state.mappings || [];
+  const lines = [];
+  mappings.forEach((m, i) => {
+    const src = grid.querySelector(`[data-source-id="${m.source_node_id}"]`);
+    const sink = grid.querySelector(`[data-sink-id="${m.sink_node_id}"]`);
+    if (!src || !sink) return;
+    const srcRect = src.getBoundingClientRect();
+    const sinkRect = sink.getBoundingClientRect();
+    const x1 = srcRect.right - gridRect.left;
+    const y1 = srcRect.top + srcRect.height / 2 - gridRect.top;
+    const x2 = sinkRect.left - gridRect.left;
+    const y2 = sinkRect.top + sinkRect.height / 2 - gridRect.top;
+    const dx = (x2 - x1) * 0.5;
+    const path = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+    const color = PATCH_LINK_COLORS[i % PATCH_LINK_COLORS.length];
+    const muted = m.mute ? ' muted' : '';
+    lines.push(`<path class="patch-link-line${muted}" d="${path}" stroke="${color}" style="color:${color}"/>`);
+  });
+  svg.innerHTML = lines.join('');
+}
+
+window.addEventListener('resize', () => { drawPatchLinks(); });
 
 function selectSource(nodeId) {
   state.selectedSource = state.nodes.find(n => n.id === nodeId) || null;
@@ -612,6 +693,9 @@ async function createMapping() {
 function renderMappings(mappings) {
   const el = document.getElementById('mappings-list');
   document.getElementById('mapping-count').textContent = `(Active Mappings ${mappings.length}/8)`;
+
+  // Refresh patch-bay links whenever mappings change
+  setTimeout(drawPatchLinks, 0);
 
   if (!mappings.length) { el.innerHTML = '<div class="mapping-empty">No active mappings</div>'; return; }
 
@@ -1037,12 +1121,15 @@ async function btSyncBridges() {
 function renderStages(stages) {
   const el = document.getElementById('stages-list');
   if (!stages?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No other Stages on network</div>'; return; }
-  el.innerHTML = stages.map(s => `<div class="stage-item">
-    <span class="stage-led"></span>
-    <span>${s.stage_id}</span>
-    <span style="color:var(--text-dim)">${s.host}:${s.port}</span>
-    <span class="badge" style="font-size:8px">${s.mode}</span>
-  </div>`).join('');
+  el.innerHTML = stages.map(s => {
+    const meshClass = s.mode === 'MESH' ? ' badge-mesh' : '';
+    return `<div class="stage-item">
+      <span class="stage-led"></span>
+      <span>${s.stage_id}</span>
+      <span style="color:var(--text-dim)">${s.host}:${s.port}</span>
+      <span class="badge${meshClass}" style="font-size:8px">${s.mode}</span>
+    </div>`;
+  }).join('');
 }
 
 // ── AES67 streams ────────────────────────────────────
@@ -1093,8 +1180,18 @@ async function aes67Delete(id) {
 
 function renderAes67Discovered(streams) {
   const el = document.getElementById('aes67-discovered');
-  if (!streams?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:10px">None — waiting for SAP announces</div>'; return; }
-  el.innerHTML = streams.map(s => {
+  // Hide streams we've already subscribed to (recv with same group:port)
+  const subscribed = new Set((state.aes67 || [])
+    .filter(s => s.kind === 'recv')
+    .map(s => `${s.multicast_group}:${s.port}`));
+  const filtered = (streams || []).filter(s => !subscribed.has(`${s.multicast_group}:${s.port}`));
+  if (!filtered.length) {
+    el.innerHTML = streams?.length
+      ? '<div style="color:var(--text-fade);font-size:10px">All discovered streams already subscribed</div>'
+      : '<div style="color:var(--text-fade);font-size:10px">None — waiting for SAP announces</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(s => {
     const fresh = s.last_seen_age_s < 15 ? 'var(--green)' : 'var(--text-dim)';
     return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px dashed var(--border);border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
       <span style="color:${fresh};font-size:8px">●</span>
@@ -1107,6 +1204,203 @@ function renderAes67Discovered(streams) {
       <button class="btn btn-primary" style="padding:2px 8px;font-size:9px" onclick="aes67Subscribe('${s.key}', '${(s.name||'sub').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,28)}')">SUBSCRIBE</button>
     </div>`;
   }).join('');
+}
+
+function updateModeBadge(stages, streams) {
+  const el = document.getElementById('mode-badge');
+  if (!el) return;
+  // MESH = actively exchanging audio (≥1 AES67 stream). Just seeing other
+  // Stages on the network is not enough — that's just neighbours.
+  const hasStreams = streams && streams.length > 0;
+  if (hasStreams) {
+    el.textContent = 'MESH';
+    el.classList.add('badge-mesh');
+    el.title = `Networked: ${streams.length} AES67 stream(s) active`;
+  } else {
+    el.textContent = 'STANDALONE';
+    el.classList.remove('badge-mesh');
+    el.title = 'No Controller, no AES67 streams';
+  }
+}
+
+// ── Settings panel ────────────────────────────────────
+let _settingsDirty = false;
+
+function renderSettings(s, ifaces) {
+  if (_settingsDirty) return;  // user is editing, don't clobber
+  const el = document.getElementById('settings-form');
+  if (!el) return;
+
+  const ifaceOpts = [{name:'',ip:'auto-pick',kind:''}, ...(ifaces||[])]
+    .map(i => `<option value="${i.name}" ${i.name===s.ptp.interface?'selected':''}>${i.name||'(auto)'}${i.ip?` — ${i.ip}`:''}${i.kind?` [${i.kind}]`:''}</option>`).join('');
+
+  el.innerHTML = `
+    <style>
+      .stg-grid { display:grid; grid-template-columns:140px 1fr; gap:8px 14px; align-items:center; font-family:var(--font-m); font-size:10px; }
+      .stg-grid label { color:var(--text-dim); }
+      .stg-grid input[type=text], .stg-grid input[type=number], .stg-grid select {
+        background:var(--bg-2); color:var(--text); border:1px solid var(--border); border-radius:3px;
+        padding:3px 6px; font-family:var(--font-m); font-size:10px; width:100%; box-sizing:border-box;
+      }
+      .stg-grid input[type=checkbox] { accent-color:var(--cyan); }
+      .stg-section { font-weight:600; color:var(--cyan); text-transform:uppercase; letter-spacing:1px;
+        font-size:10px; margin:10px 0 6px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+      .stg-section:first-child { margin-top:0; }
+      .stg-actions { margin-top:12px; display:flex; gap:8px; align-items:center; }
+    </style>
+    <div class="stg-section">SAP — stream announcement</div>
+    <div class="stg-grid">
+      <label>Announce my streams</label>
+      <input type="checkbox" id="stg-sap-ann" ${s.sap.announce_enabled?'checked':''} onchange="settingsMarkDirty()">
+      <label>Announce interval (s)</label>
+      <input type="number" id="stg-sap-int" min="2" max="60" value="${s.sap.announce_interval_s}" onchange="settingsMarkDirty()">
+      <label>Listen for incoming SAP</label>
+      <input type="checkbox" id="stg-sap-lis" ${s.sap.listen_enabled?'checked':''} onchange="settingsMarkDirty()">
+    </div>
+
+    <div class="stg-section">PTP — IEEE 1588 sync</div>
+    <div class="stg-grid">
+      <label>Enable ptp4l</label>
+      <input type="checkbox" id="stg-ptp-en" ${s.ptp.enabled?'checked':''} onchange="settingsMarkDirty()">
+      <label>Mode</label>
+      <select id="stg-ptp-mode" onchange="settingsMarkDirty()">
+        <option value="auto" ${s.ptp.mode==='auto'?'selected':''}>auto (BMCA)</option>
+        <option value="grandmaster" ${s.ptp.mode==='grandmaster'?'selected':''}>grandmaster (force)</option>
+        <option value="slave" ${s.ptp.mode==='slave'?'selected':''}>slave only</option>
+      </select>
+      <label>Interface</label>
+      <select id="stg-ptp-iface" onchange="settingsMarkDirty()">${ifaceOpts}</select>
+      <label>Profile</label>
+      <select id="stg-ptp-prof" onchange="settingsMarkDirty()">
+        <option value="aes67" ${s.ptp.profile==='aes67'?'selected':''}>aes67 (audio media)</option>
+        <option value="smpte2059-2" ${s.ptp.profile==='smpte2059-2'?'selected':''}>smpte2059-2</option>
+        <option value="default" ${s.ptp.profile==='default'?'selected':''}>default</option>
+      </select>
+      <label>Domain</label>
+      <input type="number" id="stg-ptp-dom" min="0" max="127" value="${s.ptp.domain}" onchange="settingsMarkDirty()">
+    </div>
+
+    <div class="stg-section">AES67 — defaults for new streams</div>
+    <div class="stg-grid">
+      <label>Multicast group</label>
+      <input type="text" id="stg-ae-mg" value="${s.aes67.multicast_group}" onchange="settingsMarkDirty()">
+      <label>Port</label>
+      <input type="number" id="stg-ae-port" min="1024" max="65535" value="${s.aes67.port}" onchange="settingsMarkDirty()">
+      <label>Loop (multicast self-receive)</label>
+      <input type="checkbox" id="stg-ae-loop" ${s.aes67.loop?'checked':''} onchange="settingsMarkDirty()">
+      <label>Channels</label>
+      <input type="number" id="stg-ae-ch" min="1" max="8" value="${s.aes67.channels}" onchange="settingsMarkDirty()">
+      <label>Sample rate</label>
+      <select id="stg-ae-rate" onchange="settingsMarkDirty()">
+        ${[44100,48000,88200,96000,192000].map(r=>`<option value="${r}" ${s.aes67.sample_rate===r?'selected':''}>${r} Hz</option>`).join('')}
+      </select>
+      <label>Audio format</label>
+      <select id="stg-ae-fmt" onchange="settingsMarkDirty()">
+        ${['S16BE','S24BE','S32BE'].map(f=>`<option value="${f}" ${s.aes67.audio_format===f?'selected':''}>${f}</option>`).join('')}
+      </select>
+      <label>Packet time (ms)</label>
+      <input type="number" id="stg-ae-pt" min="0.125" max="10" step="0.125" value="${s.aes67.ptime_ms}" onchange="settingsMarkDirty()">
+    </div>
+
+    <div class="stg-actions">
+      <button class="btn btn-primary" onclick="settingsSave()">Save</button>
+      <button class="btn" onclick="settingsReset()">Cancel</button>
+      <span id="stg-status" class="tb-info">—</span>
+    </div>
+  `;
+
+  // Pre-fill the AES67 stream form (top of AES67 panel) with defaults
+  const aGroup = document.getElementById('aes67-group');
+  const aPort = document.getElementById('aes67-port');
+  const aLoop = document.getElementById('aes67-loop');
+  if (aGroup && !aGroup.dataset.touched) aGroup.value = s.aes67.multicast_group;
+  if (aPort && !aPort.dataset.touched) aPort.value = s.aes67.port;
+  if (aLoop && !aLoop.dataset.touched) aLoop.checked = s.aes67.loop;
+}
+
+function settingsMarkDirty() { _settingsDirty = true; }
+function settingsReset() { _settingsDirty = false; if (state.settings) renderSettings(state.settings, state.ifaces||[]); }
+
+async function settingsSave() {
+  const body = {
+    sap: {
+      announce_enabled: document.getElementById('stg-sap-ann').checked,
+      announce_interval_s: parseInt(document.getElementById('stg-sap-int').value, 10),
+      listen_enabled: document.getElementById('stg-sap-lis').checked,
+    },
+    ptp: {
+      enabled: document.getElementById('stg-ptp-en').checked,
+      mode: document.getElementById('stg-ptp-mode').value,
+      interface: document.getElementById('stg-ptp-iface').value,
+      profile: document.getElementById('stg-ptp-prof').value,
+      domain: parseInt(document.getElementById('stg-ptp-dom').value, 10),
+    },
+    aes67: {
+      multicast_group: document.getElementById('stg-ae-mg').value,
+      port: parseInt(document.getElementById('stg-ae-port').value, 10),
+      loop: document.getElementById('stg-ae-loop').checked,
+      channels: parseInt(document.getElementById('stg-ae-ch').value, 10),
+      sample_rate: parseInt(document.getElementById('stg-ae-rate').value, 10),
+      audio_format: document.getElementById('stg-ae-fmt').value,
+      ptime_ms: parseFloat(document.getElementById('stg-ae-pt').value),
+    },
+  };
+  document.getElementById('stg-status').textContent = 'saving...';
+  const r = await api('/settings', { method: 'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('stg-status').textContent = r ? 'saved' : 'failed';
+  _settingsDirty = false;
+  await refreshAll();
+}
+
+function renderPtpStatus(p) {
+  const el = document.getElementById('ptp-status');
+  if (!el) return;
+  // Determine LED color
+  let ledColor, label, pulse = '';
+  if (!p.available) {
+    ledColor = 'var(--text-dim)';
+    label = 'Not installed';
+  } else if (!p.running) {
+    ledColor = 'var(--text-dim)';
+    label = 'Not running';
+  } else if (p.role === 'grandmaster') {
+    ledColor = 'var(--magenta)';
+    label = 'GRANDMASTER';
+  } else if (p.role === 'slave') {
+    ledColor = 'var(--green)';
+    label = 'SLAVE (synced)';
+    pulse = 'animation:pulse 2s infinite;';
+  } else if (p.role === 'listening') {
+    ledColor = 'var(--yellow,#fbbf24)';
+    label = 'Listening';
+  } else {
+    ledColor = 'var(--cyan)';
+    label = p.role.toUpperCase();
+  }
+  const offsetTxt = p.offset_ns !== null && p.offset_ns !== undefined
+    ? `${p.offset_ns >= 0 ? '+' : ''}${p.offset_ns} ns`
+    : '—';
+  const offsetColor = p.offset_ns === null ? 'var(--text-fade)'
+    : Math.abs(p.offset_ns) < 1000 ? 'var(--green)'
+    : Math.abs(p.offset_ns) < 100000 ? 'var(--yellow,#fbbf24)'
+    : 'var(--red,#f87171)';
+
+  el.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:var(--font-m);font-size:10px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${ledColor};${pulse}box-shadow:0 0 6px ${ledColor}"></span>
+        <span style="color:var(--text);font-weight:600">${label}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
+        <span>offset:</span>
+        <span style="color:${offsetColor};font-weight:600">${offsetTxt}</span>
+      </div>
+      ${p.interface ? `<div style="color:var(--text-dim)">iface: ${p.interface}</div>` : ''}
+      ${p.profile ? `<div style="color:var(--text-dim)">profile: ${p.profile}</div>` : ''}
+      <div style="flex:1"></div>
+      <div style="color:var(--text-fade);font-size:9px;font-style:italic">${p.note || ''}</div>
+    </div>
+  `;
 }
 
 async function aes67Subscribe(key, suggestedName) {

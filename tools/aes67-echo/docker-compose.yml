@@ -1,0 +1,14 @@
+services:
+  aes67-echo:
+    build: .
+    image: phonon/aes67-echo:dev
+    container_name: phonon-aes67-echo
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      IN_GROUP: ${IN_GROUP:-239.69.10.10}
+      IN_PORT: ${IN_PORT:-5004}
+      OUT_GROUP: ${OUT_GROUP:-239.69.10.20}
+      OUT_PORT: ${OUT_PORT:-5004}
+      FAKE_STAGE_ID: ${FAKE_STAGE_ID:-stage-echo01}
+      FAKE_HTTP_PORT: ${FAKE_HTTP_PORT:-8402}

@@ -35,7 +35,12 @@ async def broadcast(msg_type: str, data: Any) -> None:
 
 
 async def _levels_loop() -> None:
-    """Background task: read VU levels and push to clients every 100ms."""
+    """Background task: read VU levels and push to clients every 250ms.
+
+    250ms = 4 Hz update rate, smooth enough for a UI VU meter while
+    keeping the per-tick parec subprocess spawns reasonable. At 10 Hz
+    we were saturating CPU on slower hosts (and even noticeable on dev).
+    """
     from phonon_stage.api.bluealsa_bridge import _active_bridges
     from phonon_stage.api.levels import _read_peak
 
@@ -64,7 +69,7 @@ async def _levels_loop() -> None:
 
             await broadcast("levels", levels)
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.25)
 
 
 async def _mode_loop() -> None:

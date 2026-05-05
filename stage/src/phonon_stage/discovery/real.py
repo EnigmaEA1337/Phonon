@@ -48,6 +48,26 @@ class RealDiscoveryBackend:
             service_type=SERVICE_TYPE,
         )
 
+    async def update_mode(self, mode: str) -> None:
+        """Update the announced mode (e.g. STANDALONE → MESH) without re-creating the service."""
+        if not self._azc or not self._info:
+            return
+        props = dict(self._info.properties or {})
+        new_mode = mode.encode() if isinstance(mode, str) else mode
+        if props.get(b"mode") == new_mode:
+            return  # no change
+        props[b"mode"] = new_mode
+        self._info = ServiceInfo(
+            type_=self._info.type,
+            name=self._info.name,
+            addresses=list(self._info.addresses),
+            port=self._info.port or 0,
+            properties=props,
+            server=self._info.server,
+        )
+        await self._azc.async_update_service(self._info)
+        logger.info("discovery.mode_updated", mode=mode)
+
     async def unregister(self) -> None:
         if self._azc and self._info:
             await self._azc.async_unregister_service(self._info)

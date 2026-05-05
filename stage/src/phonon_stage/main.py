@@ -21,6 +21,8 @@ from phonon_stage.api.health import router as health_router
 from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
 from phonon_stage.api.pipewire import router as pipewire_router
+from phonon_stage.api.ptp import router as ptp_router
+from phonon_stage.api.settings import router as settings_router
 from phonon_stage.api.system import router as system_router
 from phonon_stage.api.ws import router as ws_router
 from phonon_stage.audio.real import RealAudioBackend
@@ -92,6 +94,14 @@ def create_app(
 
         await discovery.register(cfg.stage_id, cfg.bind_address, cfg.port)
 
+        # Load persisted runtime settings (SAP/PTP/AES67 defaults)
+        try:
+            from phonon_stage.api import settings as settings_mod
+
+            settings_mod.init(cfg.standalone_conf_path.parent)
+        except Exception:
+            logger.warning("stage.settings_init_failed", exc_info=True)
+
         # Restore persisted mappings
         try:
             await svc.restore_mappings()
@@ -114,13 +124,19 @@ def create_app(
         except Exception:
             logger.warning("stage.aes67_cleanup_failed", exc_info=True)
 
-        # Start SAP listener for AES67 stream discovery
+        # Start SAP listener + announcer for AES67 stream discovery
         try:
-            from phonon_stage.api.aes67 import start_sap_listener
+            from phonon_stage.api.aes67 import (
+                set_discovery_backend,
+                start_sap_announcer,
+                start_sap_listener,
+            )
 
+            set_discovery_backend(discovery)
             await start_sap_listener()
+            await start_sap_announcer()
         except Exception:
-            logger.warning("stage.sap_listener_failed", exc_info=True)
+            logger.warning("stage.sap_init_failed", exc_info=True)
 
         logger.info(
             "stage.started",
@@ -149,6 +165,8 @@ def create_app(
     app.include_router(levels_router)
     app.include_router(ws_router)
     app.include_router(aes67_router)
+    app.include_router(ptp_router)
+    app.include_router(settings_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

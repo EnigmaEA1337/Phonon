@@ -49,13 +49,15 @@ class CapabilitiesResponse(BaseModel):
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
 async def capabilities(request: Request) -> CapabilitiesResponse:
+    from phonon_stage.api.aes67 import current_mode
+
     state = request.app.state
     audio_devices = await state.audio_backend.list_devices()
     bt_controllers = await state.bt_backend.list_controllers()
 
     return CapabilitiesResponse(
         stage_id=state.config.stage_id,
-        mode=state.config.mode,
+        mode=current_mode(),
         audio_devices=[
             AudioDeviceResponse(
                 card_index=d.card_index,

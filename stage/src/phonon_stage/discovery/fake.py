@@ -31,6 +31,9 @@ class FakeDiscoveryBackend:
         self.registered = False
         self.call_log.append("unregister")
 
+    async def update_mode(self, mode: str) -> None:
+        self.call_log.append(f"update_mode:{mode}")
+
     async def browse(self, timeout: float = 3.0) -> list[DiscoveredStage]:
         self.call_log.append("browse")
         return list(self.browse_results)

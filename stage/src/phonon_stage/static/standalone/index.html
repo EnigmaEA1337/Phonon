@@ -292,6 +292,32 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
+  <!-- AES67 -->
+  <div class="section edit-only">
+    <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
+    <div class="section-body">
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-family:var(--font-m);font-size:10px">
+        <input type="text" id="aes67-name" placeholder="name" maxlength="32"
+          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100px">
+        <input type="text" id="aes67-group" placeholder="239.69.10.10" value="239.69.10.10"
+          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:120px">
+        <input type="number" id="aes67-port" placeholder="5004" value="5004" min="1024" max="65535"
+          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:70px">
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
+          <input type="checkbox" id="aes67-loop" checked> loop
+        </label>
+        <button class="btn btn-primary" onclick="aes67Create('send')">+ Send</button>
+        <button class="btn btn-primary" onclick="aes67Create('recv')">+ Recv</button>
+        <span class="tb-info" id="aes67-status">—</span>
+      </div>
+      <div id="aes67-streams"></div>
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+        <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
+        <div id="aes67-discovered"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Discovered Stages -->
   <div class="section edit-only">
     <div class="section-head">Network Stages</div>
@@ -398,9 +424,10 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
+    api('/aes67/streams'), api('/aes67/discovered'),
   ]);
 
   if (health) {
@@ -423,6 +450,8 @@ async function refreshAll() {
   if (ports) state.ports = ports;
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
+  if (aes67) renderAes67(aes67);
+  if (aes67d) renderAes67Discovered(aes67d);
 
   // Fetch paired BT devices from ALL controllers, deduplicate by address
   if (state.btControllers.length) {
@@ -1014,6 +1043,81 @@ function renderStages(stages) {
     <span style="color:var(--text-dim)">${s.host}:${s.port}</span>
     <span class="badge" style="font-size:8px">${s.mode}</span>
   </div>`).join('');
+}
+
+// ── AES67 streams ────────────────────────────────────
+function renderAes67(streams) {
+  const el = document.getElementById('aes67-streams');
+  if (!streams?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No AES67 streams</div>'; return; }
+  el.innerHTML = streams.map(s => {
+    const color = s.kind === 'send' ? 'var(--magenta)' : 'var(--green)';
+    const arrow = s.kind === 'send' ? '→' : '←';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
+      <span style="color:${color};font-weight:600;width:38px">${s.kind.toUpperCase()}</span>
+      <span style="color:var(--text)">${s.name}</span>
+      <span style="color:var(--text-dim)">${arrow} ${s.multicast_group}:${s.port}</span>
+      <span style="color:var(--text-fade)">${s.audio_format} ${s.sample_rate/1000}kHz ${s.channels}ch</span>
+      <span style="flex:1"></span>
+      <button class="btn" style="padding:2px 8px;font-size:9px" onclick="aes67Delete('${s.id}')">DELETE</button>
+    </div>`;
+  }).join('');
+}
+
+async function aes67Create(kind) {
+  const name = document.getElementById('aes67-name').value.trim();
+  const group = document.getElementById('aes67-group').value.trim();
+  const port = parseInt(document.getElementById('aes67-port').value, 10);
+  const loop = document.getElementById('aes67-loop').checked;
+  if (!name) { document.getElementById('aes67-status').textContent = 'name required'; return; }
+  document.getElementById('aes67-status').textContent = 'creating... (PW restart ~3s)';
+  const r = await api(`/aes67/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, multicast_group: group, port, loop }),
+  });
+  if (r) {
+    document.getElementById('aes67-status').textContent = `OK ${kind}/${name}`;
+    document.getElementById('aes67-name').value = '';
+  } else {
+    document.getElementById('aes67-status').textContent = 'failed';
+  }
+  await refreshAll();
+}
+
+async function aes67Delete(id) {
+  document.getElementById('aes67-status').textContent = 'deleting... (PW restart ~3s)';
+  await api(`/aes67/${id}`, { method: 'DELETE' });
+  document.getElementById('aes67-status').textContent = 'deleted';
+  await refreshAll();
+}
+
+function renderAes67Discovered(streams) {
+  const el = document.getElementById('aes67-discovered');
+  if (!streams?.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:10px">None — waiting for SAP announces</div>'; return; }
+  el.innerHTML = streams.map(s => {
+    const fresh = s.last_seen_age_s < 15 ? 'var(--green)' : 'var(--text-dim)';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px dashed var(--border);border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
+      <span style="color:${fresh};font-size:8px">●</span>
+      <span style="color:var(--text);font-weight:600">${s.name || '(unnamed)'}</span>
+      <span style="color:var(--text-dim)">from ${s.source_ip}</span>
+      <span style="color:var(--text-dim)">${s.multicast_group}:${s.port}</span>
+      <span style="color:var(--text-fade)">${s.audio_format} ${s.sample_rate/1000}kHz ${s.channels}ch</span>
+      <span style="color:var(--text-fade)">${s.last_seen_age_s}s</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-primary" style="padding:2px 8px;font-size:9px" onclick="aes67Subscribe('${s.key}', '${(s.name||'sub').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,28)}')">SUBSCRIBE</button>
+    </div>`;
+  }).join('');
+}
+
+async function aes67Subscribe(key, suggestedName) {
+  document.getElementById('aes67-status').textContent = 'subscribing... (PW restart ~3s)';
+  const r = await api('/aes67/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, name: suggestedName, loop: true }),
+  });
+  document.getElementById('aes67-status').textContent = r ? `subscribed as ${r.name}` : 'failed';
+  await refreshAll();
 }
 
 // ── WebSocket for real-time data (VU levels, mode, alerts) ──

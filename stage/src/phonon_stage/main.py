@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from phonon_stage.api.aes67 import router as aes67_router
 from phonon_stage.api.bluealsa_bridge import router as bluealsa_router
 from phonon_stage.api.bluetooth import router as bluetooth_router
 from phonon_stage.api.browse import router as browse_router
@@ -105,6 +106,22 @@ def create_app(
         except Exception:
             logger.warning("stage.bluealsa_cleanup_failed", exc_info=True)
 
+        # Clean up stale AES67 conf snippets from previous run
+        try:
+            from phonon_stage.api.aes67 import cleanup_stale_aes67
+
+            await cleanup_stale_aes67()
+        except Exception:
+            logger.warning("stage.aes67_cleanup_failed", exc_info=True)
+
+        # Start SAP listener for AES67 stream discovery
+        try:
+            from phonon_stage.api.aes67 import start_sap_listener
+
+            await start_sap_listener()
+        except Exception:
+            logger.warning("stage.sap_listener_failed", exc_info=True)
+
         logger.info(
             "stage.started",
             stage_id=cfg.stage_id,
@@ -131,6 +148,7 @@ def create_app(
     app.include_router(bluealsa_router)
     app.include_router(levels_router)
     app.include_router(ws_router)
+    app.include_router(aes67_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

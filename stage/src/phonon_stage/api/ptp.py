@@ -65,11 +65,12 @@ async def _ptp4l_running() -> bool:
 async def _read_journal_state() -> tuple[str, int | None]:
     """Try to extract role + offset from the most recent ptp4l log lines.
 
-    Looks at journalctl (no root needed for read on most distros) or
-    /var/log/syslog as a fallback. Returns (role, offset_ns).
+    Use `-t ptp4l` (syslog identifier) which matches both manually-launched
+    ptp4l and the phonon-ptp4l systemd service — `-u` would only see the
+    service variant.
     """
     proc = await asyncio.create_subprocess_exec(
-        "journalctl", "-u", "ptp4l", "-n", "30", "--no-pager",
+        "journalctl", "-t", "ptp4l", "-n", "50", "--no-pager",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )

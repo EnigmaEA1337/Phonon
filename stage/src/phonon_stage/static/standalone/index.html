@@ -35,6 +35,18 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
 .badge-mesh { background: linear-gradient(135deg, #fb923c, #c2410c); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border);
+  margin: 0 0 12px; padding-left: 4px; }
+.tab { background: var(--bg-1); color: var(--text-dim); border: 1px solid var(--border);
+  border-bottom: none; border-radius: 4px 4px 0 0; padding: 6px 14px;
+  font-family: var(--font-m); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.5px; cursor: pointer; user-select: none; }
+.tab:hover { color: var(--text); background: var(--bg-2); }
+.tab.active { color: var(--cyan); background: var(--bg-2);
+  border-color: var(--cyan); border-bottom: 1px solid var(--bg-2);
+  margin-bottom: -1px; }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
 .tb-spacer { flex: 1; }
 .tb-info { font-family: var(--font-m); font-size: 10px; color: var(--text-mid); }
 .tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
@@ -239,125 +251,144 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
 <div class="container">
 
-  <!-- System Processes -->
-  <div class="section edit-only">
-    <div class="section-head" style="display:flex;align-items:center;gap:8px">System <span id="sys-status" style="font-weight:400;font-size:10px"></span></div>
-    <div class="section-body">
-      <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
-    </div>
+  <!-- ───── Tabs (EDIT mode only) ───── -->
+  <div class="tabs edit-only" role="tablist">
+    <div class="tab active" data-tab="general" onclick="switchTab('general')">GENERAL</div>
+    <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
+    <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
+    <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
-  <!-- Capabilities -->
-  <div class="section edit-only">
-    <div class="section-head">Audio Devices</div>
-    <div class="section-body">
-      <div class="card-grid" id="audio-devices"></div>
+  <!-- ─── Tab: General (default) ─── -->
+  <div class="tab-pane active" data-tab-pane="general">
+    <!-- System Processes -->
+    <div class="section edit-only">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">System <span id="sys-status" style="font-weight:400;font-size:10px"></span></div>
+      <div class="section-body">
+        <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+      </div>
     </div>
-  </div>
 
-  <!-- Patch Bay -->
-  <div class="section edit-only">
-    <div class="section-head">Patch Bay <span style="font-weight:400;color:var(--text-dim);font-size:10px">(max 8 mappings)</span></div>
-    <div class="section-body">
-      <div class="patch-grid">
-        <svg class="patch-links-svg" id="patch-links"></svg>
-        <div class="patch-col">
-          <div class="patch-col-head">Sources (output ports)</div>
-          <div id="patch-sources"></div>
+    <!-- Patch Bay -->
+    <div class="section edit-only">
+      <div class="section-head">Patch Bay <span style="font-weight:400;color:var(--text-dim);font-size:10px">(max 8 mappings)</span></div>
+      <div class="section-body">
+        <div class="patch-grid">
+          <svg class="patch-links-svg" id="patch-links"></svg>
+          <div class="patch-col">
+            <div class="patch-col-head">Sources (output ports)</div>
+            <div id="patch-sources"></div>
+          </div>
+          <div class="patch-col">
+            <div class="patch-col-head">Sinks (input ports)</div>
+            <div id="patch-sinks"></div>
+          </div>
         </div>
-        <div class="patch-col">
-          <div class="patch-col-head">Sinks (input ports)</div>
-          <div id="patch-sinks"></div>
+        <div class="patch-hint" id="patch-hint">Select a source, then a sink to create a mapping</div>
+      </div>
+    </div>
+
+    <!-- Mixer -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Mixer
+        <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
+        <span style="flex:1"></span>
+        <button class="btn edit-only" style="font-size:9px;padding:2px 8px"
+          onclick="resyncMappings()" title="Re-resolve mapped nodes by name and recreate PW links — useful after a PipeWire restart">Resync</button>
+        <span class="tb-info edit-only" id="resync-status" style="font-size:9px"></span>
+      </div>
+      <div class="section-body" id="mappings-list">
+        <div class="mapping-empty">No active mappings</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: Devices ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="devices">
+    <!-- Audio Devices -->
+    <div class="section">
+      <div class="section-head">Audio Devices</div>
+      <div class="section-body">
+        <div class="card-grid" id="audio-devices"></div>
+      </div>
+    </div>
+
+    <!-- Bluetooth -->
+    <div class="section">
+      <div class="section-head">Bluetooth</div>
+      <div class="section-body">
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+          <select id="bt-controller-select" onchange="btSelectController(this.value)"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-m);font-size:10px"></select>
+          <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
+          <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
+          <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Inputs/Outputs</button>
+          <span style="font-size:9px;color:var(--text-dim)">Buffer</span>
+          <input type="range" min="20" max="200" step="10" value="50" id="bt-buffer-slider"
+            style="width:60px;accent-color:var(--cyan)" oninput="document.getElementById('bt-buffer-val').textContent=this.value+'ms'">
+          <span class="gain-val" id="bt-buffer-val">50ms</span>
+          <span class="tb-info" id="bt-status">—</span>
+        </div>
+        <div id="bt-controllers-cards" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
+        <div id="bt-paired"></div>
+        <div id="bt-scan-results" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: Network ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="network">
+    <!-- AES67 -->
+    <div class="section">
+      <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
+      <div class="section-body">
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-family:var(--font-m);font-size:10px">
+          <input type="text" id="aes67-name" placeholder="name" maxlength="32"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100px">
+          <input type="text" id="aes67-group" placeholder="239.69.10.10" value="239.69.10.10"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:120px">
+          <input type="number" id="aes67-port" placeholder="5004" value="5004" min="1024" max="65535"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:70px">
+          <label style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
+            <input type="checkbox" id="aes67-loop" checked> loop
+          </label>
+          <button class="btn btn-primary" onclick="aes67Create('send')">+ Send</button>
+          <button class="btn btn-primary" onclick="aes67Create('recv')">+ Recv</button>
+          <span class="tb-info" id="aes67-status">—</span>
+        </div>
+        <div id="aes67-streams"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+          <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
+          <div id="aes67-discovered"></div>
         </div>
       </div>
-      <div class="patch-hint" id="patch-hint">Select a source, then a sink to create a mapping</div>
     </div>
-  </div>
 
-  <!-- Mixer -->
-  <div class="section">
-    <div class="section-head" style="display:flex;align-items:center;gap:8px">
-      Mixer
-      <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
-      <span style="flex:1"></span>
-      <button class="btn edit-only" style="font-size:9px;padding:2px 8px"
-        onclick="resyncMappings()" title="Re-resolve mapped nodes by name and recreate PW links — useful after a PipeWire restart">Resync</button>
-      <span class="tb-info edit-only" id="resync-status" style="font-size:9px"></span>
-    </div>
-    <div class="section-body" id="mappings-list">
-      <div class="mapping-empty">No active mappings</div>
-    </div>
-  </div>
-
-  <!-- Bluetooth -->
-  <div class="section edit-only">
-    <div class="section-head">Bluetooth</div>
-    <div class="section-body">
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
-        <select id="bt-controller-select" onchange="btSelectController(this.value)"
-          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-m);font-size:10px"></select>
-        <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
-        <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
-        <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Inputs/Outputs</button>
-        <span style="font-size:9px;color:var(--text-dim)">Buffer</span>
-        <input type="range" min="20" max="200" step="10" value="50" id="bt-buffer-slider"
-          style="width:60px;accent-color:var(--cyan)" oninput="document.getElementById('bt-buffer-val').textContent=this.value+'ms'">
-        <span class="gain-val" id="bt-buffer-val">50ms</span>
-        <span class="tb-info" id="bt-status">—</span>
+    <!-- PTP -->
+    <div class="section">
+      <div class="section-head">PTP <span style="font-weight:400;color:var(--text-dim);font-size:10px">IEEE 1588 sync</span></div>
+      <div class="section-body" id="ptp-status">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
       </div>
-      <div id="bt-controllers-cards" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
-      <div id="bt-paired"></div>
-      <div id="bt-scan-results" style="margin-top:8px"></div>
     </div>
-  </div>
 
-  <!-- AES67 -->
-  <div class="section edit-only">
-    <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
-    <div class="section-body">
-      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-family:var(--font-m);font-size:10px">
-        <input type="text" id="aes67-name" placeholder="name" maxlength="32"
-          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100px">
-        <input type="text" id="aes67-group" placeholder="239.69.10.10" value="239.69.10.10"
-          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:120px">
-        <input type="number" id="aes67-port" placeholder="5004" value="5004" min="1024" max="65535"
-          style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:70px">
-        <label style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
-          <input type="checkbox" id="aes67-loop" checked> loop
-        </label>
-        <button class="btn btn-primary" onclick="aes67Create('send')">+ Send</button>
-        <button class="btn btn-primary" onclick="aes67Create('recv')">+ Recv</button>
-        <span class="tb-info" id="aes67-status">—</span>
-      </div>
-      <div id="aes67-streams"></div>
-      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
-        <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
-        <div id="aes67-discovered"></div>
+    <!-- Discovered Stages -->
+    <div class="section">
+      <div class="section-head">Network Stages</div>
+      <div class="section-body" id="stages-list">
+        <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
       </div>
     </div>
   </div>
 
-  <!-- PTP -->
-  <div class="section edit-only">
-    <div class="section-head">PTP <span style="font-weight:400;color:var(--text-dim);font-size:10px">IEEE 1588 sync</span></div>
-    <div class="section-body" id="ptp-status">
-      <div style="color:var(--text-fade);font-size:11px">Loading...</div>
-    </div>
-  </div>
-
-  <!-- Settings -->
-  <div class="section edit-only">
-    <div class="section-head">Settings <span style="font-weight:400;color:var(--text-dim);font-size:10px">SAP / PTP / AES67 defaults</span></div>
-    <div class="section-body" id="settings-form">
-      <div style="color:var(--text-fade);font-size:11px">Loading...</div>
-    </div>
-  </div>
-
-  <!-- Discovered Stages -->
-  <div class="section edit-only">
-    <div class="section-head">Network Stages</div>
-    <div class="section-body" id="stages-list">
-      <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
+  <!-- ─── Tab: Settings ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="settings">
+    <div class="section">
+      <div class="section-head">Settings <span style="font-weight:400;color:var(--text-dim);font-size:10px">SAP / PTP / AES67 defaults</span></div>
+      <div class="section-body" id="settings-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
     </div>
   </div>
 
@@ -376,11 +407,27 @@ window.onerror = function(msg, url, line, col, err) {
   console.error('[Phonon] Error:', msg, 'at line', line);
 };
 
+// ── Tabs (Devices / Network / Settings) ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-pane').forEach(p => {
+    p.classList.toggle('active', p.dataset.tabPane === name);
+  });
+  // Mappings panel SVG positions are wrong if its container was hidden
+  // when we drew them. Force a redraw whenever a tab becomes visible.
+  setTimeout(drawPatchLinks, 0);
+}
+
 // ── Mode LIVE/EDIT (synced across all browsers via server) ──
 function applyMode(mode) {
   document.body.className = mode === 'live' ? 'mode-live' : '';
   document.getElementById('mode-live').className = mode === 'live' ? 'mode-btn active-live' : 'mode-btn';
   document.getElementById('mode-edit').className = mode === 'edit' ? 'mode-btn active-edit' : 'mode-btn';
+  // In LIVE the tabs are hidden — make sure General (the pane that holds
+  // the Mixer) is the active one so the user actually sees something.
+  if (mode === 'live') switchTab('general');
 }
 async function setMode(mode) {
   if (mode === 'edit') {
@@ -1187,10 +1234,19 @@ async function aes67Delete(id) {
 
 function renderAes67Discovered(streams) {
   const el = document.getElementById('aes67-discovered');
-  // Hide streams we've already subscribed to (recv with same group:port)
+  // Already subscribed (one of our recv streams targets the same group:port).
+  // We hide these — re-subscribing would just create a duplicate.
   const subscribed = new Set((state.aes67 || [])
     .filter(s => s.kind === 'recv')
     .map(s => `${s.multicast_group}:${s.port}`));
+  // Streams we ourselves are publishing (one of our send streams emits on
+  // the same group:port). We KEEP these in the list but flag them with
+  // a "MY CHANNEL" badge — confirms the network sees us, but you can't
+  // subscribe to your own outgoing stream.
+  const own = new Set((state.aes67 || [])
+    .filter(s => s.kind === 'send')
+    .map(s => `${s.multicast_group}:${s.port}`));
+
   const filtered = (streams || []).filter(s => !subscribed.has(`${s.multicast_group}:${s.port}`));
   if (!filtered.length) {
     el.innerHTML = streams?.length
@@ -1200,7 +1256,12 @@ function renderAes67Discovered(streams) {
   }
   el.innerHTML = filtered.map(s => {
     const fresh = s.last_seen_age_s < 15 ? 'var(--green)' : 'var(--text-dim)';
-    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px dashed var(--border);border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
+    const isOwn = own.has(`${s.multicast_group}:${s.port}`);
+    const action = isOwn
+      ? `<span class="badge badge-mesh" style="font-size:8px;padding:2px 6px;letter-spacing:0.5px" title="Published by this Stage — visible on the network but not subscribable from yourself">MY CHANNEL</span>`
+      : `<button class="btn btn-primary" style="padding:2px 8px;font-size:9px" onclick="aes67Subscribe('${s.key}', '${(s.name||'sub').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,28)}')">SUBSCRIBE</button>`;
+    const border = isOwn ? '1px solid #fb923c40' : '1px dashed var(--border)';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:${border};border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
       <span style="color:${fresh};font-size:8px">●</span>
       <span style="color:var(--text);font-weight:600">${s.name || '(unnamed)'}</span>
       <span style="color:var(--text-dim)">from ${s.source_ip}</span>
@@ -1208,7 +1269,7 @@ function renderAes67Discovered(streams) {
       <span style="color:var(--text-fade)">${s.audio_format} ${s.sample_rate/1000}kHz ${s.channels}ch</span>
       <span style="color:var(--text-fade)">${s.last_seen_age_s}s</span>
       <span style="flex:1"></span>
-      <button class="btn btn-primary" style="padding:2px 8px;font-size:9px" onclick="aes67Subscribe('${s.key}', '${(s.name||'sub').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,28)}')">SUBSCRIBE</button>
+      ${action}
     </div>`;
   }).join('');
 }

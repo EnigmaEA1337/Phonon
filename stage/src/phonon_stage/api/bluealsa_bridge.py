@@ -151,10 +151,22 @@ async def create_bridge(
                 del _active_bridges[key]
                 logger.warning("bluealsa.bridge_dead_recreating", mac=mac, btype=device_type)
 
-    # Clean up any existing pactl modules with same sink_name
+    # Clean up any existing pactl module with EXACTLY this sink_name. Use the
+    # full token (with delimiters) — a substring match would also blow away
+    # a bridge whose name is a prefix of ours, e.g. cleaning "bt_1337" also
+    # killed "bt_1337-2_in" when two BT phones were paired.
+    target_token = (
+        f"sink_name=bt_{safe_name}_in"
+        if device_type == "capture"
+        else f"sink_name=bt_{safe_name} "
+    )
     existing_mods = await _run("pactl list modules short")
     for line in existing_mods.splitlines():
-        if f"bt_{safe_name}" in line and "module-null-sink" in line:
+        # pactl list modules short emits the args field as a tab/space-separated
+        # blob — match against the exact sink_name=… token, not substring.
+        if "module-null-sink" in line and target_token in line + " ":
+            # Also ensure exact: the next char after sink_name=bt_<safe_name>
+            # must be ' ' or end-of-args (for capture, '_in' is part of the token)
             old_mid = line.split()[0]
             await _run(f"pactl unload-module {old_mid}")
             logger.info("bluealsa.old_module_cleaned", name=safe_name, module=old_mid)

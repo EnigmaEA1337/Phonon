@@ -111,6 +111,16 @@ if [ -f "${SCRIPT_DIR}/dbus/phonon-bluetooth.conf" ]; then
     echo "  D-Bus BlueZ policy installed"
 fi
 
+# Install udev rules for stable USB device naming (UD100, DG60, X-Fi, ...)
+# These are placeholders until the user maps real MAC/serials to symlinks;
+# safe to install — non-matching rules are inert.
+if [ -f "${SCRIPT_DIR}/udev/99-phonon.rules" ]; then
+    cp "${SCRIPT_DIR}/udev/99-phonon.rules" /etc/udev/rules.d/
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+    echo "  udev rules installed (edit /etc/udev/rules.d/99-phonon.rules with real IDs)"
+fi
+
 # ── Step 4/7: Create directories ────────────────────────────────────────
 
 echo "[4/11] Creating directories..."

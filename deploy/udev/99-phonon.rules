@@ -1,0 +1,56 @@
+# Phonon — udev rules for stable USB device naming
+#
+# USB enumeration order is non-deterministic across reboots: hci0 might be
+# the JBL-side UD100 today and the JBL on Tuesday. Without stable names,
+# routing config (which dongle drives which speaker) is unreproducible.
+#
+# Two dongle families involved (cf. CLAUDE.md §6):
+#
+#   UD100 Sena            — BT classic HCI USB dongle, BlueZ-managed.
+#                           Stable name binds the hci<N> device.
+#   Avantree DG60          — BT-as-USB-audio adapter, ALSA-managed (not
+#                           BlueZ). Stable name binds the ALSA card.
+#
+# This file is a TEMPLATE. To activate it on a real machine:
+#
+#   1. Plug each dongle one at a time and read its identifying attribute:
+#        BT HCI:   `bluetoothctl list`             → MAC of hciN
+#        ALSA USB: `lsusb -v`                      → Serial / idVendor:idProduct
+#                  `udevadm info /dev/snd/...`     → ID_PATH / ID_SERIAL
+#   2. Replace the placeholder addresses below with the real ones.
+#   3. Copy to /etc/udev/rules.d/ and reload:
+#        sudo cp 99-phonon.rules /etc/udev/rules.d/
+#        sudo udevadm control --reload-rules
+#        sudo udevadm trigger
+#
+# The symlinks the rules create live under /dev/phonon-* so any Phonon
+# config can reference them stably (e.g. "open hci-from-/dev/phonon-bt-out-jbl-1").
+
+# ── BlueZ HCI dongles (UD100 Sena) ─────────────────────────────────────────
+# `phonon-bt-out-pulse3-N` — outbound A2DP toward the Pulse 3 speakers.
+# `phonon-bt-out-xtreme-N` — outbound A2DP toward the Xtreme 4 speakers.
+# Replace AA:BB:CC:DD:EE:0X with the real BD address of each dongle.
+
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:01", SYMLINK+="phonon-bt-out-pulse3-1"
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:02", SYMLINK+="phonon-bt-out-pulse3-2"
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:03", SYMLINK+="phonon-bt-out-pulse3-3"
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:04", SYMLINK+="phonon-bt-out-pulse3-4"
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:05", SYMLINK+="phonon-bt-out-xtreme-1"
+SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:06", SYMLINK+="phonon-bt-out-xtreme-2"
+
+# ── Avantree DG60 (BT-as-USB-audio, used as inbound) ───────────────────────
+# DG60 receivers expose themselves to the host as a USB audio class device,
+# not as a BT HCI. Bind by USB serial — every DG60 has a unique one. Replace
+# the placeholder serial below with the real value from `lsusb -v`.
+
+SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_1", SYMLINK+="phonon-bt-in-invite-1"
+SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_2", SYMLINK+="phonon-bt-in-invite-2"
+SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_3", SYMLINK+="phonon-bt-in-invite-3"
+
+# ── Other audio devices ────────────────────────────────────────────────────
+# Creative X-Fi HD (Optiplex 3070, primary SPDIF output).
+SUBSYSTEM=="sound", ATTRS{idVendor}=="041e", ATTRS{idProduct}=="3263", SYMLINK+="phonon-audio-xfihd"
+
+# AK1 (mic + headphones monitoring on Optiplex).
+# Replace the IDs below with `lsusb` values for the actual AK1 — placeholder.
+# SUBSYSTEM=="sound", ATTRS{idVendor}=="XXXX", ATTRS{idProduct}=="YYYY", SYMLINK+="phonon-audio-ak1"

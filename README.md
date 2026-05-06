@@ -1,7 +1,34 @@
 # Phonon Stage Standalone — Documentation v1
 
 > Documentation du Stage Agent autonome tel que déployé sur Raspberry Pi 3B `stage-x01`.
-> Date : 3 mai 2026 | Branche : `phase-1-stage-foundations`
+> Branche : `phase-1-stage-foundations` (CI verte, 122 tests)
+
+## Quick start
+
+```bash
+git clone https://github.com/EnigmaEA1337/Phonon.git ~/phonon
+cd ~/phonon
+sudo bash deploy/install.sh
+```
+
+Once installed, open `http://<stage-ip>:8401/standalone/` in a browser.
+For development without a system install:
+
+```bash
+cd ~/phonon/stage
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/phonon-stage --config dev/stage-local.yaml
+```
+
+To test the AES67 echo loop locally without a 2nd machine:
+
+```bash
+cd ~/phonon/tools/aes67-echo
+docker compose up -d
+```
+
+See `docs/test-plans/tp-04-aes67-bridge-2-pi.md` for the canonical
+two-Pi validation procedure.
 
 ---
 
@@ -76,6 +103,44 @@ Le Stage Standalone est un daemon audio FastAPI qui tourne sur un Raspberry Pi 3
 |----------|---------|-------------|
 | `/bluealsa/sync` | POST | Auto-créer les bridges PipeWire pour tous les devices BT (`?buffer_ms=50`) |
 | `/bluealsa/bridges` | GET | Lister les bridges actifs |
+
+### AES67
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/aes67/streams` | GET | Lister les streams AES67 actifs (send + recv) |
+| `/aes67/send` | POST | Créer un sender (apparaît en Audio/Sink dans le patch bay) |
+| `/aes67/recv` | POST | Créer un receiver (apparaît en Audio/Source) |
+| `/aes67/{id}` | DELETE | Supprimer un stream |
+| `/aes67/discovered` | GET | Streams découverts via SAP (autres Stages, container echo, …) |
+| `/aes67/subscribe` | POST | One-click recv depuis un stream SAP-discovered |
+
+### PTP (IEEE 1588)
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/ptp/status` | GET | État live (role, offset_ns, interface, profile) |
+
+Le toggle `enabled` dans `/settings.ptp` déclenche `systemctl enable --now phonon-ptp4l.service`.
+
+### Settings
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/settings` | GET / PATCH | Sections SAP / PTP / AES67 defaults — persisté en JSON |
+| `/settings/network-interfaces` | GET | NICs détectées (pour dropdown PTP) |
+
+### Mappings (étendu)
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/mappings/resync` | POST | Re-résoudre tous les mappings par nom de node + recréer les links PW |
+
+### Diagnostic
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/pipewire/xruns` | GET | Compteur ERR par node (pw-top), pour détecter les dropouts audio |
 
 ### Système
 
@@ -286,20 +351,53 @@ Palette **Cryogenic** héritée du mockup Console v4.4 :
 
 ## Tests
 
-- **85 tests unitaires + intégration** (pytest)
-- **Coverage : 73%**
-- Lint : ruff (clean)
+- **122 tests** (unitaires + intégration via FastAPI TestClient)
+- **Coverage : 67 %** sur les modules pure-logic (I/O wrappers exclus du
+  gate, testés au niveau hardware/intégration manuelle)
+- Lint : ruff check + format (clean)
 - Type check : mypy strict (clean)
-- CI : GitHub Actions (ruff + mypy + pytest + coverage gate 70%)
+- CI : GitHub Actions (ruff + mypy + pytest + coverage gate 65 %)
+
+Run locally:
+
+```bash
+cd stage
+.venv/bin/pytest -m "not hardware" --cov-fail-under=65
+```
+
+Test plans manuels (niveau 4) dans `docs/test-plans/` — checklists pour
+les scénarios qui demandent du hardware ou un humain qui écoute :
+
+- `tp-01-stage-bootstrap.md` — install propre + endpoints sains
+- `tp-04-aes67-bridge-2-pi.md` — bridge bidirectionnel canonique 2 Pi
 
 ---
 
 ## Prochaines étapes
 
-- [ ] VU meters avec vrais peaks (client PipeWire natif)
-- [ ] DSP : mod-host + plugins LSP (égaliseur, limiteur, compresseur)
-- [ ] Profiles DSP YAML par type d'enceinte
-- [ ] Scènes (sauvegarder/restaurer des configurations de routing)
-- [ ] AES67 bridge inter-Stage
-- [ ] Controller daemon (étape 2)
-- [ ] Console web complète (étape 9)
+État au 7 mai 2026 — tâches restantes par ordre de priorité.
+
+**Court terme**
+- [ ] Tests des modules I/O (mocks pour `bluealsa_bridge`, `levels`, `system`) → coverage 75–80 %
+- [ ] AES67 receiver buffer tunable dans Settings (jitter buffer)
+- [ ] Bouton "Force reconnect" BT pour les phones qui ne renégocient pas le profil A2DP
+
+**Quand 2 Pi câblés**
+- [ ] Validation TP-04 (le scénario canonique)
+- [ ] PTP en grandeur nature, mesure offset
+- [ ] Test plans niveau 4 supplémentaires (TP-02 Controller, TP-03 adoption, TP-05 BT prod, TP-06 DSP)
+
+**Étape 2 — Controller daemon** (gros morceau, 3-5 sessions)
+- [ ] `phonon-controllerd` : FastAPI + SQLite WAL + zeroconf browser
+- [ ] Strip Graph Compiler (orchestration cross-Stage)
+- [ ] Discovery + suivi des Stages côté Controller
+
+**Étape 3 — Adoption workflow** (dépend du Controller)
+- [ ] Bouton "Adopter ce Stage" depuis la Console
+- [ ] Workflow `controller.conf.json` / `pending-archive.json` / `stages_archive`
+- [ ] Reset → standalone bouton dans la mini-UI
+
+**Plus tard**
+- [ ] Étape 8 — DSP via mod-host + plugins LSP (chaîne par strip)
+- [ ] Étape 9 — Console v4.4 multi-Stages (le mockup HTML branché)
+- [ ] VU meters via client PipeWire natif (vraie integration au lieu de parec spawn)

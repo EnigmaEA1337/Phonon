@@ -121,6 +121,14 @@ async def patch_settings(patch: SettingsPatch, request: Request) -> Settings:
         await settings_changed()
     except Exception:
         pass
+    # Reconcile PTP services with the new ptp.enabled flag
+    if patch.ptp is not None:
+        try:
+            from phonon_stage.api.ptp import apply_settings as ptp_apply
+
+            await ptp_apply()
+        except Exception:
+            logger.warning("settings.ptp_apply_failed", exc_info=True)
     return _settings
 
 

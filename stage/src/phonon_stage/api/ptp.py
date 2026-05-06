@@ -98,8 +98,75 @@ async def _read_journal_state() -> tuple[str, int | None]:
     return role, offset
 
 
+PTP4L_SERVICE = "phonon-ptp4l.service"
+PHC2SYS_SERVICE = "phonon-phc2sys.service"
+
+
+async def _systemctl(*args: str) -> tuple[int, str]:
+    """Run systemctl via sudo (NOPASSWD setup by install.sh). Returns (rc, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        "sudo", "-n", "/bin/systemctl", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr_bytes = await proc.communicate()
+    return proc.returncode or 0, stderr_bytes.decode(errors="ignore")
+
+
+async def _service_unit_exists(name: str) -> bool:
+    """Check unit existence without sudo so we don't conflate sudo failures
+    with unit absence. Uses list-unit-files which is world-readable."""
+    proc = await asyncio.create_subprocess_exec(
+        "/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager", name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out_bytes, _ = await proc.communicate()
+    return name.encode() in out_bytes
+
+
+async def _service_active(name: str) -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        "/bin/systemctl", "is-active", name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out_bytes, _ = await proc.communicate()
+    return out_bytes.decode().strip() == "active"
+
+
+async def apply_settings() -> None:
+    """Reconcile ptp4l/phc2sys services with the current Settings.ptp.
+
+    Called from /settings PATCH. The systemd units must have been
+    installed by deploy/install.sh — if they're absent we skip silently
+    so dev boxes without the install don't crash. The user's NOPASSWD
+    sudoers entry is also set up by install.sh.
+    """
+    from phonon_stage.api import settings as _settings_mod
+
+    cfg = _settings_mod.get().ptp
+    if not await _service_unit_exists(PTP4L_SERVICE):
+        logger.info("ptp.apply_skipped", reason="unit_not_installed")
+        return
+
+    if cfg.enabled:
+        rc1, e1 = await _systemctl("enable", "--now", PTP4L_SERVICE)
+        rc2, e2 = await _systemctl("enable", "--now", PHC2SYS_SERVICE)
+        logger.info("ptp.services_enabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
+                    ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
+    else:
+        rc1, e1 = await _systemctl("disable", "--now", PTP4L_SERVICE)
+        rc2, e2 = await _systemctl("disable", "--now", PHC2SYS_SERVICE)
+        logger.info("ptp.services_disabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
+                    ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
+
+
 @router.get("/status", response_model=PtpStatus)
 async def ptp_status() -> PtpStatus:
+    from phonon_stage.api import settings as _settings_mod
+
+    cfg = _settings_mod.get().ptp
     bin_path = _ptp4l_installed()
     if not bin_path:
         return PtpStatus(
@@ -111,8 +178,15 @@ async def ptp_status() -> PtpStatus:
             profile="",
             note="linuxptp not installed (apt install linuxptp)",
         )
+    unit_present = await _service_unit_exists(PTP4L_SERVICE)
     running = await _ptp4l_running()
     if not running:
+        if cfg.enabled and not unit_present:
+            note = "Settings say enabled, but phonon-ptp4l.service not installed — run deploy/install.sh"
+        elif cfg.enabled:
+            note = "Settings say enabled, but ptp4l is not running — check `journalctl -u phonon-ptp4l`"
+        else:
+            note = f"{bin_path} present, disabled in Settings"
         return PtpStatus(
             available=True,
             running=False,
@@ -120,15 +194,20 @@ async def ptp_status() -> PtpStatus:
             offset_ns=None,
             interface="",
             profile="",
-            note=f"{bin_path} present but not running",
+            note=note,
         )
     role, offset_ns = await _read_journal_state()
+    via_unit = await _service_active(PTP4L_SERVICE)
+    if via_unit:
+        note = "managed by phonon-ptp4l.service"
+    else:
+        note = "ptp4l running (manually launched, not via systemd unit)"
     return PtpStatus(
         available=True,
         running=True,
         role=role,
         offset_ns=offset_ns,
         interface="",  # TODO: parse from ps output
-        profile="default",
-        note="read-only scaffold; Stage does not manage ptp4l yet",
+        profile=cfg.profile,
+        note=note,
     )

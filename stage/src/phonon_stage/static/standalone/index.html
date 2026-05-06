@@ -49,6 +49,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .tab-pane.active { display: block; }
 .tb-spacer { flex: 1; }
 .tb-info { font-family: var(--font-m); font-size: 10px; color: var(--text-mid); }
+.tb-ptp { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+  border: 1px solid var(--border); border-radius: 3px; font-family: var(--font-m);
+  font-size: 9px; color: var(--text-dim); cursor: help; transition: color 0.2s, border-color 0.2s; }
+.tb-ptp.gm { color: var(--magenta); border-color: rgba(232,121,249,0.4); }
+.tb-ptp.slave { color: var(--green); border-color: rgba(52,211,153,0.4); animation: pulse 2s infinite; }
+.tb-ptp.listening { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
+.tb-ptp.warn { color: var(--red); border-color: rgba(248,113,113,0.4); }
+.tb-ptp.off { opacity: 0.5; }
+.tb-xrun { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+  border: 1px solid var(--border); border-radius: 3px; font-family: var(--font-m);
+  font-size: 9px; color: var(--text-dim); cursor: pointer; transition: color 0.2s, border-color 0.2s; }
+.tb-xrun.warn { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
+.tb-xrun.danger { color: var(--red); border-color: rgba(248,113,113,0.4);
+  animation: pulse 1.5s infinite; }
 .tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
 .tb-clock { font-family: var(--font-m); font-size: 12px; color: var(--text-dim); }
 
@@ -164,9 +178,27 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip { width: 90px; background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   border: 1px solid var(--border); border-radius: 6px; padding: 6px; display: flex;
   flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
-.strip-name { font-size: 8px; font-weight: 600; text-align: center; line-height: 1.2;
-  max-width: 80px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.strip-route { font-size: 7px; color: var(--text-dim); text-align: center; }
+.strip-name { font-size: 9px; font-weight: 600; text-align: center; line-height: 1.2;
+  width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--green); }
+.strip-route { font-size: 8px; text-align: center; line-height: 1.2;
+  width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--magenta); }
+/* Orphan repair layout — wider than a regular strip, self-contained */
+.strip.orphan { width: auto; min-width: 280px; max-width: 360px;
+  border-color: var(--yellow);
+  background: linear-gradient(180deg, #2a200a, var(--bg-1));
+  align-items: stretch; padding: 8px; }
+.strip-orphan-side { display: flex; flex-direction: column; gap: 6px;
+  width: 100%; }
+.strip-orphan-side .strip-orphan-row { display: flex; gap: 4px; align-items: center;
+  font-family: var(--font-m); font-size: 9px; color: var(--text-dim); }
+.strip-orphan-side .strip-orphan-row select {
+  flex: 1; min-width: 0; background: var(--bg-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px;
+  font-family: var(--font-m); font-size: 9px; }
+.strip-orphan-side .strip-orphan-banner { font-family: var(--font-m); font-size: 8px;
+  color: var(--yellow); letter-spacing: 0.5px; font-weight: 700; }
 
 /* Knob */
 .knob-wrap { position: relative; width: 40px; height: 40px; cursor: pointer; touch-action: none; }
@@ -241,6 +273,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <button class="mode-btn" id="mode-edit" onclick="setMode('edit')">EDIT</button>
   </div>
   <span class="tb-info" id="stage-id">—</span>
+  <span class="tb-xrun" id="tb-xrun" title="XRUN — audio dropouts (parsed from pw-top)" onclick="alert(state.xruns ? JSON.stringify(state.xruns.nodes.filter(n=>n.err>0), null, 2) || 'No XRUN reported' : 'no data')">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+    <span class="tb-xrun-label" id="tb-xrun-label">0</span>
+  </span>
+  <span class="tb-ptp" id="tb-ptp" title="PTP status (loading...)">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <polyline points="12 7 12 12 15 14"/>
+    </svg>
+    <span class="tb-ptp-label" id="tb-ptp-label">—</span>
+  </span>
   <div class="tb-spacer"></div>
   <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
   <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('security')">Security</button>
@@ -288,7 +335,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
-    <!-- Mixer -->
+    <!-- Mixer (active mappings only) -->
     <div class="section">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
         Mixer
@@ -301,6 +348,18 @@ body.mode-live .edit-only select { opacity: 0.4; }
       <div class="section-body" id="mappings-list">
         <div class="mapping-empty">No active mappings</div>
       </div>
+    </div>
+
+    <!-- Orphan mappings (only shown when there are some) -->
+    <div class="section edit-only" id="orphan-section" style="display:none">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px;color:var(--yellow)">
+        ⚠ Orphan Mappings
+        <span id="orphan-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
+        <span style="font-weight:400;color:var(--text-fade);font-size:10px;margin-left:auto">
+          Pick replacement endpoints or delete
+        </span>
+      </div>
+      <div class="section-body" id="orphan-list"></div>
     </div>
   </div>
 
@@ -506,11 +565,12 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
     api('/aes67/streams'), api('/aes67/discovered'), api('/ptp/status'),
     api('/settings'), api('/settings/network-interfaces'),
+    api('/pipewire/xruns'),
   ]);
 
   if (health) {
@@ -529,13 +589,25 @@ async function refreshAll() {
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
   }
 
-  if (nodes) { state.nodes = nodes; renderPatchNodes(nodes, ports || []); renderAudioDevices(caps?.audio_devices || [], nodes); }
-  if (ports) state.ports = ports;
+  // Guard against transient empty payloads during a PW restart: if we had
+  // nodes a moment ago and the API now returns [], that's almost certainly
+  // pw-dump failing while pipewire is restarting. Keep the previous state
+  // so the patch bay doesn't blink empty and strips don't flicker orphan.
+  const prevNodes = state.nodes || [];
+  if (Array.isArray(nodes) && (nodes.length > 0 || prevNodes.length === 0)) {
+    state.nodes = nodes;
+    renderPatchNodes(nodes, ports || state.ports || []);
+    renderAudioDevices(caps?.audio_devices || [], nodes);
+  }
+  if (Array.isArray(ports) && (ports.length > 0 || (state.ports || []).length === 0)) {
+    state.ports = ports;
+  }
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
   if (stages) renderStages(stages);
   if (aes67) { state.aes67 = aes67; renderAes67(aes67); }
   if (aes67d) renderAes67Discovered(aes67d);
-  if (ptp) renderPtpStatus(ptp);
+  if (ptp) { renderPtpStatus(ptp); renderTopbarPtp(ptp); }
+  if (xruns) { state.xruns = xruns; renderTopbarXruns(xruns); }
   if (settings) { state.settings = settings; renderSettings(settings, ifaces || []); }
   // MESH badge: STANDALONE + at least one AES67 stream OR another Stage seen
   updateModeBadge(stages || [], aes67 || []);
@@ -764,14 +836,95 @@ async function createMapping() {
 }
 
 // ── Render: Mappings ─────────────────────────────────
+function renderOrphanSection(orphans) {
+  const section = document.getElementById('orphan-section');
+  const list = document.getElementById('orphan-list');
+  const count = document.getElementById('orphan-count');
+  if (!section || !list) return;
+  if (!orphans.length) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  if (count) count.textContent = `(${orphans.length})`;
+
+  const allNodes = state.nodes || [];
+  const isBtIn = (n) => n.nick?.includes('-BT-In') || n.name?.includes('_in');
+  const sourceCandidates = allNodes.filter(n =>
+    n.media_class.includes('Source') || n.media_class.includes('Duplex') || (n.media_class.includes('Sink') && isBtIn(n)));
+  const sinkCandidates = allNodes.filter(n =>
+    (n.media_class.includes('Sink') || n.media_class.includes('Duplex')) && !isBtIn(n));
+  const opt = (n, current) => `<option value="${n.id}"${n.id === current ? ' selected' : ''}>${n.nick || n.name}</option>`;
+
+  list.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 0">' +
+    orphans.map(m => {
+      const srcNode = allNodes.find(n => n.id === m.source_node_id)
+                  || (m.source_node_name && allNodes.find(n => n.name === m.source_node_name));
+      const sinkNode = allNodes.find(n => n.id === m.sink_node_id)
+                   || (m.sink_node_name && allNodes.find(n => n.name === m.sink_node_name));
+      const srcOpts = sourceCandidates.map(n => opt(n, srcNode?.id || -1)).join('');
+      const sinkOpts = sinkCandidates.map(n => opt(n, sinkNode?.id || -1)).join('');
+      const delayVal = (m.delay_ms || 0).toFixed(1);
+      return `<div class="strip orphan" data-mapping-id="${m.id}">
+        <div class="strip-orphan-side">
+          <div class="strip-orphan-banner">⚠ ${m.id.slice(0,6)} — endpoints missing</div>
+          <div class="strip-orphan-row">
+            <span style="color:var(--green);min-width:38px">SRC ▶</span>
+            <select id="orph-src-${m.id}">
+              <option value="">— ${m.source_node_name || '?'} (missing) —</option>
+              ${srcOpts}
+            </select>
+          </div>
+          <div class="strip-orphan-row">
+            <span style="color:var(--magenta);min-width:38px">SINK ◀</span>
+            <select id="orph-sink-${m.id}">
+              <option value="">— ${m.sink_node_name || '?'} (missing) —</option>
+              ${sinkOpts}
+            </select>
+          </div>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-primary" style="font-size:9px;padding:3px 10px" onclick="reconnectOrphan('${m.id}')">RECONNECT</button>
+            <button class="btn" style="font-size:9px;padding:3px 10px;color:var(--red);border-color:rgba(248,113,113,0.4)" onclick="deleteMapping('${m.id}')">DELETE</button>
+          </div>
+          <div style="font-family:var(--font-m);font-size:7px;color:var(--text-fade)">
+            keep gain ${m.gain_db.toFixed(1)} dB · pan ${m.pan.toFixed(2)} · delay ${delayVal} ms
+          </div>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+}
+
 function renderMappings(mappings) {
   const el = document.getElementById('mappings-list');
-  document.getElementById('mapping-count').textContent = `(Active Mappings ${mappings.length}/8)`;
 
   // Refresh patch-bay links whenever mappings change
   setTimeout(drawPatchLinks, 0);
 
-  if (!mappings.length) { el.innerHTML = '<div class="mapping-empty">No active mappings</div>'; return; }
+  // Split into active (both endpoints resolved) and orphan
+  const nodesIdx = state.nodes || [];
+  const isResolved = (m) => {
+    const src = nodesIdx.find(n => n.id === m.source_node_id)
+             || (m.source_node_name && nodesIdx.find(n => n.name === m.source_node_name));
+    const sink = nodesIdx.find(n => n.id === m.sink_node_id)
+              || (m.sink_node_name && nodesIdx.find(n => n.name === m.sink_node_name));
+    return !!(src && sink);
+  };
+  const active = (mappings || []).filter(isResolved);
+  const orphan = (mappings || []).filter(m => !isResolved(m));
+
+  document.getElementById('mapping-count').textContent =
+    `(Active Mappings ${active.length}/8${orphan.length ? ` · ${orphan.length} orphan` : ''})`;
+
+  // Render orphan section separately (or hide if empty)
+  renderOrphanSection(orphan);
+
+  if (!active.length) {
+    el.innerHTML = '<div class="mapping-empty">No active mappings</div>';
+    return;
+  }
+
+  // From here on, only render active strips below
+  mappings = active;
 
   // VU segments for vertical bars (20 segments)
   const vuSegs = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('');
@@ -815,6 +968,7 @@ function renderMappings(mappings) {
     const dotX = knobCx + (knobR - 4) * Math.cos(dotAngle);
     const dotY = knobCy + (knobR - 4) * Math.sin(dotAngle);
 
+    // Orphan strips are rendered in a dedicated section, not inline here
     return `<div class="strip" data-mapping-id="${m.id}" data-active="${hasLinks}" data-gain="${m.gain_db}">
       <!-- Header -->
       <div style="display:flex;align-items:center;gap:3px;width:100%">
@@ -822,8 +976,8 @@ function renderMappings(mappings) {
         <button class="btn-mute${m.mute ? ' active' : ''}" onclick="toggleMute('${m.id}', ${!m.mute})" style="width:18px;height:14px;font-size:7px">M</button>
         <button class="btn-del edit-only" onclick="deleteMapping('${m.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div class="strip-name" title="${srcName} → ${sinkName}">${srcName}</div>
-      <div class="strip-route">→ ${sinkName}</div>
+      <div class="strip-name" title="${srcName} → ${sinkName}">▶ ${srcName}</div>
+      <div class="strip-route" title="${sinkName}">◀ ${sinkName}</div>
 
       <!-- Delay Knob -->
       <div class="knob-wrap" data-mapping="${m.id}" data-param="delay" data-value="${delayVal}">
@@ -966,6 +1120,50 @@ async function toggleMute(id, mute) {
 
 async function deleteMapping(id) {
   await api('/mappings/' + id, { method: 'DELETE' });
+  await refreshAll();
+}
+
+async function reconnectOrphan(mappingId) {
+  const old = (state.mappings || []).find(m => m.id === mappingId);
+  if (!old) return;
+  const srcSel = document.getElementById('orph-src-' + mappingId);
+  const sinkSel = document.getElementById('orph-sink-' + mappingId);
+  const srcId = parseInt(srcSel?.value || '0', 10);
+  const sinkId = parseInt(sinkSel?.value || '0', 10);
+  if (!srcId || !sinkId) {
+    alert('Pick both a source and a sink');
+    return;
+  }
+  // Resolve current ports
+  const srcOuts = (state.ports || [])
+    .filter(p => p.node_id === srcId && p.direction === 'output')
+    .map(p => p.id).sort((a,b)=>a-b);
+  const sinkIns = (state.ports || [])
+    .filter(p => p.node_id === sinkId && p.direction === 'input')
+    .map(p => p.id).sort((a,b)=>a-b);
+  if (!srcOuts.length || !sinkIns.length) {
+    alert('Selected nodes have no compatible ports');
+    return;
+  }
+  // Create the new mapping first so the gain/pan/delay/mute slot survives
+  const r = await api('/mappings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_node_id: srcId,
+      source_port_ids: srcOuts,
+      sink_node_id: sinkId,
+      sink_port_ids: sinkIns,
+      gain_db: old.gain_db,
+      pan: old.pan,
+      mute: old.mute,
+      delay_ms: old.delay_ms,
+    }),
+  });
+  if (r) {
+    // Drop the old orphan
+    await api('/mappings/' + mappingId, { method: 'DELETE' });
+  }
   await refreshAll();
 }
 
@@ -1240,7 +1438,7 @@ async function aes67Create(kind) {
   const port = parseInt(document.getElementById('aes67-port').value, 10);
   const loop = document.getElementById('aes67-loop').checked;
   if (!name) { document.getElementById('aes67-status').textContent = 'name required'; return; }
-  document.getElementById('aes67-status').textContent = 'creating... (PW restart ~3s)';
+  document.getElementById('aes67-status').textContent = 'creating... (PW restart ~3s, mappings auto-resync)';
   const r = await api(`/aes67/${kind}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1448,6 +1646,50 @@ async function settingsSave() {
   document.getElementById('stg-status').textContent = r ? 'saved' : 'failed';
   _settingsDirty = false;
   await refreshAll();
+}
+
+function renderTopbarXruns(x) {
+  const el = document.getElementById('tb-xrun');
+  const lab = document.getElementById('tb-xrun-label');
+  if (!el || !lab) return;
+  el.classList.remove('warn', 'danger');
+  const total = x.total || 0;
+  lab.textContent = total > 999 ? '999+' : String(total);
+  if (total >= 100) el.classList.add('danger');
+  else if (total > 0) el.classList.add('warn');
+  // Build a tooltip listing the worst offenders
+  const offenders = (x.nodes || []).filter(n => n.err > 0)
+    .sort((a, b) => b.err - a.err).slice(0, 5);
+  el.title = offenders.length
+    ? 'XRUN total ' + total + ' — ' + offenders.map(n => `${n.name}:${n.err}`).join(', ')
+    : 'XRUN: 0 — clean run';
+}
+
+function renderTopbarPtp(p) {
+  const el = document.getElementById('tb-ptp');
+  const lab = document.getElementById('tb-ptp-label');
+  if (!el || !lab) return;
+  el.classList.remove('gm', 'slave', 'listening', 'warn', 'off');
+  let label, cls, title;
+  if (!p.available) {
+    cls = 'off'; label = 'PTP—'; title = 'PTP: linuxptp not installed';
+  } else if (!p.running) {
+    cls = 'off'; label = 'PTP off'; title = 'PTP: not running (toggle in Settings)';
+  } else if (p.role === 'grandmaster') {
+    cls = 'gm'; label = 'GM'; title = `PTP grandmaster on ${p.interface || 'auto'}`;
+  } else if (p.role === 'slave') {
+    cls = 'slave';
+    const offTxt = p.offset_ns !== null && p.offset_ns !== undefined ? ` ${p.offset_ns >= 0 ? '+' : ''}${p.offset_ns}ns` : '';
+    label = `SLAVE${offTxt}`;
+    title = `PTP slave on ${p.interface || 'auto'} — offset ${offTxt || 'pending'}`;
+  } else if (p.role === 'listening') {
+    cls = 'listening'; label = 'LISTEN'; title = `PTP listening (BMCA election in progress) on ${p.interface || 'auto'}`;
+  } else {
+    cls = 'warn'; label = p.role || '?'; title = `PTP role unknown on ${p.interface || 'auto'}`;
+  }
+  el.classList.add(cls);
+  lab.textContent = label;
+  el.title = title;
 }
 
 function renderPtpStatus(p) {

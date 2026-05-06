@@ -69,8 +69,10 @@ class MappingService:
         # Capture node names so we can re-resolve after a PW restart
         nodes = await self._pw.list_nodes()
         node_by_id = {n.id: n for n in nodes}
-        src_name = node_by_id.get(source_node_id).name if source_node_id in node_by_id else ""
-        sink_name = node_by_id.get(sink_node_id).name if sink_node_id in node_by_id else ""
+        src_node = node_by_id.get(source_node_id)
+        sink_node = node_by_id.get(sink_node_id)
+        src_name = src_node.name if src_node else ""
+        sink_name = sink_node.name if sink_node else ""
 
         mapping = Mapping(
             id=mapping_id,
@@ -199,8 +201,7 @@ class MappingService:
                 logger.warning("mapping.restore_failed", mapping_id=mapping.id, exc_info=True)
                 skipped += 1
 
-        logger.info("mappings.restored", total=len(mappings),
-                    restored=restored, skipped=skipped)
+        logger.info("mappings.restored", total=len(mappings), restored=restored, skipped=skipped)
 
     async def resync_mappings(self) -> dict[str, int]:
         """User-triggered resync — call after PW restart to recreate every
@@ -264,12 +265,8 @@ class MappingService:
             )
             return None
         ports = await self._pw.list_ports()
-        src_outs = sorted(
-            p.id for p in ports if p.node_id == src.id and p.direction == "output"
-        )
-        sink_ins = sorted(
-            p.id for p in ports if p.node_id == sink.id and p.direction == "input"
-        )
+        src_outs = sorted(p.id for p in ports if p.node_id == src.id and p.direction == "output")
+        sink_ins = sorted(p.id for p in ports if p.node_id == sink.id and p.direction == "input")
         if not src_outs or not sink_ins:
             return None
         return (src.id, src_outs, sink.id, sink_ins)

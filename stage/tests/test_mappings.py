@@ -132,6 +132,9 @@ class TestMappingService:
         fake_pw.links.clear()
         assert len(fake_pw.links) == 0
 
-        # Restore should re-create links
+        # Restore re-resolves the mapping by node name and pairs every
+        # output port of the source with every input port of the sink.
+        # Node 31 has 2 output ports (FL+FR) and node 30 has 2 input ports
+        # (FL+FR), so we get 2 links — one per channel.
         await mapping_service.restore_mappings()
-        assert len(fake_pw.links) == 1
+        assert len(fake_pw.links) == 2

@@ -51,7 +51,7 @@ def _to_response(m: object) -> MappingResponse:
     from phonon_stage.mappings.models import Mapping
 
     assert isinstance(m, Mapping)
-    return MappingResponse(**m.to_dict())  # type: ignore[arg-type]
+    return MappingResponse(**m.to_dict())
 
 
 @router.get("", response_model=list[MappingResponse])
@@ -112,4 +112,5 @@ async def resync_mappings(request: Request) -> dict[str, int]:
     wipes all PW links — node IDs change, so the original IDs in storage
     are stale; this looks each node up by its captured name and rebuilds.
     """
-    return await request.app.state.mapping_service.resync_mappings()
+    result: dict[str, int] = await request.app.state.mapping_service.resync_mappings()
+    return result

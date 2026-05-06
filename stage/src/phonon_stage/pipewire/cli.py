@@ -161,7 +161,10 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
     # trick is `-n 2` (or more) which makes it emit N snapshots and exit
     # cleanly. Two snapshots take ~2s; we get one steady-state for free.
     proc = await asyncio.create_subprocess_exec(
-        "pw-top", "-b", "-n", "2",
+        "pw-top",
+        "-b",
+        "-n",
+        "2",
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

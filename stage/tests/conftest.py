@@ -129,6 +129,18 @@ def fake_pw() -> FakePipeWireBackend:
     return FakePipeWireBackend(nodes=SAMPLE_PW_NODES, ports=SAMPLE_PW_PORTS)
 
 
+@pytest.fixture(autouse=True)
+def _reset_aes67_global_state(tmp_path: Path) -> None:
+    """Tests share the aes67 module's _active_streams/_discovered_streams dicts
+    by import. Reset them and point the conf dir at tmp so we don't bleed
+    state from the developer's real ~/.config/pipewire."""
+    from phonon_stage.api import aes67 as _a
+
+    _a._active_streams.clear()
+    _a._discovered_streams.clear()
+    _a._CONF_DIR = tmp_path / "pipewire-test-conf.d"
+
+
 @pytest.fixture()
 def machine_id_file(tmp_path: Path) -> Path:
     mid = tmp_path / "machine-id"

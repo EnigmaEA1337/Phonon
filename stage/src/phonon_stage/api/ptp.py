@@ -54,7 +54,9 @@ def _ptp4l_installed() -> str:
 
 async def _ptp4l_running() -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "pgrep", "-x", "ptp4l",
+        "pgrep",
+        "-x",
+        "ptp4l",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -65,7 +67,11 @@ async def _ptp4l_running() -> bool:
 async def _ptp4l_interface() -> str:
     """Extract the -i argument from the running ptp4l's command line."""
     proc = await asyncio.create_subprocess_exec(
-        "ps", "-C", "ptp4l", "-o", "args=",
+        "ps",
+        "-C",
+        "ptp4l",
+        "-o",
+        "args=",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -83,7 +89,12 @@ async def _read_journal_state() -> tuple[str, int | None]:
     service variant.
     """
     proc = await asyncio.create_subprocess_exec(
-        "journalctl", "-t", "ptp4l", "-n", "50", "--no-pager",
+        "journalctl",
+        "-t",
+        "ptp4l",
+        "-n",
+        "50",
+        "--no-pager",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -93,21 +104,29 @@ async def _read_journal_state() -> tuple[str, int | None]:
         return "unknown", None
     role = "unknown"
     offset: int | None = None
-    # ptp4l logs lines like:
-    #   "selected best master clock ..."
-    #   "port 1: MASTER to LISTENING"
-    #   "master offset       1234 s2 freq ..."
-    if "selected local clock" in text:
+    # ptp4l logs port state transitions as:
+    #   "port 1 (eth0): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED"
+    #   "port 1 (eth0): LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES"
+    # We want the *destination* state (after "to") since that's the current
+    # role. Also accept "assuming the grand master role" / "selected local
+    # clock" as explicit grandmaster markers.
+    if "selected local clock" in text or "assuming the grand master role" in text:
         role = "grandmaster"
-    elif re.search(r"port \d+: SLAVE", text):
+    elif re.search(r"port \d+.*\bto SLAVE\b", text):
         role = "slave"
-    elif re.search(r"port \d+: MASTER", text):
+    elif re.search(r"port \d+.*\bto MASTER\b", text):
         role = "grandmaster"
-    elif re.search(r"port \d+: LISTENING", text):
+    elif re.search(r"port \d+.*\bto LISTENING\b", text) or re.search(
+        r"port \d+.*: INITIALIZING to LISTENING", text
+    ):
         role = "listening"
-    m = re.search(r"master offset\s+(-?\d+)", text)
-    if m:
-        offset = int(m.group(1))
+    # Pick the LAST master-offset reading so the displayed offset is current
+    # (slaves emit one per sync interval).
+    last_offset = None
+    for m in re.finditer(r"master offset\s+(-?\d+)", text):
+        last_offset = int(m.group(1))
+    if last_offset is not None:
+        offset = last_offset
     return role, offset
 
 
@@ -118,7 +137,10 @@ PHC2SYS_SERVICE = "phonon-phc2sys.service"
 async def _systemctl(*args: str) -> tuple[int, str]:
     """Run systemctl via sudo (NOPASSWD setup by install.sh). Returns (rc, stderr)."""
     proc = await asyncio.create_subprocess_exec(
-        "sudo", "-n", "/bin/systemctl", *args,
+        "sudo",
+        "-n",
+        "/bin/systemctl",
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -130,7 +152,11 @@ async def _service_unit_exists(name: str) -> bool:
     """Check unit existence without sudo so we don't conflate sudo failures
     with unit absence. Uses list-unit-files which is world-readable."""
     proc = await asyncio.create_subprocess_exec(
-        "/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager", name,
+        "/bin/systemctl",
+        "list-unit-files",
+        "--no-legend",
+        "--no-pager",
+        name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -140,7 +166,9 @@ async def _service_unit_exists(name: str) -> bool:
 
 async def _service_active(name: str) -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "/bin/systemctl", "is-active", name,
+        "/bin/systemctl",
+        "is-active",
+        name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -175,19 +203,34 @@ async def apply_settings() -> None:
         if already_active and wants_iface and wants_iface != running_iface:
             rc, err = await _systemctl("restart", PTP4L_SERVICE)
             await _systemctl("restart", PHC2SYS_SERVICE)
-            logger.info("ptp.services_restarted", reason="iface_changed",
-                        from_iface=running_iface, to_iface=wants_iface,
-                        rc=rc, err=err.strip())
+            logger.info(
+                "ptp.services_restarted",
+                reason="iface_changed",
+                from_iface=running_iface,
+                to_iface=wants_iface,
+                rc=rc,
+                err=err.strip(),
+            )
         else:
             rc1, e1 = await _systemctl("enable", "--now", PTP4L_SERVICE)
             rc2, e2 = await _systemctl("enable", "--now", PHC2SYS_SERVICE)
-            logger.info("ptp.services_enabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
-                        ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
+            logger.info(
+                "ptp.services_enabled",
+                ptp4l_rc=rc1,
+                phc2sys_rc=rc2,
+                ptp4l_err=e1.strip(),
+                phc2sys_err=e2.strip(),
+            )
     else:
         rc1, e1 = await _systemctl("disable", "--now", PTP4L_SERVICE)
         rc2, e2 = await _systemctl("disable", "--now", PHC2SYS_SERVICE)
-        logger.info("ptp.services_disabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
-                    ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
+        logger.info(
+            "ptp.services_disabled",
+            ptp4l_rc=rc1,
+            phc2sys_rc=rc2,
+            ptp4l_err=e1.strip(),
+            phc2sys_err=e2.strip(),
+        )
 
 
 @router.get("/status", response_model=PtpStatus)
@@ -210,9 +253,15 @@ async def ptp_status() -> PtpStatus:
     running = await _ptp4l_running()
     if not running:
         if cfg.enabled and not unit_present:
-            note = "Settings say enabled, but phonon-ptp4l.service not installed — run deploy/install.sh"
+            note = (
+                "Settings say enabled, but phonon-ptp4l.service "
+                "not installed — run deploy/install.sh"
+            )
         elif cfg.enabled:
-            note = "Settings say enabled, but ptp4l is not running — check `journalctl -u phonon-ptp4l`"
+            note = (
+                "Settings say enabled, but ptp4l is not running — "
+                "check `journalctl -u phonon-ptp4l`"
+            )
         else:
             note = f"{bin_path} present, disabled in Settings"
         return PtpStatus(
@@ -232,7 +281,9 @@ async def ptp_status() -> PtpStatus:
         note = "managed by phonon-ptp4l.service"
         # Detect mismatch between Settings and reality
         if cfg.interface and iface and cfg.interface != iface:
-            note = f"running on '{iface}' but Settings.interface='{cfg.interface}' — restart to apply"
+            note = (
+                f"running on '{iface}' but Settings.interface='{cfg.interface}' — restart to apply"
+            )
     else:
         note = "ptp4l running (manually launched, not via systemd unit)"
 

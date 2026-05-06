@@ -24,7 +24,7 @@ def db_to_linear(db: float) -> float:
     """
     if db <= SILENCE_THRESHOLD_DB:
         return 0.0
-    return 10.0 ** (db / 20.0)
+    return float(10.0 ** (db / 20.0))
 
 
 def linear_to_db(linear: float) -> float:

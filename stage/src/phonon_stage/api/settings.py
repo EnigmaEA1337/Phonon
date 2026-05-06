@@ -8,7 +8,7 @@ Persistence file: <data_dir>/settings.json (mode 0600).
 
 from __future__ import annotations
 
-import json
+import contextlib
 import os
 import socket
 from pathlib import Path
@@ -82,10 +82,8 @@ def _save() -> None:
         return
     _path.parent.mkdir(parents=True, exist_ok=True)
     _path.write_text(_settings.model_dump_json(indent=2))
-    try:
+    with contextlib.suppress(OSError):
         _path.chmod(0o600)
-    except OSError:
-        pass
     logger.info("settings.saved", path=str(_path))
 
 
@@ -96,6 +94,7 @@ async def get_settings() -> Settings:
 
 class SettingsPatch(BaseModel):
     """Partial update — any subset of sections."""
+
     model_config = ConfigDict(extra="forbid")
     sap: SapSettings | None = None
     ptp: PtpSettings | None = None
@@ -148,7 +147,7 @@ async def list_interfaces() -> list[dict[str, Any]]:
                     import fcntl
                     import struct as _s
 
-                    SIOCGIFADDR = 0x8915
+                    SIOCGIFADDR = 0x8915  # noqa: N806 — kernel ioctl constant, keep upper-case
                     packed = _s.pack("256s", ifname[:15].encode())
                     raw = fcntl.ioctl(s.fileno(), SIOCGIFADDR, packed)
                     ip = socket.inet_ntoa(raw[20:24])

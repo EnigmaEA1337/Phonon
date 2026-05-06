@@ -178,9 +178,17 @@ def _own_lan_ip(target_mcast: str = "239.255.255.255") -> str:
         s.close()
 
 
-def _build_sdp(stream_name: str, src_ip: str, mcast: str, port: int,
-               channels: int, rate: int, audio_format: str) -> str:
+def _build_sdp(
+    stream_name: str,
+    src_ip: str,
+    mcast: str,
+    port: int,
+    channels: int,
+    rate: int,
+    audio_format: str,
+) -> str:
     import random as _r
+
     session_id = _r.randint(1, 2**31)
     fmt = "L16" if audio_format.upper() == "S16BE" else audio_format
     return (
@@ -200,6 +208,7 @@ def _build_sdp(stream_name: str, src_ip: str, mcast: str, port: int,
 
 def _build_sap_packet(sdp: str, src_ip: str) -> bytes:
     import random as _r
+
     flags = 0x20  # V=1, A=0 (IPv4), R=0, T=0 (announce), E=0, C=0
     auth_len = 0
     msg_id_hash = _r.randint(0, 0xFFFF)
@@ -216,11 +225,8 @@ async def _sap_announce_loop() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
-    try:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
-                        socket.inet_aton(src_ip))
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(src_ip))
     logger.info("aes67.sap_announcer_started", src_ip=src_ip)
     while True:
         cfg = _settings_mod.get().sap
@@ -231,11 +237,12 @@ async def _sap_announce_loop() -> None:
                         continue
                     stream_name = f"phonon-{sid[:6]}-{s.get('name', '')}"
                     sdp = _build_sdp(
-                        stream_name, src_ip,
+                        stream_name,
+                        src_ip,
                         str(s.get("multicast_group", "")),
-                        int(s.get("port", 5004)),  # type: ignore[arg-type]
-                        int(s.get("channels", 2)),  # type: ignore[arg-type]
-                        int(s.get("sample_rate", 48000)),  # type: ignore[arg-type]
+                        int(s.get("port", 5004)),  # type: ignore[call-overload]
+                        int(s.get("channels", 2)),  # type: ignore[call-overload]
+                        int(s.get("sample_rate", 48000)),  # type: ignore[call-overload]
                         str(s.get("audio_format", "S16BE")),
                     )
                     pkt = _build_sap_packet(sdp, src_ip)
@@ -271,7 +278,12 @@ async def _restart_pipewire() -> None:
     aren't auto-restored — the user has to recreate them.
     """
     proc = await asyncio.create_subprocess_exec(
-        "systemctl", "--user", "restart", "pipewire", "wireplumber", "pipewire-pulse",
+        "systemctl",
+        "--user",
+        "restart",
+        "pipewire",
+        "wireplumber",
+        "pipewire-pulse",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -291,6 +303,7 @@ async def _restart_pipewire() -> None:
     try:
         import contextlib
         import signal
+
         from phonon_stage.api.bluealsa_bridge import _active_bridges, create_bridge
 
         snapshot = list(_active_bridges.items())
@@ -432,11 +445,15 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
     # Reject duplicates by name
     for s in _active_streams.values():
         if s.get("kind") == kind and s.get("name") == req.name:
-            raise HTTPException(status_code=409, detail=f"{kind} stream '{req.name}' already exists")
+            raise HTTPException(
+                status_code=409, detail=f"{kind} stream '{req.name}' already exists"
+            )
 
     stream_id = uuid.uuid4().hex[:8]
     node_name = _node_name(kind, req.name)
-    conf = _render_send_conf(req, node_name) if kind == "send" else _render_recv_conf(req, node_name)
+    conf = (
+        _render_send_conf(req, node_name) if kind == "send" else _render_recv_conf(req, node_name)
+    )
 
     path = _conf_path(stream_id)
     path.write_text(conf)
@@ -465,7 +482,7 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
 
     return StreamInfo(
         id=stream_id,
-        kind=kind,  # type: ignore[arg-type]
+        kind=kind,  # type: ignore[call-overload]
         name=req.name,
         multicast_group=req.multicast_group,
         port=req.port,
@@ -498,12 +515,12 @@ async def list_streams() -> list[StreamInfo]:
     return [
         StreamInfo(
             id=sid,
-            kind=str(s.get("kind", "send")),  # type: ignore[arg-type]
+            kind=str(s.get("kind", "send")),  # type: ignore[call-overload]
             name=str(s.get("name", "")),
             multicast_group=str(s.get("multicast_group", "")),
-            port=int(s.get("port", 0)),  # type: ignore[arg-type]
-            channels=int(s.get("channels", 2)),  # type: ignore[arg-type]
-            sample_rate=int(s.get("sample_rate", 48000)),  # type: ignore[arg-type]
+            port=int(s.get("port", 0)),  # type: ignore[call-overload]
+            channels=int(s.get("channels", 2)),  # type: ignore[call-overload]
+            sample_rate=int(s.get("sample_rate", 48000)),  # type: ignore[call-overload]
             audio_format=str(s.get("audio_format", "S16BE")),
         )
         for sid, s in _active_streams.items()
@@ -511,6 +528,7 @@ async def list_streams() -> list[StreamInfo]:
 
 
 # ── SAP listener ──────────────────────────────────────────────
+
 
 class DiscoveredStream(BaseModel):
     """An AES67 stream announced via SAP/SDP by another node."""
@@ -545,7 +563,7 @@ def _parse_sap_packet(data: bytes, sender_ip: str) -> dict[str, object] | None:
     payload = data[offset:]
     # Optional payload type "application/sdp\0" prefix
     if payload.startswith(b"application/sdp\x00"):
-        payload = payload[len(b"application/sdp\x00"):]
+        payload = payload[len(b"application/sdp\x00") :]
     sdp = payload.decode("utf-8", errors="ignore")
     parsed = _parse_sdp(sdp)
     if not parsed:
@@ -575,29 +593,23 @@ def _parse_sdp(sdp: str) -> dict[str, object] | None:
         if key == "s":
             name = val
         elif key == "c" and val.startswith("IN IP4 "):
-            mcast = val[len("IN IP4 "):].split("/", 1)[0]
+            mcast = val[len("IN IP4 ") :].split("/", 1)[0]
         elif key == "m" and val.startswith("audio "):
             parts = val.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     port = int(parts[1])
-                except ValueError:
-                    pass
         elif key == "a" and val.startswith("rtpmap:"):
             #  rtpmap:96 L16/48000/2
             payload_def = val.split(" ", 1)[1] if " " in val else ""
             bits = payload_def.split("/")
             if len(bits) >= 2:
                 fmt = bits[0]
-                try:
+                with contextlib.suppress(ValueError):
                     rate = int(bits[1])
-                except ValueError:
-                    pass
             if len(bits) >= 3:
-                try:
+                with contextlib.suppress(ValueError):
                     channels = int(bits[2])
-                except ValueError:
-                    pass
     if not mcast or not port:
         return None
     audio_format = "S16BE" if fmt.upper() == "L16" else fmt
@@ -644,8 +656,9 @@ async def start_sap_listener() -> None:
     sock.setblocking(False)
     await loop.create_datagram_endpoint(_SapListenerProtocol, sock=sock)
     logger.info("aes67.sap_listener_started", group=_SAP_GROUP, port=_SAP_PORT)
-    # Background expiry sweep
-    asyncio.create_task(_sap_expiry_loop())
+    # Background expiry sweep — fire-and-forget, lives for the daemon's
+    # lifetime; we don't need to await or cancel it here.
+    asyncio.create_task(_sap_expiry_loop())  # noqa: RUF006
 
 
 async def _sap_expiry_loop() -> None:
@@ -653,8 +666,9 @@ async def _sap_expiry_loop() -> None:
         await asyncio.sleep(5)
         now = time.monotonic()
         stale = [
-            k for k, v in _discovered_streams.items()
-            if now - float(v.get("last_seen", 0.0)) > _DISCOVERED_TTL  # type: ignore[arg-type]
+            k
+            for k, v in _discovered_streams.items()
+            if now - float(v.get("last_seen", 0.0)) > _DISCOVERED_TTL  # type: ignore[call-overload]
         ]
         for k in stale:
             _discovered_streams.pop(k, None)
@@ -671,11 +685,11 @@ async def list_discovered() -> list[DiscoveredStream]:
             source_ip=str(v.get("source_ip", "")),
             name=str(v.get("name", "")),
             multicast_group=str(v.get("multicast_group", "")),
-            port=int(v.get("port", 0)),  # type: ignore[arg-type]
-            channels=int(v.get("channels", 2)),  # type: ignore[arg-type]
-            sample_rate=int(v.get("sample_rate", 48000)),  # type: ignore[arg-type]
+            port=int(v.get("port", 0)),  # type: ignore[call-overload]
+            channels=int(v.get("channels", 2)),  # type: ignore[call-overload]
+            sample_rate=int(v.get("sample_rate", 48000)),  # type: ignore[call-overload]
             audio_format=str(v.get("audio_format", "S16BE")),
-            last_seen_age_s=round(now - float(v.get("last_seen", now)), 1),  # type: ignore[arg-type]
+            last_seen_age_s=round(now - float(v.get("last_seen", now)), 1),  # type: ignore[call-overload]
         )
         for k, v in _discovered_streams.items()
     ]
@@ -698,9 +712,9 @@ async def subscribe_to_discovered(req: SubscribeRequest) -> StreamInfo:
     create_req = CreateStreamRequest(
         name=req.name,
         multicast_group=str(discovered.get("multicast_group", "")),
-        port=int(discovered.get("port", 5004)),  # type: ignore[arg-type]
-        channels=int(discovered.get("channels", 2)),  # type: ignore[arg-type]
-        sample_rate=int(discovered.get("sample_rate", 48000)),  # type: ignore[arg-type]
+        port=int(discovered.get("port", 5004)),  # type: ignore[call-overload]
+        channels=int(discovered.get("channels", 2)),  # type: ignore[call-overload]
+        sample_rate=int(discovered.get("sample_rate", 48000)),  # type: ignore[call-overload]
         audio_format=str(discovered.get("audio_format", "S16BE")),
         loop=req.loop,
     )

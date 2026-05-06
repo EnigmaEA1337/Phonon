@@ -22,13 +22,16 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint (ruff check)
-        run: ruff check stage/
+        working-directory: stage
+        run: ruff check .
 
       - name: Format check (ruff format)
-        run: ruff format --check stage/
+        working-directory: stage
+        run: ruff format --check .
 
       - name: Type check (mypy)
-        run: mypy stage/src/
+        working-directory: stage
+        run: mypy src/
 
       - name: Tests + coverage
         working-directory: stage

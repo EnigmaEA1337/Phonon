@@ -116,13 +116,14 @@ def create_app(
         except Exception:
             logger.warning("stage.bluealsa_cleanup_failed", exc_info=True)
 
-        # Clean up stale AES67 conf snippets from previous run
+        # Restore AES67 streams from on-disk conf snippets — they're already
+        # loaded by PipeWire, we just need to know about them in-memory.
         try:
-            from phonon_stage.api.aes67 import cleanup_stale_aes67
+            from phonon_stage.api.aes67 import restore_existing_aes67
 
-            await cleanup_stale_aes67()
+            await restore_existing_aes67()
         except Exception:
-            logger.warning("stage.aes67_cleanup_failed", exc_info=True)
+            logger.warning("stage.aes67_restore_failed", exc_info=True)
 
         # Start SAP listener + announcer for AES67 stream discovery
         try:

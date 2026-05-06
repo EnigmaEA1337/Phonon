@@ -356,8 +356,16 @@ async def _restart_pipewire() -> None:
             logger.warning("aes67.mappings_resync_failed", exc_info=True)
 
 
-def _scan_existing_confs() -> None:
-    """Populate _active_streams from existing conf files (called at startup)."""
+async def restore_existing_aes67() -> None:
+    """Re-populate _active_streams from the conf files on disk so the daemon
+    knows about streams created in a previous session. PipeWire has already
+    loaded these snippets at its own startup — we just need to register them
+    in our in-memory map so /aes67/streams reflects reality and SAP announces
+    keep firing for them.
+
+    Replaces the previous cleanup-then-wipe strategy that erased every
+    AES67 stream on every daemon restart.
+    """
     if not _CONF_DIR.is_dir():
         return
     for path in _CONF_DIR.glob(f"{_CONF_PREFIX}*.conf"):
@@ -389,7 +397,8 @@ def _scan_existing_confs() -> None:
 
 
 async def cleanup_stale_aes67() -> None:
-    """Remove all phonon-aes67-* config files at startup (in case daemon crashed)."""
+    """Wipe ALL phonon-aes67-* config files. Destructive — only kept for
+    explicit "reset to factory" flow. NOT called at startup anymore."""
     if not _CONF_DIR.is_dir():
         return
     removed = 0

@@ -46,7 +46,7 @@ fi
 
 # ── Step 1/7: Detect architecture and distro ─────────────────────────────
 
-echo "[1/7] Detecting platform..."
+echo "[1/11] Detecting platform..."
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -71,7 +71,7 @@ echo "  Platform: ${PLATFORM} | Distro: ${DISTRO} ${DISTRO_VERSION}"
 
 # ── Step 2/7: Install system dependencies ────────���───────────────────────
 
-echo "[2/7] Installing system dependencies..."
+echo "[2/11] Installing system dependencies..."
 
 apt-get update -qq
 apt-get install -y -qq \
@@ -84,13 +84,14 @@ apt-get install -y -qq \
     pipewire-alsa \
     pipewire-pulse \
     wireplumber \
+    linuxptp \
     2>/dev/null
 
 echo "  System packages OK"
 
 # ── Step 3/7: Create phonon user ──────────���─────────────────────────────
 
-echo "[3/7] Creating phonon user..."
+echo "[3/11] Creating phonon user..."
 
 if id -u "${PHONON_USER}" &>/dev/null; then
     echo "  User ${PHONON_USER} already exists"
@@ -112,7 +113,7 @@ fi
 
 # ── Step 4/7: Create directories ────────────────────────────────────────
 
-echo "[4/7] Creating directories..."
+echo "[4/11] Creating directories..."
 
 mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}" "${INSTALL_DIR}"
 chown "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}" "${LOG_DIR}"
@@ -194,7 +195,7 @@ fi
 
 # ── Step 5/7: Python venv + install package ──────────────────────────────
 
-echo "[5/7] Setting up Python venv and installing phonon-stage..."
+echo "[5/11] Setting up Python venv and installing phonon-stage..."
 
 if [ ! -d "${VENV_DIR}" ]; then
     python3 -m venv "${VENV_DIR}"
@@ -210,7 +211,7 @@ echo "  phonon-stage installed"
 
 # ── Step 6/7: Generate config if absent ──────────────────────────────────
 
-echo "[6/7] Generating config..."
+echo "[6/11] Generating config..."
 
 if [ ! -f "${CONFIG_DIR}/stage.yaml" ]; then
     # Detect primary IP address
@@ -233,7 +234,7 @@ fi
 
 # -- Step 7/10: Disable old system service if present -------------------------
 
-echo "[7/10] Cleaning up old system service..."
+echo "[7/11] Cleaning up old system service..."
 
 if systemctl is-enabled phonon-stage.service 2>/dev/null; then
     systemctl stop phonon-stage.service 2>/dev/null
@@ -245,7 +246,7 @@ fi
 
 # -- Step 8/10: Install BT auxiliary services ---------------------------------
 
-echo "[8/10] Installing BT auxiliary services..."
+echo "[8/11] Installing BT auxiliary services..."
 
 # Install python3-dbus + python3-gi for bt-agent
 apt-get install -y -qq python3-dbus python3-gi bluez-alsa-utils 2>/dev/null || true
@@ -304,12 +305,20 @@ ExecStart=/usr/sbin/rfkill unblock bluetooth
 WantedBy=multi-user.target
 BTUNBLOCK
 
-# Sudoers for phonon (rfkill + hciconfig without password)
+# Sudoers for phonon (rfkill + hciconfig + PTP service control without password)
 cat > /etc/sudoers.d/phonon <<'SUDOERS'
 phonon ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
 phonon ALL=(ALL) NOPASSWD: /usr/sbin/hciconfig
 phonon ALL=(ALL) NOPASSWD: /usr/bin/rfkill
 phonon ALL=(ALL) NOPASSWD: /bin/hciconfig
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start phonon-ptp4l.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-ptp4l.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-ptp4l.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-ptp4l.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start phonon-phc2sys.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-phc2sys.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-phc2sys.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 
@@ -325,9 +334,100 @@ systemctl restart phonon-bt-agent.service 2>/dev/null
 systemctl start phonon-bt-unblock.service 2>/dev/null
 echo "  BT services installed"
 
-# -- Step 9/10: Setup user service + linger -----------------------------------
+# -- Step 9/11: Install PTP (linuxptp) ----------------------------------------
 
-echo "[9/10] Installing phonon-stage user service..."
+echo "[9/11] Installing PTP (linuxptp)..."
+
+# Drop AES67 media-profile config files for ptp4l. We don't enable
+# the services here — the Stage settings UI exposes a toggle so the
+# user opts in once their network is wired and a grandmaster is
+# present. Activation later: `systemctl enable --now phonon-ptp4l
+# phonon-phc2sys`.
+
+mkdir -p /etc/linuxptp
+
+# AES67 media profile (per AES67 §6 + IEEE 1588 default profile,
+# domain 0, multicast). Override the interface in the systemd unit
+# below (or via /etc/default/phonon-ptp).
+cat > /etc/linuxptp/phonon-aes67.conf <<'PTPCONF'
+[global]
+domainNumber              0
+priority1                 128
+priority2                 128
+clockClass                248
+clockAccuracy             0xfe
+offsetScaledLogVariance   0xffff
+free_running              0
+freq_est_interval         1
+dscp_event                46
+dscp_general              46
+network_transport         UDPv4
+delay_mechanism           E2E
+time_stamping             software
+tx_timestamp_timeout      50
+logAnnounceInterval       1
+logSyncInterval           -3
+logMinDelayReqInterval    -3
+announceReceiptTimeout    3
+hybrid_e2e                0
+inhibit_multicast_service 0
+PTPCONF
+
+# Default interface comes from /etc/default/phonon-ptp; auto-pick if absent.
+cat > /etc/default/phonon-ptp <<'PTPDEFAULTS'
+# Interface ptp4l/phc2sys bind to. Empty = auto-detect first non-lo
+# interface with link UP. Set explicitly for production (eth0, eth1…).
+PTP_IFACE=
+
+# Slave mode flag for ptp4l: empty = full BMCA election; "-s" = slave only.
+PTP_MODE_FLAG=
+PTPDEFAULTS
+
+# ptp4l service — wraps the binary with our config + auto-iface helper
+cat > /etc/systemd/system/phonon-ptp4l.service <<'PTPSVC'
+[Unit]
+Description=Phonon PTP4L (IEEE 1588 / AES67 media profile)
+Documentation=man:ptp4l(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/default/phonon-ptp
+ExecStartPre=/bin/sh -c 'if [ -z "$PTP_IFACE" ]; then echo PTP_IFACE=$(ip -o link show up | awk -F: "/state UP/ && \$2 !~ /lo/ {print \$2; exit}" | tr -d " ") > /run/phonon-ptp.env; else echo PTP_IFACE=$PTP_IFACE > /run/phonon-ptp.env; fi'
+EnvironmentFile=/run/phonon-ptp.env
+ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/phonon-aes67.conf -i ${PTP_IFACE} ${PTP_MODE_FLAG} -m
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+PTPSVC
+
+# phc2sys service — slaves the system clock to PTP (or vice versa for
+# software timestamping fallback)
+cat > /etc/systemd/system/phonon-phc2sys.service <<'PHC2SYSSVC'
+[Unit]
+Description=Phonon phc2sys (PHC ↔ system clock sync)
+Documentation=man:phc2sys(8)
+After=phonon-ptp4l.service
+Requires=phonon-ptp4l.service
+
+[Service]
+EnvironmentFile=-/run/phonon-ptp.env
+ExecStart=/usr/sbin/phc2sys -a -r -m
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+PHC2SYSSVC
+
+systemctl daemon-reload
+echo "  PTP installed (services NOT enabled — use Stage UI to opt in)"
+
+# -- Step 10/11: Setup user service + linger ----------------------------------
+
+echo "[10/11] Installing phonon-stage user service..."
 
 PHONON_UID=$(id -u "${PHONON_USER}")
 
@@ -370,9 +470,9 @@ WPCONF
 chown -R "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}/.config"
 echo "  User service installed"
 
-# -- Step 10/10: Start everything ---------------------------------------------
+# -- Step 11/11: Start everything ---------------------------------------------
 
-echo "[10/10] Starting services..."
+echo "[11/11] Starting services..."
 
 # Ensure runtime dir
 mkdir -p "/run/user/${PHONON_UID}"

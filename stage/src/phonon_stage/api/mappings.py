@@ -23,6 +23,8 @@ class MappingResponse(BaseModel):
     mute: bool
     delay_ms: float
     created_at: str
+    source_node_name: str = ""
+    sink_node_name: str = ""
 
 
 class CreateMappingRequest(BaseModel):

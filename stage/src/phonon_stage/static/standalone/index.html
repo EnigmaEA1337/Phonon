@@ -725,7 +725,7 @@ async function createMapping() {
     return;
   }
 
-  await api('/mappings', {
+  const r = await api('/mappings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -739,7 +739,9 @@ async function createMapping() {
 
   state.selectedSource = null;
   state.selectedSink = null;
-  document.getElementById('patch-hint').textContent = 'Mapping created! Select source then sink for another.';
+  document.getElementById('patch-hint').textContent = r
+    ? 'Mapping created! Select source then sink for another.'
+    : 'Mapping FAILED — check Stage logs (`journalctl --user -u phonon-stage`)';
   await refreshAll();
 }
 

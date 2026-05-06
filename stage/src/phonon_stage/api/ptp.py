@@ -62,6 +62,19 @@ async def _ptp4l_running() -> bool:
     return rc == 0
 
 
+async def _ptp4l_interface() -> str:
+    """Extract the -i argument from the running ptp4l's command line."""
+    proc = await asyncio.create_subprocess_exec(
+        "ps", "-C", "ptp4l", "-o", "args=",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    text = out.decode(errors="ignore")
+    m = re.search(r"-i\s+(\S+)", text)
+    return m.group(1) if m else ""
+
+
 async def _read_journal_state() -> tuple[str, int | None]:
     """Try to extract role + offset from the most recent ptp4l log lines.
 
@@ -142,6 +155,9 @@ async def apply_settings() -> None:
     installed by deploy/install.sh — if they're absent we skip silently
     so dev boxes without the install don't crash. The user's NOPASSWD
     sudoers entry is also set up by install.sh.
+
+    If ptp4l is currently running on a different interface than what
+    Settings now requests, restart it so the new value takes effect.
     """
     from phonon_stage.api import settings as _settings_mod
 
@@ -151,10 +167,22 @@ async def apply_settings() -> None:
         return
 
     if cfg.enabled:
-        rc1, e1 = await _systemctl("enable", "--now", PTP4L_SERVICE)
-        rc2, e2 = await _systemctl("enable", "--now", PHC2SYS_SERVICE)
-        logger.info("ptp.services_enabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
-                    ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
+        # If service is already active and the iface is different, restart.
+        already_active = await _service_active(PTP4L_SERVICE)
+        running_iface = await _ptp4l_interface() if already_active else ""
+        wants_iface = cfg.interface  # empty = auto-pick by the unit
+
+        if already_active and wants_iface and wants_iface != running_iface:
+            rc, err = await _systemctl("restart", PTP4L_SERVICE)
+            await _systemctl("restart", PHC2SYS_SERVICE)
+            logger.info("ptp.services_restarted", reason="iface_changed",
+                        from_iface=running_iface, to_iface=wants_iface,
+                        rc=rc, err=err.strip())
+        else:
+            rc1, e1 = await _systemctl("enable", "--now", PTP4L_SERVICE)
+            rc2, e2 = await _systemctl("enable", "--now", PHC2SYS_SERVICE)
+            logger.info("ptp.services_enabled", ptp4l_rc=rc1, phc2sys_rc=rc2,
+                        ptp4l_err=e1.strip(), phc2sys_err=e2.strip())
     else:
         rc1, e1 = await _systemctl("disable", "--now", PTP4L_SERVICE)
         rc2, e2 = await _systemctl("disable", "--now", PHC2SYS_SERVICE)
@@ -198,16 +226,22 @@ async def ptp_status() -> PtpStatus:
         )
     role, offset_ns = await _read_journal_state()
     via_unit = await _service_active(PTP4L_SERVICE)
+    iface = await _ptp4l_interface()
+
     if via_unit:
         note = "managed by phonon-ptp4l.service"
+        # Detect mismatch between Settings and reality
+        if cfg.interface and iface and cfg.interface != iface:
+            note = f"running on '{iface}' but Settings.interface='{cfg.interface}' — restart to apply"
     else:
         note = "ptp4l running (manually launched, not via systemd unit)"
+
     return PtpStatus(
         available=True,
         running=True,
         role=role,
         offset_ns=offset_ns,
-        interface="",  # TODO: parse from ps output
+        interface=iface,
         profile=cfg.profile,
         note=note,
     )

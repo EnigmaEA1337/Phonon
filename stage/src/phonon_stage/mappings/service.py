@@ -66,6 +66,12 @@ class MappingService:
         if delay_ms > 0:
             await self._pw.set_node_latency_offset(sink_node_id, int(delay_ms * 1_000_000))
 
+        # Capture node names so we can re-resolve after a PW restart
+        nodes = await self._pw.list_nodes()
+        node_by_id = {n.id: n for n in nodes}
+        src_name = node_by_id.get(source_node_id).name if source_node_id in node_by_id else ""
+        sink_name = node_by_id.get(sink_node_id).name if sink_node_id in node_by_id else ""
+
         mapping = Mapping(
             id=mapping_id,
             source_node_id=source_node_id,
@@ -78,6 +84,8 @@ class MappingService:
             mute=mute,
             delay_ms=delay_ms,
             created_at=self._clock.now().isoformat(),
+            source_node_name=src_name,
+            sink_node_name=sink_name,
         )
 
         self._store.add(mapping)
@@ -159,25 +167,112 @@ class MappingService:
         return updated
 
     async def restore_mappings(self) -> None:
-        """Restore mappings from persistence on startup."""
+        """Restore mappings from persistence on startup. Resolves nodes by
+        NAME (not stale IDs from before the last PW restart) so links land
+        on the right ports even if PipeWire has renumbered everything."""
         mappings = self._store.load()
         restored = 0
+        skipped = 0
         for mapping in mappings:
             if mapping.mute:
                 restored += 1
                 continue
             try:
-                new_link_ids = await self._create_links(
-                    mapping.source_port_ids, mapping.sink_port_ids
+                new_ids = await self._reresolve_mapping_ports(mapping)
+                if new_ids is None:
+                    skipped += 1
+                    continue
+                src_node_id, src_port_ids, sink_node_id, sink_port_ids = new_ids
+                new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
+                self._store.update(
+                    mapping.id,
+                    source_node_id=src_node_id,
+                    source_port_ids=src_port_ids,
+                    sink_node_id=sink_node_id,
+                    sink_port_ids=sink_port_ids,
+                    link_ids=new_link_ids,
                 )
-                self._store.update(mapping.id, link_ids=new_link_ids)
                 volume = db_to_linear(mapping.gain_db)
-                await self._apply_volume(mapping.sink_node_id, volume, mapping.pan)
+                await self._apply_volume(sink_node_id, volume, mapping.pan)
                 restored += 1
             except Exception:
                 logger.warning("mapping.restore_failed", mapping_id=mapping.id, exc_info=True)
+                skipped += 1
 
-        logger.info("mappings.restored", total=len(mappings), restored=restored)
+        logger.info("mappings.restored", total=len(mappings),
+                    restored=restored, skipped=skipped)
+
+    async def resync_mappings(self) -> dict[str, int]:
+        """User-triggered resync — call after PW restart to recreate every
+        persisted mapping using the current node IDs. Returns counts."""
+        mappings = self._store.mappings
+        ok = 0
+        skipped = 0
+        for mapping in mappings:
+            if mapping.mute:
+                continue
+            try:
+                new_ids = await self._reresolve_mapping_ports(mapping)
+                if new_ids is None:
+                    skipped += 1
+                    continue
+                src_node_id, src_port_ids, sink_node_id, sink_port_ids = new_ids
+                new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
+                self._store.update(
+                    mapping.id,
+                    source_node_id=src_node_id,
+                    source_port_ids=src_port_ids,
+                    sink_node_id=sink_node_id,
+                    sink_port_ids=sink_port_ids,
+                    link_ids=new_link_ids,
+                )
+                volume = db_to_linear(mapping.gain_db)
+                await self._apply_volume(sink_node_id, volume, mapping.pan)
+                ok += 1
+            except Exception:
+                logger.warning("mapping.resync_failed", mapping_id=mapping.id, exc_info=True)
+                skipped += 1
+        logger.info("mappings.resynced", total=len(mappings), ok=ok, skipped=skipped)
+        return {"total": len(mappings), "ok": ok, "skipped": skipped}
+
+    async def _reresolve_mapping_ports(
+        self, mapping: Mapping
+    ) -> tuple[int, list[int], int, list[int]] | None:
+        """Look up current node IDs by name, then current ports. Returns
+        None if either node has disappeared (e.g., BT bridge not synced)."""
+        if not mapping.source_node_name or not mapping.sink_node_name:
+            # Legacy mapping created before name capture — try with the
+            # stored IDs and let the link create fail if they're stale.
+            return (
+                mapping.source_node_id,
+                mapping.source_port_ids,
+                mapping.sink_node_id,
+                mapping.sink_port_ids,
+            )
+        nodes = await self._pw.list_nodes()
+        by_name = {n.name: n for n in nodes}
+        src = by_name.get(mapping.source_node_name)
+        sink = by_name.get(mapping.sink_node_name)
+        if not src or not sink:
+            logger.info(
+                "mapping.resync_node_missing",
+                mapping_id=mapping.id,
+                source=mapping.source_node_name,
+                sink=mapping.sink_node_name,
+                source_found=src is not None,
+                sink_found=sink is not None,
+            )
+            return None
+        ports = await self._pw.list_ports()
+        src_outs = sorted(
+            p.id for p in ports if p.node_id == src.id and p.direction == "output"
+        )
+        sink_ins = sorted(
+            p.id for p in ports if p.node_id == sink.id and p.direction == "input"
+        )
+        if not src_outs or not sink_ins:
+            return None
+        return (src.id, src_outs, sink.id, sink_ins)
 
     async def _create_links(
         self, source_port_ids: list[int], sink_port_ids: list[int]

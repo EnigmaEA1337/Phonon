@@ -276,7 +276,14 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- Mixer -->
   <div class="section">
-    <div class="section-head">Mixer <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span></div>
+    <div class="section-head" style="display:flex;align-items:center;gap:8px">
+      Mixer
+      <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
+      <span style="flex:1"></span>
+      <button class="btn edit-only" style="font-size:9px;padding:2px 8px"
+        onclick="resyncMappings()" title="Re-resolve mapped nodes by name and recreate PW links — useful after a PipeWire restart">Resync</button>
+      <span class="tb-info edit-only" id="resync-status" style="font-size:9px"></span>
+    </div>
     <div class="section-body" id="mappings-list">
       <div class="mapping-empty">No active mappings</div>
     </div>
@@ -1401,6 +1408,17 @@ function renderPtpStatus(p) {
       <div style="color:var(--text-fade);font-size:9px;font-style:italic">${p.note || ''}</div>
     </div>
   `;
+}
+
+async function resyncMappings() {
+  const el = document.getElementById('resync-status');
+  if (el) el.textContent = 'syncing...';
+  const r = await api('/mappings/resync', { method: 'POST' });
+  if (el) {
+    if (r) el.textContent = `${r.ok}/${r.total} ok${r.skipped?` (${r.skipped} skipped)`:''}`;
+    else el.textContent = 'failed';
+  }
+  await refreshAll();
 }
 
 async function aes67Subscribe(key, suggestedName) {

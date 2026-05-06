@@ -23,6 +23,11 @@ class Mapping:
     mute: bool = False
     delay_ms: float = 0.0  # Latency offset for output sync (0-50ms)
     created_at: str = ""  # ISO 8601
+    # Node names captured at create-time. PipeWire IDs change across
+    # restarts; names don't, so a re-resolve by name lets us restore
+    # mappings after a PW restart.
+    source_node_name: str = ""
+    sink_node_name: str = ""
 
     def to_dict(self) -> dict[str, object]:
         """Serialize to a JSON-compatible dict for persistence."""
@@ -38,6 +43,8 @@ class Mapping:
             "mute": self.mute,
             "delay_ms": self.delay_ms,
             "created_at": self.created_at,
+            "source_node_name": self.source_node_name,
+            "sink_node_name": self.sink_node_name,
         }
 
     @classmethod
@@ -55,4 +62,6 @@ class Mapping:
             mute=bool(data.get("mute", False)),
             delay_ms=float(data.get("delay_ms", 0.0)),
             created_at=str(data.get("created_at", "")),
+            source_node_name=str(data.get("source_node_name", "")),
+            sink_node_name=str(data.get("sink_node_name", "")),
         )

@@ -100,3 +100,14 @@ async def delete_mapping(request: Request, mapping_id: str) -> None:
         await request.app.state.mapping_service.delete_mapping(mapping_id)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/resync")
+async def resync_mappings(request: Request) -> dict[str, int]:
+    """Re-resolve every persisted mapping by node name and recreate links.
+
+    Useful after a PipeWire restart (which AES67 create/delete triggers)
+    wipes all PW links — node IDs change, so the original IDs in storage
+    are stale; this looks each node up by its captured name and rebuilds.
+    """
+    return await request.app.state.mapping_service.resync_mappings()

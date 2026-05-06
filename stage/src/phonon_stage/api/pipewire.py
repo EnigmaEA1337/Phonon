@@ -84,3 +84,20 @@ async def list_links(request: Request) -> list[PwLinkResponse]:
         )
         for lk in links
     ]
+
+
+@router.get("/xruns")
+async def list_xruns() -> dict[str, object]:
+    """Per-node XRUN counters parsed from `pw-top -b`. Cached 3s.
+
+    Returns: { total: int, nodes: [{id, name, err, state}] }
+    """
+    from phonon_stage.pipewire import cli
+
+    table = await cli.pw_top_xruns()
+    nodes = [
+        {"id": nid, "name": v.get("name", ""), "err": v.get("err", 0), "state": v.get("state", "")}
+        for nid, v in table.items()
+    ]
+    total = sum(int(n["err"]) for n in nodes)  # type: ignore[arg-type]
+    return {"total": total, "nodes": nodes}

@@ -141,6 +141,105 @@ async def pw_dump() -> list[dict[str, Any]]:
     return result  # type: ignore[no-any-return]
 
 
+_pw_top_cache: dict[int, dict[str, Any]] = {}
+_pw_top_cache_time: float = 0.0
+_PW_TOP_CACHE_TTL = 3.0
+
+
+async def pw_top_xruns() -> dict[int, dict[str, Any]]:
+    """Run `pw-top -b` briefly and parse the latest snapshot's ERR column.
+
+    Returns: {node_id: {name, err, state, format}}
+    """
+    global _pw_top_cache, _pw_top_cache_time
+    now = asyncio.get_event_loop().time()
+    if _pw_top_cache and (now - _pw_top_cache_time) < _PW_TOP_CACHE_TTL:
+        return _pw_top_cache
+
+    # `pw-top -b` (batch mode) without -n waits forever for a TTY-like stdin
+    # and exits immediately when stdin is piped — yielding no output. The
+    # trick is `-n 2` (or more) which makes it emit N snapshots and exit
+    # cleanly. Two snapshots take ~2s; we get one steady-state for free.
+    proc = await asyncio.create_subprocess_exec(
+        "pw-top", "-b", "-n", "2",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        logger.warning("pipewire.pw_top_timeout")
+        return {}
+
+    text = stdout_bytes.decode(errors="ignore")
+    if not text.strip():
+        logger.warning("pipewire.pw_top_empty")
+        return {}
+    logger.debug("pipewire.pw_top_raw", bytes=len(text), preview=text[:200])
+
+    # Use the header line's column positions to locate NAME so we don't have
+    # to fight the variable-width FORMAT column ("S16LE 2 44100" vs "---").
+    # pw-top -b emits a fresh snapshot every second; we may have killed the
+    # process mid-snapshot, so the LAST snapshot can be truncated. Pick the
+    # snapshot with the most lines (the latest fully-emitted one).
+    header_marker = "S   ID  QUANT"
+    positions = []
+    start = 0
+    while True:
+        idx = text.find(header_marker, start)
+        if idx < 0:
+            break
+        positions.append(idx)
+        start = idx + 1
+    if not positions:
+        return {}
+
+    snapshots = []
+    for i, pos in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(text)
+        block = text[pos:end].splitlines()
+        snapshots.append(block)
+    # Pick the most populated block (filters out a truncated trailing one)
+    snapshot = max(snapshots, key=len)
+    if len(snapshot) < 2:
+        return {}
+    header_line = snapshot[0]
+    name_col = header_line.find("NAME")
+    if name_col < 0:
+        return {}
+
+    result: dict[int, dict[str, Any]] = {}
+    for line in snapshot[1:]:
+        if not line.strip() or line.startswith(header_marker):
+            continue
+        # Pad so column-slice is safe
+        padded = line if len(line) >= name_col else line.ljust(name_col)
+        prefix = padded[:name_col]
+        name_part = padded[name_col:].strip()
+        # Strip the leading "+ " of client-stream rows
+        if name_part.startswith("+ "):
+            name_part = name_part[2:].strip()
+        parts = prefix.split()
+        if len(parts) < 9:
+            continue
+        try:
+            state = parts[0]
+            node_id = int(parts[1])
+            err = int(parts[8])
+        except (ValueError, IndexError):
+            continue
+        if not name_part:
+            continue
+        result[node_id] = {"name": name_part, "err": err, "state": state}
+
+    _pw_top_cache = result
+    _pw_top_cache_time = now
+    return result
+
+
 async def pw_link_create(output_port_id: int, input_port_id: int) -> str:
     """Create a PipeWire link. Returns raw output. Ignores 'File exists' (already linked)."""
     try:

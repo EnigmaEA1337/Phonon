@@ -162,6 +162,38 @@ RECV_CONF = """context.modules = [
 """
 
 
+class TestRecvConfRendering:
+    """The receiver buffer wiring from Settings → conf snippet."""
+
+    def test_recv_uses_settings_default_buffer(self) -> None:
+        from phonon_stage.api import settings as _settings_mod
+
+        _settings_mod._settings = _settings_mod.Settings()  # default 50 ms
+        req = aes67.CreateStreamRequest(name="test")
+        out = aes67._render_recv_conf(req, "aes67-recv-test")
+        assert "sess.latency.msec = 50" in out
+
+    def test_recv_per_stream_override_wins(self) -> None:
+        req = aes67.CreateStreamRequest(name="test", recv_buffer_ms=120)
+        out = aes67._render_recv_conf(req, "aes67-recv-test")
+        assert "sess.latency.msec = 120" in out
+
+    def test_recv_setting_change_propagates(self) -> None:
+        from phonon_stage.api import settings as _settings_mod
+
+        _settings_mod._settings = _settings_mod.Settings.model_validate(
+            {
+                "sap": _settings_mod.SapSettings().model_dump(),
+                "ptp": _settings_mod.PtpSettings().model_dump(),
+                "aes67": _settings_mod.Aes67Defaults(recv_buffer_ms=200).model_dump(),
+            }
+        )
+        req = aes67.CreateStreamRequest(name="test")
+        out = aes67._render_recv_conf(req, "aes67-recv-test")
+        assert "sess.latency.msec = 200" in out
+        _settings_mod._settings = _settings_mod.Settings()  # restore for other tests
+
+
 class TestRestoreExistingAes67:
     @pytest.mark.asyncio
     async def test_restores_send_and_recv(self, tmp_path: Path) -> None:

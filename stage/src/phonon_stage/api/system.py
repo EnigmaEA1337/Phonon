@@ -70,6 +70,44 @@ class SecurityStatusResponse(BaseModel):
     phonon_user_groups: list[str]
 
 
+def parse_throttled(raw: str) -> tuple[int, list[str]]:
+    """Parse `vcgencmd get_throttled` output into (raw_int, list_of_alerts).
+
+    Output format: "throttled=0x50000". The hex value is a bitmask:
+      bit  0 (0x00001): under-voltage NOW
+      bit  1 (0x00002): CPU frequency capped NOW
+      bit  2 (0x00004): CPU throttled NOW
+      bit  3 (0x00008): soft temp limit NOW (Pi 4+ only)
+      bit 16 (0x10000): under-voltage occurred since boot
+      bit 17 (0x20000): CPU frequency was capped since boot
+      bit 18 (0x40000): CPU was throttled since boot
+      bit 19 (0x80000): soft temp limit reached since boot
+
+    "NOW" alerts override their "since boot" counterparts — if it's
+    happening *right now*, we don't dilute the warning with the
+    historical one.
+    """
+    val = 0
+    if "=" in raw:
+        with contextlib.suppress(ValueError):
+            val = int(raw.split("=")[1], 16)
+
+    alerts: list[str] = []
+    if val & 0x1:
+        alerts.append("UNDER-VOLTAGE NOW — change power supply!")
+    elif val & 0x10000:
+        alerts.append("Under-voltage occurred since boot")
+    if val & 0x4:
+        alerts.append("CPU THROTTLED NOW")
+    elif val & 0x40000:
+        alerts.append("CPU throttled since boot")
+    if val & 0x2:
+        alerts.append("CPU frequency capped NOW")
+    elif val & 0x20000:
+        alerts.append("CPU frequency was capped")
+    return val, alerts
+
+
 async def _run(cmd: str, timeout: float = 3.0) -> str:
     """Run a shell command and return stdout, empty string on failure."""
     try:
@@ -147,25 +185,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
 
     # Throttle / voltage check
     throttled_raw = await _run("vcgencmd get_throttled 2>/dev/null")
-    throttled_val = 0
-    if "=" in throttled_raw:
-        with contextlib.suppress(ValueError):
-            throttled_val = int(throttled_raw.split("=")[1], 16)
-
-    alerts: list[str] = []
-    # Check each flag
-    if throttled_val & 0x1:
-        alerts.append("UNDER-VOLTAGE NOW — change power supply!")
-    elif throttled_val & 0x10000:
-        alerts.append("Under-voltage occurred since boot")
-    if throttled_val & 0x4:
-        alerts.append("CPU THROTTLED NOW")
-    elif throttled_val & 0x40000:
-        alerts.append("CPU throttled since boot")
-    if throttled_val & 0x2:
-        alerts.append("CPU frequency capped NOW")
-    elif throttled_val & 0x20000:
-        alerts.append("CPU frequency was capped")
+    throttled_val, alerts = parse_throttled(throttled_raw)
     # Memory check
     if mem_total and mem_avail < mem_total * 0.15:
         alerts.append(f"Low memory: {mem_avail}MB available")

@@ -47,6 +47,10 @@ class Aes67Defaults(BaseModel):
     sample_rate: int = 48000
     audio_format: Literal["S16BE", "S24BE", "S32BE"] = "S16BE"
     ptime_ms: float = Field(default=1.0, ge=0.125, le=10.0)
+    # Receiver-side jitter buffer in ms. 20 ms is tight and prone to crackles
+    # on a busy or jittery network (WiFi, multi-hop). 50 ms is a safe default
+    # for a wired LAN with PTP. Bump higher (100-200 ms) if you hear glitches.
+    recv_buffer_ms: int = Field(default=50, ge=5, le=500)
 
 
 class Settings(BaseModel):

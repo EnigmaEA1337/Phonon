@@ -71,6 +71,19 @@ class TestSettingsModel:
         with pytest.raises(ValidationError):
             Aes67Defaults(ptime_ms=20.0)
 
+    def test_aes67_recv_buffer_bounds(self) -> None:
+        # 5 ms tight (low-latency wired) → 500 ms (lossy WiFi)
+        Aes67Defaults(recv_buffer_ms=5)
+        Aes67Defaults(recv_buffer_ms=500)
+        with pytest.raises(ValidationError):
+            Aes67Defaults(recv_buffer_ms=1)
+        with pytest.raises(ValidationError):
+            Aes67Defaults(recv_buffer_ms=1000)
+
+    def test_aes67_recv_buffer_default_is_50ms(self) -> None:
+        # 50 ms — safe wired-LAN default
+        assert Aes67Defaults().recv_buffer_ms == 50
+
     def test_extra_fields_forbidden(self) -> None:
         with pytest.raises(ValidationError):
             Settings(unknown_section={"foo": "bar"})  # type: ignore[call-arg]

@@ -95,6 +95,13 @@ class CreateStreamRequest(BaseModel):
     audio_format: str = Field(default="S16BE")
     ptime_ms: float = Field(default=1.0, ge=0.125, le=10.0)
     loop: bool = Field(default=True, description="IP_MULTICAST_LOOP — true for local-host testing")
+    # Receiver-only — ignored for send streams.
+    recv_buffer_ms: int | None = Field(
+        default=None,
+        ge=5,
+        le=500,
+        description="recv jitter buffer (ms). Falls back to Settings.aes67.recv_buffer_ms.",
+    )
 
 
 class StreamInfo(BaseModel):
@@ -144,12 +151,20 @@ def _render_send_conf(req: CreateStreamRequest, node_name: str) -> str:
 
 
 def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
+    # Per-stream override > Settings default. Settings default is the
+    # tunable jitter buffer the user adjusts when they hear crackles.
+    from phonon_stage.api import settings as _settings_mod
+
+    if req.recv_buffer_ms is not None:
+        latency_ms = req.recv_buffer_ms
+    else:
+        latency_ms = _settings_mod.get().aes67.recv_buffer_ms
     return f"""context.modules = [
   {{ name = libpipewire-module-rtp-source
     args = {{
       source.ip = {req.multicast_group}
       source.port = {req.port}
-      sess.latency.msec = 20
+      sess.latency.msec = {latency_ms}
       sess.name = "{node_name}"
       audio.format = {req.audio_format}
       audio.rate = {req.sample_rate}

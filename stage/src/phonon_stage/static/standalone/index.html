@@ -1596,6 +1596,8 @@ function renderSettings(s, ifaces) {
       </select>
       <label>Packet time (ms)</label>
       <input type="number" id="stg-ae-pt" min="0.125" max="10" step="0.125" value="${s.aes67.ptime_ms}" onchange="settingsMarkDirty()">
+      <label title="Jitter buffer on the receive side. Bump higher (50→100→200) if you hear crackles on AES67 streams.">Recv buffer (ms)</label>
+      <input type="number" id="stg-ae-rxbuf" min="5" max="500" step="5" value="${s.aes67.recv_buffer_ms}" onchange="settingsMarkDirty()">
     </div>
 
     <div class="stg-actions">
@@ -1639,6 +1641,7 @@ async function settingsSave() {
       sample_rate: parseInt(document.getElementById('stg-ae-rate').value, 10),
       audio_format: document.getElementById('stg-ae-fmt').value,
       ptime_ms: parseFloat(document.getElementById('stg-ae-pt').value),
+      recv_buffer_ms: parseInt(document.getElementById('stg-ae-rxbuf').value, 10),
     },
   };
   document.getElementById('stg-status').textContent = 'saving...';

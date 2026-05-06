@@ -671,10 +671,28 @@ function drawPatchLinks() {
   svg.setAttribute('width', gridRect.width);
   svg.setAttribute('height', gridRect.height);
   const mappings = state.mappings || [];
+  const nodes = state.nodes || [];
+
+  // Resolve a mapping's endpoint to a current DOM element. Try the stored
+  // node_id first; if it's stale (PipeWire renumbered after a restart),
+  // fall back to a name lookup against the current nodes list.
+  function findEndpoint(role, m) {
+    const idAttr = role === 'source' ? 'data-source-id' : 'data-sink-id';
+    const stored = role === 'source' ? m.source_node_id : m.sink_node_id;
+    const name = role === 'source' ? m.source_node_name : m.sink_node_name;
+    let el = grid.querySelector(`[${idAttr}="${stored}"]`);
+    if (el) return el;
+    if (name) {
+      const cur = nodes.find(n => n.name === name);
+      if (cur) el = grid.querySelector(`[${idAttr}="${cur.id}"]`);
+    }
+    return el;
+  }
+
   const lines = [];
   mappings.forEach((m, i) => {
-    const src = grid.querySelector(`[data-source-id="${m.source_node_id}"]`);
-    const sink = grid.querySelector(`[data-sink-id="${m.sink_node_id}"]`);
+    const src = findEndpoint('source', m);
+    const sink = findEndpoint('sink', m);
     if (!src || !sink) return;
     const srcRect = src.getBoundingClientRect();
     const sinkRect = sink.getBoundingClientRect();
@@ -764,12 +782,22 @@ function renderMappings(mappings) {
 
   el.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 0">' +
     mappings.map(m => {
-    const srcNode = state.nodes.find(n => n.id === m.source_node_id);
-    const sinkNode = state.nodes.find(n => n.id === m.sink_node_id);
-    const srcName = srcNode?.nick || srcNode?.name || `#${m.source_node_id}`;
-    const sinkName = sinkNode?.nick || sinkNode?.name || `#${m.sink_node_id}`;
-    const hasLinks = !m.mute && m.link_ids?.length > 0;
-    const ledColor = hasLinks ? 'var(--green)' : m.mute ? 'var(--red)' : 'var(--text-fade)';
+    // Look up by stored ID first; if PW renumbered, fall back to the
+    // stored node name so the label stays meaningful instead of '#85'.
+    const srcNode = state.nodes.find(n => n.id === m.source_node_id)
+                 || (m.source_node_name && state.nodes.find(n => n.name === m.source_node_name));
+    const sinkNode = state.nodes.find(n => n.id === m.sink_node_id)
+                  || (m.sink_node_name && state.nodes.find(n => n.name === m.sink_node_name));
+    const srcName = srcNode?.nick || srcNode?.name || m.source_node_name || `#${m.source_node_id}`;
+    const sinkName = sinkNode?.nick || sinkNode?.name || m.sink_node_name || `#${m.sink_node_id}`;
+    // hasLinks now also degrades nicely: link_ids may be stale; treat
+    // as inactive (grey LED) when we couldn't resolve the nodes.
+    const resolved = !!(srcNode && sinkNode);
+    const hasLinks = !m.mute && m.link_ids?.length > 0 && resolved;
+    const ledColor = hasLinks ? 'var(--green)'
+                   : m.mute ? 'var(--red)'
+                   : !resolved ? 'var(--yellow)'
+                   : 'var(--text-fade)';
     const delayVal = (m.delay_ms || 0).toFixed(1);
     const faderY = dbToY(m.gain_db);
     const knobAngle = delayToAngle(m.delay_ms || 0);

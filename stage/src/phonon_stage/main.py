@@ -128,11 +128,13 @@ def create_app(
         try:
             from phonon_stage.api.aes67 import (
                 set_discovery_backend,
+                set_mapping_service,
                 start_sap_announcer,
                 start_sap_listener,
             )
 
             set_discovery_backend(discovery)
+            set_mapping_service(svc)
             await start_sap_listener()
             await start_sap_announcer()
         except Exception:

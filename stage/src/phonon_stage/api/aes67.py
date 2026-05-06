@@ -49,11 +49,21 @@ _SAP_PORT = 9875
 # records when stream count changes (STANDALONE ↔ MESH).
 _discovery_backend: object | None = None
 
+# Optional reference to the mapping service so a PW restart can rebuild
+# every persisted user mapping after bridges are back up.
+_mapping_service: object | None = None
+
 
 def set_discovery_backend(backend: object) -> None:
     """Wire up the discovery backend so we can announce mode changes."""
     global _discovery_backend
     _discovery_backend = backend
+
+
+def set_mapping_service(service: object) -> None:
+    """Wire up the mapping service so we can auto-resync after PW restart."""
+    global _mapping_service
+    _mapping_service = service
 
 
 def current_mode() -> str:
@@ -319,6 +329,31 @@ async def _restart_pipewire() -> None:
             logger.info("aes67.bluealsa_bridges_resynced", count=len(snapshot))
     except Exception:
         logger.warning("aes67.bluealsa_resync_failed", exc_info=True)
+
+    # And re-attach all persisted user mappings to the freshly-numbered PW
+    # nodes so links survive the restart end-to-end. Without this the user
+    # has to click "Resync" in the Mixer after every AES67 op.
+    if _mapping_service is not None:
+        try:
+            resync = getattr(_mapping_service, "resync_mappings", None)
+            if resync is not None:
+                # bluealsa bridges spawn pacat which takes a moment to
+                # register its sink-input node in PW. We invalidate the
+                # pw-dump cache and retry up to 3 times so we catch it
+                # without a very long static sleep.
+                from phonon_stage.pipewire import cli as _cli
+
+                final = {"total": 0, "ok": 0, "skipped": 0}
+                for attempt in range(3):
+                    await asyncio.sleep(1.5 if attempt == 0 else 1.0)
+                    _cli._pw_dump_cache = []
+                    _cli._pw_dump_cache_time = 0.0
+                    final = await resync()
+                    if final.get("skipped", 0) == 0:
+                        break
+                logger.info("aes67.mappings_resynced", **final)
+        except Exception:
+            logger.warning("aes67.mappings_resync_failed", exc_info=True)
 
 
 def _scan_existing_confs() -> None:

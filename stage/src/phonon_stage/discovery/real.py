@@ -6,7 +6,7 @@ import asyncio
 import socket
 
 import structlog
-from zeroconf import IPVersion, ServiceInfo, ServiceStateChange, Zeroconf
+from zeroconf import IPVersion, NonUniqueNameException, ServiceInfo, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from phonon_stage import __version__
@@ -39,7 +39,24 @@ class RealDiscoveryBackend:
                 "mode": "STANDALONE",
             },
         )
-        await self._azc.async_register_service(self._info)
+        # cooperating_responders=True tells zeroconf to coexist with another
+        # responder claiming the same name (typically an avahi cache entry
+        # left behind by our previous crashed process — happens routinely
+        # on a hard kill since unregister() didn't run). Without it the
+        # daemon refuses to start on every restart until avahi's TTL
+        # expires (~120s), forcing the user to restart avahi-daemon.
+        try:
+            await self._azc.async_register_service(self._info, cooperating_responders=True)
+        except NonUniqueNameException:
+            # Last-resort fallback: let zeroconf rename us with a numeric
+            # suffix so we at least come up. The TXT 'stage_id' stays the
+            # canonical identifier; only the mDNS instance name drifts.
+            logger.warning(
+                "discovery.name_collision_falling_back_to_rename", stage_id=stage_id
+            )
+            await self._azc.async_register_service(
+                self._info, allow_name_change=True, cooperating_responders=True
+            )
         logger.info(
             "discovery.registered",
             stage_id=stage_id,

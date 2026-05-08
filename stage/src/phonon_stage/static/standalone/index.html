@@ -326,6 +326,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
   <!-- ───── Tabs (EDIT mode only) ───── -->
   <div class="tabs edit-only" role="tablist">
     <div class="tab active" data-tab="general" onclick="switchTab('general')">GENERAL</div>
+    <div class="tab" data-tab="services" onclick="switchTab('services')">SERVICES</div>
     <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
@@ -333,19 +334,13 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- ─── Tab: General (default) ─── -->
   <div class="tab-pane active" data-tab-pane="general">
-    <!-- System: Services + Resources -->
+    <!-- Monitoring: resource gauges (services live in the Services tab) -->
     <div class="section edit-only">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
-        System
+        Monitoring
         <span id="sys-status" style="font-weight:400;font-size:10px"></span>
-        <span style="flex:1"></span>
-        <button class="btn" id="audio-stack-restart-btn" style="font-size:9px;padding:2px 8px;display:none"
-          onclick="restartAudioStack()" title="Restart pipewire → wireplumber → pipewire-pulse">
-          Restart audio stack
-        </button>
       </div>
       <div class="section-body">
-        <div id="sys-services" style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px"></div>
         <div id="sys-resources" style="display:flex;flex-direction:column;gap:3px"></div>
       </div>
     </div>
@@ -394,6 +389,24 @@ body.mode-live .edit-only select { opacity: 0.4; }
         </span>
       </div>
       <div class="section-body" id="orphan-list"></div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: Services ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="services">
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Services
+        <span id="sys-status-svc" style="font-weight:400;font-size:10px"></span>
+        <span style="flex:1"></span>
+        <button class="btn" id="audio-stack-restart-btn" style="font-size:9px;padding:2px 8px;display:none"
+          onclick="restartAudioStack()" title="Restart pipewire → wireplumber → pipewire-pulse">
+          Restart audio stack
+        </button>
+      </div>
+      <div class="section-body">
+        <div id="sys-services" style="display:flex;flex-direction:column;gap:4px"></div>
+      </div>
     </div>
   </div>
 
@@ -1971,16 +1984,6 @@ function connectWS() {
         if (msg.data.services) renderSystemServices(msg.data.services);
         if (msg.data.resources) renderSystemResources(msg.data.resources);
       }
-      else if (msg.type === 'alerts') {
-        const statusEl = document.getElementById('sys-status');
-        if (statusEl) {
-          if (!msg.data.length) statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">OK</span>';
-          else {
-            const isNow = msg.data.some(a => a.includes('NOW'));
-            statusEl.innerHTML = `<span style="color:${isNow ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${msg.data[0]}</span>`;
-          }
-        }
-      }
     } catch(err) { /* ignore */ }
   };
   ws.onclose = () => { setTimeout(connectWS, 2000); };
@@ -2072,9 +2075,46 @@ function segBar(pct, segs, color) {
 }
 
 // ── System dashboard (services + resources, driven by WS push) ───────
+// Services that — if down — flip the system status to DEGRADED.
+// PTP services are excluded: they're opt-in and stay inactive by default.
+const REQUIRED_SERVICES = new Set([
+  'pipewire','wireplumber','pipewire-pulse',
+  'bluetooth','bluealsa','avahi-daemon',
+  'phonon-bt-agent','phonon-bt-unblock',
+]);
+let _latestServices = null;
+let _latestResources = null;
+
+function updateSysStatus() {
+  const downRequired = (_latestServices || []).filter(
+    s => REQUIRED_SERVICES.has(s.name) && !s.active && s.can_control
+  );
+  const alerts = (_latestResources && _latestResources.alerts) || [];
+  const critical = alerts.some(a => a.includes('NOW') || a.includes('OVERHEATING'));
+
+  let html;
+  if (downRequired.length === 0 && alerts.length === 0) {
+    html = '<span style="color:var(--green);font-weight:600">OK</span>';
+  } else if (critical) {
+    const first = alerts.find(a => a.includes('NOW') || a.includes('OVERHEATING')) || alerts[0];
+    html = `<span style="color:var(--red);font-weight:600">CRITICAL</span>` +
+           `<span style="color:var(--text-fade);margin-left:6px">${first}</span>`;
+  } else {
+    const parts = [];
+    if (downRequired.length) parts.push(`${downRequired.length} service${downRequired.length>1?'s':''} down`);
+    if (alerts.length) parts.push(alerts[0]);
+    html = `<span style="color:var(--yellow);font-weight:600">DEGRADED</span>` +
+           `<span style="color:var(--text-fade);margin-left:6px">${parts.join(' · ')}</span>`;
+  }
+  for (const id of ['sys-status','sys-status-svc']) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
+}
+
 function renderSystemServices(services) {
+  _latestServices = services;
   const el = document.getElementById('sys-services');
-  if (!el) return;
   // Show "Restart audio stack" button only when one of the user audio
   // services is actually down (otherwise it's redundant).
   const audioDown = services.some(s =>
@@ -2082,6 +2122,7 @@ function renderSystemServices(services) {
   const btn = document.getElementById('audio-stack-restart-btn');
   if (btn) btn.style.display = audioDown ? '' : 'none';
 
+  if (!el) { updateSysStatus(); return; }
   el.innerHTML = services.map(s => {
     const ledColor = s.active ? 'var(--green)' : 'var(--red)';
     const kindBadge = s.kind === 'user' ? 'USER' : 'SYS';
@@ -2102,11 +2143,13 @@ function renderSystemServices(services) {
       <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','restart')">↻</button>
     </div>`;
   }).join('');
+  updateSysStatus();
 }
 
 function renderSystemResources(r) {
+  _latestResources = r;
   const el = document.getElementById('sys-resources');
-  if (!el) return;
+  if (!el) { updateSysStatus(); return; }
   const row = (label, pct, valueText, color) =>
     `<div class="res-row">
       <span class="res-label">${label}</span>
@@ -2139,19 +2182,7 @@ function renderSystemResources(r) {
   html += row('XRUN', xrunPct, `${r.xrun_total} dropouts`, xrunColor);
 
   el.innerHTML = html;
-
-  // Status badge in the header
-  const statusEl = document.getElementById('sys-status');
-  if (statusEl) {
-    if (!r.alerts || r.alerts.length === 0) {
-      statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">OK</span>';
-    } else {
-      const isNow = r.alerts.some(a => a.includes('NOW') || a.includes('OVER'));
-      const color = isNow ? 'var(--red)' : 'var(--yellow)';
-      statusEl.innerHTML = `<span style="color:${color};font-weight:600">${r.alerts[0]}</span>` +
-        (r.alerts.length > 1 ? `<span style="color:var(--text-fade)"> +${r.alerts.length - 1}</span>` : '');
-    }
-  }
+  updateSysStatus();
 }
 
 async function svcAction(name, action) {

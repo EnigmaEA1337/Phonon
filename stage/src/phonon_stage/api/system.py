@@ -370,11 +370,13 @@ SERVICE_ACTIONS = {"start", "stop", "restart", "enable", "disable"}
 # Some services come with a paired .socket unit. Stopping/disabling
 # the .service alone is pointless — socket activation respawns the
 # daemon the next time anything touches the path. Stop/disable the
-# socket too. Only applied to user-mode services where we have full
-# control (system services in our list don't ship socket units).
+# socket too. Each socket needs its own sudoers rule on system kind
+# (the rules are scoped to one command line each), so control_service
+# runs them as separate systemctl calls.
 SERVICE_SOCKETS: dict[str, list[str]] = {
     "pipewire": ["pipewire.socket"],
     "pipewire-pulse": ["pipewire-pulse.socket"],
+    "avahi-daemon": ["avahi-daemon.socket"],
 }
 
 
@@ -422,15 +424,23 @@ async def _service_active_system(name: str) -> bool:
 
 
 async def _service_enabled(name: str, kind: str) -> bool:
-    args = ["systemctl"]
-    if kind == "user":
-        args.append("--user")
-    args.extend(["is-enabled", f"{name}.service"])
-    proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-    )
-    out, _ = await proc.communicate()
-    return out.decode().strip() in {"enabled", "static", "alias"}
+    """A service counts as 'enabled at boot' if its .service unit OR any
+    paired .socket unit is enabled. On Ubuntu default avahi-daemon.service
+    is `disabled` but avahi-daemon.socket is `enabled` — treating only
+    the .service would mislead the topbar LED."""
+    units = [f"{name}.service", *SERVICE_SOCKETS.get(name, [])]
+    for unit in units:
+        args = ["systemctl"]
+        if kind == "user":
+            args.append("--user")
+        args.extend(["is-enabled", unit])
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        out, _ = await proc.communicate()
+        if out.decode().strip() in {"enabled", "static", "alias"}:
+            return True
+    return False
 
 
 async def _service_installed(name: str, kind: str) -> bool:
@@ -549,21 +559,33 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     # so it can't immediately reactivate it. start/restart/enable
     # don't need this — they pull the socket in via dependencies.
     extras: list[str] = []
-    if action in {"stop", "disable"} and meta["kind"] == "user":
+    if action in {"stop", "disable"}:
         extras = SERVICE_SOCKETS.get(name, [])
     units = [f"{name}.service", *extras]
-    if meta["kind"] == "user":
-        cmd = ["systemctl", "--user", action, *units]
-    else:
-        cmd = ["sudo", "-n", "/bin/systemctl", action, *units]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    rc = proc.returncode or 0
-    text = (out + err).decode(errors="ignore").strip()
+
+    # System-kind sudoers rules are scoped to a single unit per line,
+    # so run one systemctl call per unit. User-kind has no such limit
+    # but the same loop keeps the code uniform.
+    rc = 0
+    parts: list[str] = []
+    for unit in units:
+        if meta["kind"] == "user":
+            cmd = ["systemctl", "--user", action, unit]
+        else:
+            cmd = ["sudo", "-n", "/bin/systemctl", action, unit]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        out, err = await proc.communicate()
+        unit_rc = proc.returncode or 0
+        unit_text = (out + err).decode(errors="ignore").strip()
+        if unit_text:
+            parts.append(f"{unit}: {unit_text}" if len(units) > 1 else unit_text)
+        # First non-zero rc wins, but keep going so all units are
+        # acted on even if one fails (matches systemctl's own behaviour).
+        if unit_rc != 0 and rc == 0:
+            rc = unit_rc
+    text = " · ".join(parts)
 
     # If the user just restarted/started one of the audio user services,
     # rebuild bluealsa bridges + PipeWire mappings — otherwise every

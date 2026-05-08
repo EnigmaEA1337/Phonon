@@ -63,6 +63,15 @@ HEADER
             emit_rule "${verb} ${svc}.service"
         done
     done
+    # Paired sockets that need stop/disable too — see SERVICE_SOCKETS
+    # in system.py. Without these, socket activation respawns the
+    # service the moment anything touches it.
+    SOCKET_TARGETS=(avahi-daemon.socket)
+    for verb in stop disable; do
+        for sk in "${SOCKET_TARGETS[@]}"; do
+            emit_rule "${verb} ${sk}"
+        done
+    done
 } > "${TMP}"
 
 chmod 0440 "${TMP}"

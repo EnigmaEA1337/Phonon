@@ -94,6 +94,11 @@ _last_audio_pids: dict[str, int] = {}
 # we'd piped into pacat is now a zombie reading from a dead service.
 # Run /bluealsa/sync to rebuild bridges against the new daemon.
 _last_bluealsa_pid: int = 0
+# Throttle for the stale-node-id detector — only fires one resync at
+# a time and waits a few seconds between attempts so a USB device
+# that flaps doesn't spin us in tight resync loop.
+_stale_resync_in_flight: bool = False
+_stale_resync_last_attempt: float = 0.0
 
 
 async def _system_loop() -> None:
@@ -174,9 +179,77 @@ async def _system_loop() -> None:
                         _last_bluealsa_pid = bluealsa.pid
                     else:
                         _last_bluealsa_pid = 0
+
+            # Stale node-id detector — covers USB hot-replug (DG60
+            # unplugged/replugged, USB DAC cycle): PipeWire renumbers
+            # the new device, the user's mappings keep pointing at the
+            # old node IDs, links are GC'd, audio drops. Compare each
+            # mapping's stored sink/source IDs against current pw-dump;
+            # any miss → resync once. Throttled to one attempt per 8s.
+            await _maybe_resync_stale_mappings()
         except Exception:
             logger.warning("ws.system_tick_failed", exc_info=True)
         await asyncio.sleep(5)
+
+
+async def _maybe_resync_stale_mappings() -> None:
+    """Fire mapping_service.resync_mappings() if any persisted mapping
+    references a sink/source node ID that no longer exists in PipeWire.
+    Throttled + serialized so a flapping USB device can't loop us."""
+    global _stale_resync_in_flight, _stale_resync_last_attempt
+    if _stale_resync_in_flight:
+        return
+    now = asyncio.get_event_loop().time()
+    if now - _stale_resync_last_attempt < 8.0:
+        return
+
+    from phonon_stage.api.aes67 import _mapping_service
+
+    if _mapping_service is None:
+        return
+    mappings = getattr(_mapping_service, "mappings", None) or getattr(
+        getattr(_mapping_service, "_store", None), "mappings", None
+    )
+    if not mappings:
+        return
+
+    try:
+        from phonon_stage.pipewire import cli as _cli
+
+        dump = await _cli.pw_dump()
+        live_ids = {
+            int(item.get("id", 0)) for item in dump if item.get("type", "").endswith("Node")
+        }
+    except Exception:
+        return
+
+    stale = False
+    for m in mappings:
+        if getattr(m, "mute", False):
+            continue
+        sid = getattr(m, "sink_node_id", 0)
+        src = getattr(m, "source_node_id", 0)
+        if (sid and sid not in live_ids) or (src and src not in live_ids):
+            stale = True
+            break
+    if not stale:
+        return
+
+    _stale_resync_in_flight = True
+    _stale_resync_last_attempt = now
+    logger.info("ws.stale_mapping_detected_resync")
+    try:
+        resync = getattr(_mapping_service, "resync_mappings", None)
+        if resync is not None:
+            from phonon_stage.pipewire import cli as _cli2
+
+            _cli2._pw_dump_cache = []
+            _cli2._pw_dump_cache_time = 0.0
+            await resync()
+    except Exception:
+        logger.warning("ws.stale_mapping_resync_failed", exc_info=True)
+    finally:
+        _stale_resync_in_flight = False
 
 
 async def _alerts_loop() -> None:

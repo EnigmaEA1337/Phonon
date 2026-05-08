@@ -284,37 +284,29 @@ async def settings_changed() -> None:
     return
 
 
-async def _restart_pipewire() -> None:
-    """Restart user-session PipeWire so config snippets are reloaded.
+async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
+    """Re-apply our app-level audio state after PipeWire/WirePlumber/
+    pipewire-pulse have just been restarted.
 
-    Restarting wipes pactl null-sinks (bluealsa bridges) and any
-    user-created PipeWire links. We trigger a bluealsa resync after
-    PW comes back so BT bridges are recreated automatically. Mappings
-    aren't auto-restored — the user has to recreate them.
+    Restarting the audio stack — whether via the UI's 'restart audio
+    stack' button, a per-service restart on pipewire/*, or an outside
+    `systemctl --user restart` — wipes every bluealsa null-sink, every
+    user-created link, and the AES67 modules. systemd reloads the
+    .conf snippets in /etc/pipewire/pipewire.conf.d/ but doesn't know
+    about our runtime state. This routine rebuilds it.
+
+    Steps (in order):
+      1. Kill stale bridge shells (tracked + sweep orphans) so the
+         next start doesn't fight a zombie pacat.
+      2. Recreate every bluealsa bridge from the snapshot we held.
+      3. Re-attach persisted user mappings to the freshly-numbered
+         PipeWire nodes (3 retries — pacat sinks take time to appear).
+
+    Returns a small summary dict for logging/UI feedback.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "systemctl",
-        "--user",
-        "restart",
-        "pipewire",
-        "wireplumber",
-        "pipewire-pulse",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning("aes67.pipewire_restart_failed", stderr=stderr.decode())
-    else:
-        logger.info("aes67.pipewire_restarted")
-    # Give PipeWire a moment to come back up before we touch it again
-    await asyncio.sleep(2.5)
+    summary: dict[str, int] = {"bridges": 0, "mappings_total": 0, "mappings_ok": 0}
 
-    # Auto re-create bluealsa bridges (null-sinks were wiped by PW restart).
-    # IMPORTANT: kill the previous bridge shells *and* nuke any orphan
-    # arecord/pacat that survived. Otherwise each PW restart leaks a
-    # whole bridge-loop into background, and CPU explodes after ~10
-    # AES67 operations.
+    # 1+2 — bluealsa bridges
     try:
         import contextlib
         import signal
@@ -324,14 +316,12 @@ async def _restart_pipewire() -> None:
         snapshot = list(_active_bridges.items())
         _active_bridges.clear()
 
-        # Kill tracked bridge shells
         for _, bridge in snapshot:
             pid = bridge.get("bridge_pid")
             if pid is not None:
                 with contextlib.suppress(ProcessLookupError, OSError):
                     os.kill(int(str(pid)), signal.SIGTERM)
 
-        # Belt-and-braces: kill any untracked orphans matching our bridge pattern
         sweep = await asyncio.create_subprocess_shell(
             "pkill -f 'while true.*arecord.*bluealsa' 2>/dev/null; "
             "pkill -f 'arecord.*bluealsa' 2>/dev/null; "
@@ -353,25 +343,20 @@ async def _restart_pipewire() -> None:
                 name=str(bridge.get("name", "")),
                 device_type=dtype,
             )
+        summary["bridges"] = len(snapshot)
         if snapshot:
-            logger.info("aes67.bluealsa_bridges_resynced", count=len(snapshot))
+            logger.info("audio_replay.bluealsa_bridges", reason=reason, count=len(snapshot))
     except Exception:
-        logger.warning("aes67.bluealsa_resync_failed", exc_info=True)
+        logger.warning("audio_replay.bluealsa_failed", exc_info=True)
 
-    # And re-attach all persisted user mappings to the freshly-numbered PW
-    # nodes so links survive the restart end-to-end. Without this the user
-    # has to click "Resync" in the Mixer after every AES67 op.
+    # 3 — mappings (PipeWire links)
     if _mapping_service is not None:
         try:
             resync = getattr(_mapping_service, "resync_mappings", None)
             if resync is not None:
-                # bluealsa bridges spawn pacat which takes a moment to
-                # register its sink-input node in PW. We invalidate the
-                # pw-dump cache and retry up to 3 times so we catch it
-                # without a very long static sleep.
                 from phonon_stage.pipewire import cli as _cli
 
-                final = {"total": 0, "ok": 0, "skipped": 0}
+                final: dict[str, int] = {"total": 0, "ok": 0, "skipped": 0}
                 for attempt in range(3):
                     await asyncio.sleep(1.5 if attempt == 0 else 1.0)
                     _cli._pw_dump_cache = []
@@ -379,9 +364,38 @@ async def _restart_pipewire() -> None:
                     final = await resync()
                     if final.get("skipped", 0) == 0:
                         break
-                logger.info("aes67.mappings_resynced", **final)
+                summary["mappings_total"] = int(final.get("total", 0))
+                summary["mappings_ok"] = int(final.get("ok", 0))
+                logger.info("audio_replay.mappings", reason=reason, **final)
         except Exception:
-            logger.warning("aes67.mappings_resync_failed", exc_info=True)
+            logger.warning("audio_replay.mappings_failed", exc_info=True)
+    return summary
+
+
+async def _restart_pipewire() -> None:
+    """Restart user-session PipeWire so config snippets are reloaded.
+
+    Wipes pactl null-sinks (bluealsa bridges) and any user-created
+    PipeWire links — replay_audio_state() rebuilds both before we
+    return. Called by AES67 ops that need a config reload.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "--user",
+        "restart",
+        "pipewire",
+        "wireplumber",
+        "pipewire-pulse",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("aes67.pipewire_restart_failed", stderr=stderr.decode())
+    else:
+        logger.info("aes67.pipewire_restarted")
+    await asyncio.sleep(2.5)
+    await replay_audio_state(reason="aes67.config_reload")
 
 
 async def restore_existing_aes67() -> None:

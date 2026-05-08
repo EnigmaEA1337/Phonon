@@ -564,20 +564,42 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     out, err = await proc.communicate()
     rc = proc.returncode or 0
     text = (out + err).decode(errors="ignore").strip()
-    return {
+
+    # If the user just restarted/started one of the audio user services,
+    # rebuild bluealsa bridges + PipeWire mappings — otherwise every
+    # routing the user had set up disappears silently. Stop/disable
+    # don't replay (the user explicitly asked for a teardown).
+    replay_summary: dict[str, int] | None = None
+    if rc == 0 and action in {"start", "restart"} and name in AUDIO_USER_SERVICES:
+        await asyncio.sleep(1.5)
+        from phonon_stage.api.aes67 import replay_audio_state
+
+        replay_summary = await replay_audio_state(reason=f"control.{name}.{action}")
+
+    response: dict[str, Any] = {
         "status": "ok" if rc == 0 else "failed",
         "service": name,
         "action": action,
         "rc": str(rc),
         "output": text[:500],
     }
+    if replay_summary is not None:
+        response["replay"] = replay_summary
+    return response
+
+
+# Audio user services — restarting any one of them invalidates our
+# runtime audio state (bridges, links). Used by control_service and
+# the WS PID-delta watcher.
+AUDIO_USER_SERVICES = {"pipewire", "wireplumber", "pipewire-pulse"}
 
 
 @router.post("/audio-stack/restart")
-async def restart_audio_stack() -> dict[str, str]:
+async def restart_audio_stack() -> dict[str, Any]:
     """Convenience: restart pipewire → wireplumber → pipewire-pulse in
-    that order. Useful when audio breaks (no devices, hung XRUN bridge).
-    All three are user services so no sudo needed."""
+    that order, then replay our app-level audio state (bluealsa bridges,
+    PipeWire links). Useful when audio breaks (no devices, hung XRUN
+    bridge). All three are user services so no sudo needed."""
     seq = ["pipewire", "wireplumber", "pipewire-pulse"]
     results: list[str] = []
     for name in seq:
@@ -591,9 +613,13 @@ async def restart_audio_stack() -> dict[str, str]:
         )
         rc = await proc.wait()
         results.append(f"{name}={rc}")
-        # Small gap so the next service sees the previous one back up
         await asyncio.sleep(0.5)
-    return {"status": "ok", "sequence": " ".join(results)}
+
+    from phonon_stage.api.aes67 import replay_audio_state
+
+    await asyncio.sleep(1.5)
+    replay = await replay_audio_state(reason="audio_stack_restart")
+    return {"status": "ok", "sequence": " ".join(results), "replay": replay}
 
 
 # ── Resource gauges (for the dashboard bars) ──────────────────────────────

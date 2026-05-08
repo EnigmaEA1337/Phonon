@@ -84,21 +84,35 @@ async def _mode_loop() -> None:
         await asyncio.sleep(0.5)
 
 
+# Last-seen PIDs for the audio user services. When a PID changes
+# between ticks we know the service restarted out-of-band (someone ran
+# `systemctl --user restart pipewire` from a shell, or a crash) and we
+# need to rebuild bridges + mappings even though the click never went
+# through our endpoints.
+_last_audio_pids: dict[str, int] = {}
+
+
 async def _system_loop() -> None:
     """Push system snapshot (services + resource gauges) every 5 s.
 
     Coalesces both reads (services state + resource gauges) into one
     payload so the UI updates atomically without flicker. Two parallel
-    fetches per tick.
+    fetches per tick. Also detects out-of-band restarts of pipewire /
+    wireplumber / pipewire-pulse (PID delta) and replays our audio
+    state so user mappings + BT bridges survive.
     """
-    from phonon_stage.api.system import _collect_resources, collect_services
+    from phonon_stage.api.system import (
+        AUDIO_USER_SERVICES,
+        _collect_resources,
+        collect_services,
+    )
 
     while True:
-        if clients:
-            try:
-                services, resources = await asyncio.gather(
-                    collect_services(), _collect_resources(), return_exceptions=True
-                )
+        try:
+            services, resources = await asyncio.gather(
+                collect_services(), _collect_resources(), return_exceptions=True
+            )
+            if clients:
                 payload: dict[str, Any] = {}
                 if not isinstance(services, BaseException):
                     payload["services"] = [s.model_dump() for s in services]
@@ -106,8 +120,36 @@ async def _system_loop() -> None:
                     payload["resources"] = resources.model_dump()
                 if payload:
                     await broadcast("system", payload)
-            except Exception:
-                logger.warning("ws.system_tick_failed", exc_info=True)
+
+            # Out-of-band restart detection. Runs every tick whether
+            # there are clients or not — we still need to replay state
+            # if pipewire was restarted from a shell.
+            if not isinstance(services, BaseException):
+                changed: list[str] = []
+                for s in services:
+                    if s.name not in AUDIO_USER_SERVICES or not s.active or not s.pid:
+                        # If the service is down, drop the cached PID so
+                        # the next start counts as 'first seen' rather
+                        # than a delta against a stale value.
+                        _last_audio_pids.pop(s.name, None)
+                        continue
+                    prev = _last_audio_pids.get(s.name)
+                    if prev is not None and prev != s.pid:
+                        changed.append(s.name)
+                    _last_audio_pids[s.name] = s.pid
+                if changed:
+                    logger.info("ws.audio_external_restart", services=changed)
+                    from phonon_stage.api.aes67 import replay_audio_state
+
+                    # Stash a reference so the GC can't reap the task
+                    # before it finishes.
+                    _bg_tasks.append(
+                        asyncio.create_task(
+                            replay_audio_state(reason=f"external:{','.join(changed)}")
+                        )
+                    )
+        except Exception:
+            logger.warning("ws.system_tick_failed", exc_info=True)
         await asyncio.sleep(5)
 
 

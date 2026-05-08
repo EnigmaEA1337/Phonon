@@ -367,6 +367,16 @@ SERVICES: dict[str, dict[str, str]] = {
 # Allowed actions, mapped to systemctl verbs
 SERVICE_ACTIONS = {"start", "stop", "restart", "enable", "disable"}
 
+# Some services come with a paired .socket unit. Stopping/disabling
+# the .service alone is pointless — socket activation respawns the
+# daemon the next time anything touches the path. Stop/disable the
+# socket too. Only applied to user-mode services where we have full
+# control (system services in our list don't ship socket units).
+SERVICE_SOCKETS: dict[str, list[str]] = {
+    "pipewire": ["pipewire.socket"],
+    "pipewire-pulse": ["pipewire-pulse.socket"],
+}
+
 
 class ServiceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -535,10 +545,17 @@ async def control_service(name: str, action: str) -> dict[str, str]:
                 "run install.sh or skip this service."
             ),
         }
+    # When tearing the service down, also act on the paired socket
+    # so it can't immediately reactivate it. start/restart/enable
+    # don't need this — they pull the socket in via dependencies.
+    extras: list[str] = []
+    if action in {"stop", "disable"} and meta["kind"] == "user":
+        extras = SERVICE_SOCKETS.get(name, [])
+    units = [f"{name}.service", *extras]
     if meta["kind"] == "user":
-        cmd = ["systemctl", "--user", action, f"{name}.service"]
+        cmd = ["systemctl", "--user", action, *units]
     else:
-        cmd = ["sudo", "-n", "/bin/systemctl", action, f"{name}.service"]
+        cmd = ["sudo", "-n", "/bin/systemctl", action, *units]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

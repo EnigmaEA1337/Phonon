@@ -231,6 +231,13 @@ else
 fi
 
 "${VENV_DIR}/bin/pip" install --upgrade pip --quiet
+# --force-reinstall --no-deps ensures source-only changes (no version
+# bump) are picked up. pip otherwise says 'Requirement already satisfied'
+# and skips the rebuild — leaving the venv with stale site-packages
+# even after `git pull`. --no-deps skips re-pulling pinned deps.
+"${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${STAGE_SRC}" --quiet
+# But we DO want any newly-added dep (e.g. added in pyproject.toml) to
+# be installed — second pass with deps but no force-reinstall is cheap.
 "${VENV_DIR}/bin/pip" install "${STAGE_SRC}" --quiet
 
 echo "  phonon-stage installed"

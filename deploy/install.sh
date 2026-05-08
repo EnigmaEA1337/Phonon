@@ -74,7 +74,11 @@ echo "  Platform: ${PLATFORM} | Distro: ${DISTRO} ${DISTRO_VERSION}"
 echo "[2/11] Installing system dependencies..."
 
 apt-get update -qq
-apt-get install -y -qq \
+# Don't swallow install errors — a missing package here (typically
+# linuxptp on a stale package list, or pipewire on a non-Bookworm
+# distro) used to fail silently and surface much later as 'Job for
+# phonon-ptp4l.service failed' with no clue why.
+if ! apt-get install -y -qq \
     python3-venv \
     python3-dev \
     libdbus-1-dev \
@@ -84,8 +88,20 @@ apt-get install -y -qq \
     pipewire-alsa \
     pipewire-pulse \
     wireplumber \
-    linuxptp \
-    2>/dev/null
+    linuxptp ; then
+    echo "  ERROR: apt-get install failed — fix the network or repo issue and rerun" >&2
+    exit 1
+fi
+
+# Verify the binaries the rest of install.sh expects to find. Catches
+# the rare case where a package was 'installed' but its binary lives
+# under a different path (e.g. a sysroot mismatch on cross-builds).
+for bin in /usr/sbin/ptp4l /usr/sbin/phc2sys /usr/bin/wpctl /usr/bin/pw-link; do
+    if [ ! -x "${bin}" ]; then
+        echo "  ERROR: expected binary ${bin} missing after apt install" >&2
+        exit 1
+    fi
+done
 
 echo "  System packages OK"
 

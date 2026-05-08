@@ -10,7 +10,17 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# When invoked via the symlink at /usr/local/sbin/phonon-update,
+# `$0` is the symlink path itself — `dirname $0` yields /usr/local/sbin,
+# and ../.. resolves to /usr/local (no .git). Prefer the canonical repo
+# path written by install.sh; fall back to readlink -f resolution so a
+# manual invocation of deploy/update.sh still works on a host that
+# hasn't run install.sh yet.
+if [ -f /etc/phonon/repo-path ] && [ -d "$(cat /etc/phonon/repo-path)/.git" ]; then
+    REPO_ROOT="$(cat /etc/phonon/repo-path)"
+else
+    REPO_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+fi
 LOG=/var/log/phonon/update.log
 LOCK=/run/phonon-update.lock
 

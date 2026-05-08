@@ -111,7 +111,15 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   font-size: 9px; color: var(--green); cursor: pointer; font-weight: 700;
   letter-spacing: 0.5px; animation: pulse 2s infinite; }
 .tb-update:hover { background: rgba(52,211,153,0.1); }
-.tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
+.tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%;
+  box-shadow: 0 0 6px var(--green); transition: background 0.2s, box-shadow 0.2s; cursor: help; }
+.tb-led.warn { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+.tb-led.crit { background: var(--red); box-shadow: 0 0 8px var(--red);
+  animation: tb-led-pulse 1.5s ease-in-out infinite; }
+@keyframes tb-led-pulse {
+  0%, 100% { box-shadow: 0 0 6px var(--red); }
+  50%      { box-shadow: 0 0 14px var(--red); }
+}
 .tb-clock { font-family: var(--font-m); font-size: 12px; color: var(--text-dim); }
 
 /* ── Layout ─────────────────────────────────────────── */
@@ -339,7 +347,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
   <div class="tb-spacer"></div>
   <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
   <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('security')">Security</button>
-  <span class="tb-led"></span>
+  <span class="tb-led" id="tb-led" title="System status"></span>
   <span class="tb-info" id="uptime">—</span>
   <span class="tb-clock" id="clock">--:--:--</span>
 </div>
@@ -2098,12 +2106,17 @@ function segBar(pct, segs, color) {
 }
 
 // ── System dashboard (services + resources, driven by WS push) ───────
-// Services that — if down — flip the system status to DEGRADED.
-// PTP services are excluded: they're opt-in and stay inactive by default.
+// Services whose absence flips the badge to DEGRADED — opt-in PTP
+// services are excluded since they stay inactive by default.
 const REQUIRED_SERVICES = new Set([
   'pipewire','wireplumber','pipewire-pulse',
   'bluetooth','bluealsa','avahi-daemon',
   'phonon-bt-agent','phonon-bt-unblock',
+]);
+// If any of these is enabled-but-inactive, no audio routing is
+// possible at all — escalate the LED to red and the badge to CRITICAL.
+const ROUTING_CRITICAL_SERVICES = new Set([
+  'pipewire','wireplumber','pipewire-pulse',
 ]);
 let _latestServices = null;
 let _latestResources = null;
@@ -2118,29 +2131,58 @@ const _actionErrors = new Map();
 function updateSysStatus() {
   // Only count services that are required AND installed — a missing
   // unit file (typical on dev) shouldn't flag the system as degraded.
-  const downRequired = (_latestServices || []).filter(
-    s => REQUIRED_SERVICES.has(s.name) && s.installed !== false && !s.active
+  // We further consider only services the user has enabled at boot
+  // since a deliberately-disabled service down is the user's choice,
+  // not a system fault.
+  const services = _latestServices || [];
+  const downRequired = services.filter(
+    s => REQUIRED_SERVICES.has(s.name) && s.installed !== false
+         && s.enabled && !s.active
   );
+  const downRouting = downRequired.filter(s => ROUTING_CRITICAL_SERVICES.has(s.name));
   const alerts = (_latestResources && _latestResources.alerts) || [];
-  const critical = alerts.some(a => a.includes('NOW') || a.includes('OVERHEATING'));
+  const hardwareCritical = alerts.some(a => a.includes('NOW') || a.includes('OVERHEATING'));
 
-  let html;
-  if (downRequired.length === 0 && alerts.length === 0) {
+  // Three-level severity: ok / warn / critical. Routing-impossible
+  // services or hardware-critical alerts → critical (red, pulse).
+  // Other enabled-but-down services or non-critical alerts → warn
+  // (orange). Otherwise ok (green).
+  let level = 'ok';
+  if (downRouting.length > 0 || hardwareCritical) level = 'crit';
+  else if (downRequired.length > 0 || alerts.length > 0) level = 'warn';
+
+  let html, badgeColor, badgeWord;
+  if (level === 'ok') {
     html = '<span style="color:var(--green);font-weight:600">OK</span>';
-  } else if (critical) {
-    const first = alerts.find(a => a.includes('NOW') || a.includes('OVERHEATING')) || alerts[0];
-    html = `<span style="color:var(--red);font-weight:600">CRITICAL</span>` +
-           `<span style="color:var(--text-fade);margin-left:6px">${first}</span>`;
+    badgeWord = 'System OK';
+  } else if (level === 'crit') {
+    badgeColor = 'var(--red)';
+    badgeWord = downRouting.length
+      ? `Routing impossible — ${downRouting.map(s => s.name).join(', ')} down`
+      : (alerts.find(a => a.includes('NOW') || a.includes('OVERHEATING')) || alerts[0]);
+    html = `<span style="color:${badgeColor};font-weight:600">CRITICAL</span>` +
+           `<span style="color:var(--text-fade);margin-left:6px">${badgeWord}</span>`;
   } else {
     const parts = [];
     if (downRequired.length) parts.push(`${downRequired.length} service${downRequired.length>1?'s':''} down`);
     if (alerts.length) parts.push(alerts[0]);
+    badgeWord = parts.join(' · ');
     html = `<span style="color:var(--yellow);font-weight:600">DEGRADED</span>` +
-           `<span style="color:var(--text-fade);margin-left:6px">${parts.join(' · ')}</span>`;
+           `<span style="color:var(--text-fade);margin-left:6px">${badgeWord}</span>`;
   }
+
+  // Status badge text (mirrored on General + Services tabs)
   for (const id of ['sys-status','sys-status-svc']) {
     const el = document.getElementById(id);
     if (el) el.innerHTML = html;
+  }
+  // Topbar LED: green / orange / red — title carries the reason on hover
+  const led = document.getElementById('tb-led');
+  if (led) {
+    led.classList.remove('warn', 'crit');
+    if (level === 'warn') led.classList.add('warn');
+    else if (level === 'crit') led.classList.add('crit');
+    led.title = badgeWord || 'System OK';
   }
 }
 

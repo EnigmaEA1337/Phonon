@@ -581,13 +581,20 @@ chmod 700 "/run/user/${PHONON_UID}"
 systemctl start "user@${PHONON_UID}.service"
 sleep 3
 
-# Enable and start phonon-stage
+# Enable and (re)start phonon-stage. We use `restart` rather than
+# `enable --now` because the latter is a no-op when the service is
+# already running — re-running install.sh on a live host then would
+# leave the OLD daemon process in place and the user would never see
+# the new code take effect.
 systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
     -p PAMName=login --pipe --wait -- \
     systemctl --user daemon-reload 2>&1 || true
 systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
     -p PAMName=login --pipe --wait -- \
-    systemctl --user enable --now phonon-stage 2>&1 || true
+    systemctl --user enable phonon-stage 2>&1 || true
+systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
+    -p PAMName=login --pipe --wait -- \
+    systemctl --user restart phonon-stage 2>&1 || true
 
 sleep 3
 

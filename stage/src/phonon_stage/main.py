@@ -24,6 +24,7 @@ from phonon_stage.api.pipewire import router as pipewire_router
 from phonon_stage.api.ptp import router as ptp_router
 from phonon_stage.api.settings import router as settings_router
 from phonon_stage.api.system import router as system_router
+from phonon_stage.api.update import router as update_router
 from phonon_stage.api.ws import router as ws_router
 from phonon_stage.audio.real import RealAudioBackend
 from phonon_stage.bluetooth.real import RealBluetoothBackend
@@ -170,6 +171,7 @@ def create_app(
     app.include_router(aes67_router)
     app.include_router(ptp_router)
     app.include_router(settings_router)
+    app.include_router(update_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

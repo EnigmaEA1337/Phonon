@@ -329,8 +329,21 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl start phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
+
+# Self-update plumbing: write the repo path so the daemon knows where the
+# checkout lives, and symlink update.sh under a stable path so the sudoers
+# grant above stays scoped to one file.
+echo "${REPO_ROOT}" > "${CONFIG_DIR}/repo-path"
+chmod 0644 "${CONFIG_DIR}/repo-path"
+
+if [ -f "${REPO_ROOT}/deploy/update.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/update.sh"
+    ln -sf "${REPO_ROOT}/deploy/update.sh" /usr/local/sbin/phonon-update
+    echo "  Self-update wired (sudo phonon-update available, log at /var/log/phonon/update.log)"
+fi
 
 # Enable persistent journal
 mkdir -p /var/log/journal

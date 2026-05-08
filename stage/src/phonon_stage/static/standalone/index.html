@@ -63,6 +63,11 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .tb-xrun.warn { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
 .tb-xrun.danger { color: var(--red); border-color: rgba(248,113,113,0.4);
   animation: pulse 1.5s infinite; }
+.tb-update { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+  border: 1px solid rgba(52,211,153,0.4); border-radius: 3px; font-family: var(--font-m);
+  font-size: 9px; color: var(--green); cursor: pointer; font-weight: 700;
+  letter-spacing: 0.5px; animation: pulse 2s infinite; }
+.tb-update:hover { background: rgba(52,211,153,0.1); }
 .tb-led { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
 .tb-clock { font-family: var(--font-m); font-size: 12px; color: var(--text-dim); }
 
@@ -273,6 +278,14 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <button class="mode-btn" id="mode-edit" onclick="setMode('edit')">EDIT</button>
   </div>
   <span class="tb-info" id="stage-id">—</span>
+  <span class="tb-update" id="tb-update" style="display:none" onclick="openUpdateModal()" title="Update available — click to preview">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"/>
+      <polyline points="1 20 1 14 7 14"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </svg>
+    <span id="tb-update-label">UPDATE</span>
+  </span>
   <span class="tb-xrun" id="tb-xrun" title="XRUN — audio dropouts (parsed from pw-top)" onclick="alert(state.xruns ? JSON.stringify(state.xruns.nodes.filter(n=>n.err>0), null, 2) || 'No XRUN reported' : 'no data')">
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
@@ -565,12 +578,13 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns, updateStatus] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
     api('/aes67/streams'), api('/aes67/discovered'), api('/ptp/status'),
     api('/settings'), api('/settings/network-interfaces'),
     api('/pipewire/xruns'),
+    api('/system/update/status'),
   ]);
 
   if (health) {
@@ -608,6 +622,7 @@ async function refreshAll() {
   if (aes67d) renderAes67Discovered(aes67d);
   if (ptp) { renderPtpStatus(ptp); renderTopbarPtp(ptp); }
   if (xruns) { state.xruns = xruns; renderTopbarXruns(xruns); }
+  if (updateStatus) { state.updateStatus = updateStatus; renderTopbarUpdate(updateStatus); }
   if (settings) { state.settings = settings; renderSettings(settings, ifaces || []); }
   // MESH badge: STANDALONE + at least one AES67 stream OR another Stage seen
   updateModeBadge(stages || [], aes67 || []);
@@ -1649,6 +1664,140 @@ async function settingsSave() {
   document.getElementById('stg-status').textContent = r ? 'saved' : 'failed';
   _settingsDirty = false;
   await refreshAll();
+}
+
+function renderTopbarUpdate(u) {
+  const el = document.getElementById('tb-update');
+  const lab = document.getElementById('tb-update-label');
+  if (!el || !lab) return;
+  // Show only when an update is actually available (≥1 commit behind)
+  // and the update mechanism is wired up. Otherwise hide entirely.
+  if (!u.available || u.behind === 0) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  lab.textContent = `UPDATE (${u.behind})`;
+  el.title = `${u.behind} commits behind ${u.branch}` +
+    (u.dirty ? ' — local changes will block the pull' : '');
+}
+
+async function openUpdateModal() {
+  const preview = await api('/system/update/preview');
+  const status = state.updateStatus || await api('/system/update/status');
+  if (!preview) { alert('Failed to fetch update preview'); return; }
+
+  const cur = status?.current;
+  const commitsHtml = preview.commits.length
+    ? preview.commits.map(c => `<tr style="border-bottom:1px solid var(--border)">
+        <td style="font-family:var(--font-m);font-size:10px;color:var(--text-fade);padding:4px 8px">${c.short}</td>
+        <td style="font-family:var(--font-m);font-size:10px;color:var(--text-dim);padding:4px 8px">${c.author.slice(0,12)}</td>
+        <td style="font-size:10px;padding:4px 8px">${c.subject.replace(/</g,'&lt;')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="3" style="color:var(--text-fade);padding:8px;text-align:center">No commits to apply.</td></tr>';
+
+  const dirtyWarn = preview.dirty
+    ? '<div style="color:var(--red);font-size:10px;margin-bottom:8px;padding:6px 8px;border:1px solid rgba(248,113,113,0.4);border-radius:3px">⚠ Working tree has uncommitted local changes — the update will refuse fast-forward.</div>'
+    : '';
+
+  let overlay = document.getElementById('update-modal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'update-modal';
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:720px">
+      <div class="modal-head">
+        <span>System update — ${preview.behind} commits available on ${preview.branch}</span>
+        <button class="modal-close" onclick="document.getElementById('update-modal').remove()">×</button>
+      </div>
+      <div class="modal-body" style="font-family:var(--font-d)">
+        ${dirtyWarn}
+        <div style="font-family:var(--font-m);font-size:10px;color:var(--text-dim);margin-bottom:8px">
+          Currently at <span style="color:var(--text)">${cur?.short || '?'}</span> · ${cur?.subject || ''}
+        </div>
+        <div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:4px">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--bg-2)">
+              <th style="text-align:left;font-size:9px;padding:4px 8px;color:var(--text-dim)">SHA</th>
+              <th style="text-align:left;font-size:9px;padding:4px 8px;color:var(--text-dim)">Author</th>
+              <th style="text-align:left;font-size:9px;padding:4px 8px;color:var(--text-dim)">Subject</th>
+            </tr></thead>
+            <tbody>${commitsHtml}</tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px;align-items:center">
+          <button class="btn btn-primary" id="update-apply-btn" ${preview.behind === 0 || preview.dirty ? 'disabled' : ''}
+            onclick="applyUpdate()">APPLY UPDATE</button>
+          <button class="btn" onclick="document.getElementById('update-modal').remove()">Cancel</button>
+          <span style="flex:1"></span>
+          <span style="font-family:var(--font-m);font-size:9px;color:var(--text-fade)">
+            Daemon will restart — UI reconnects automatically
+          </span>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function applyUpdate() {
+  const btn = document.getElementById('update-apply-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'APPLYING...'; }
+  const r = await api('/system/update/apply', { method: 'POST' });
+  if (!r || r.status === 'not_configured') {
+    alert('Update mechanism not configured: ' + (r?.detail || '/usr/local/sbin/phonon-update missing'));
+    if (btn) { btn.disabled = false; btn.textContent = 'APPLY UPDATE'; }
+    return;
+  }
+  // Replace modal content with progress + health-poll
+  const modal = document.querySelector('#update-modal .modal-body');
+  if (modal) {
+    modal.innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-d);font-size:14px;margin-bottom:12px">Updating Phonon Stage…</div>
+        <div style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)" id="update-progress">
+          Pulling, reinstalling, restarting service.<br>Daemon goes offline for 10–30 s.
+        </div>
+        <div style="margin:20px auto;width:32px;height:32px;border:3px solid var(--bg-2);border-top-color:var(--cyan);border-radius:50%;animation:spin 0.8s linear infinite"></div>
+        <div id="update-state" style="font-family:var(--font-m);font-size:10px;color:var(--text-fade);margin-top:8px">⏳ waiting for daemon to restart…</div>
+      </div>`;
+  }
+  // Add a minimal spin keyframe if missing
+  if (!document.getElementById('update-spin-style')) {
+    const st = document.createElement('style');
+    st.id = 'update-spin-style';
+    st.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(st);
+  }
+  pollHealthUntilUp();
+}
+
+async function pollHealthUntilUp() {
+  const stateEl = document.getElementById('update-state');
+  // Wait a bit before polling (the daemon hasn't restarted yet)
+  await new Promise(r => setTimeout(r, 4000));
+  let downSeen = false;
+  const start = Date.now();
+  while (Date.now() - start < 90000) {  // 90 s budget
+    try {
+      const r = await fetch(API + '/health', { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        if (downSeen && j.uptime_seconds < 30) {
+          // Came back AND it's a fresh process
+          if (stateEl) stateEl.textContent = '✓ daemon back up — refreshing UI…';
+          await new Promise(r => setTimeout(r, 800));
+          location.reload();
+          return;
+        }
+      }
+    } catch (_) {
+      downSeen = true;
+      if (stateEl) stateEl.textContent = '⏳ daemon offline (restarting)…';
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  if (stateEl) stateEl.textContent = '⚠ timeout waiting for daemon — check `journalctl --user-unit phonon-stage` and reload manually.';
 }
 
 function renderTopbarXruns(x) {

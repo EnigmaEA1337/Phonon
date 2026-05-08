@@ -87,6 +87,7 @@ omit = [
   "src/phonon_stage/api/levels.py",
   "src/phonon_stage/api/bluetooth.py",
   "src/phonon_stage/api/bluealsa_bridge.py",
+  "src/phonon_stage/api/update.py",
 ]
 
 [tool.coverage.report]

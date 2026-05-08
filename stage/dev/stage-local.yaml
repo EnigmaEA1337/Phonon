@@ -1,4 +1,4 @@
-bind_address: "10.188.225.0"
+bind_address: "10.13.22.234"
 port: 8401
 log_level: "INFO"
 mode: "STANDALONE"

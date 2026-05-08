@@ -1096,7 +1096,7 @@ function renderMappings(mappings) {
           <div class="fader-handle" style="top:${faderY}%"></div>
         </div>
         <div class="fader-ticks">
-          <span class="unity">0</span><span>-3</span><span>-6</span><span>-9</span><span>-12</span>
+          <span class="unity">0</span><span>-3</span><span>-6</span><span>-9</span><span>-12</span><span>-∞</span>
         </div>
       </div>
       <div class="strip-db" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</div>
@@ -1108,20 +1108,29 @@ function renderMappings(mappings) {
   el.querySelectorAll('.knob-wrap').forEach(setupKnobDrag);
 }
 
-// Linear fader mapping: 0% (top) = 0 dB, 100% (bottom) = -12 dB.
-// Stored mappings with gains outside this window (e.g. legacy -40 dB
-// or +6 dB) are clamped on display so the handle stays on-screen,
-// but the persisted value is kept until the user drags.
-const FADER_DB_TOP = 0;
-const FADER_DB_BOTTOM = -12;
-const FADER_DB_RANGE = FADER_DB_TOP - FADER_DB_BOTTOM; // 12
+// Two-segment fader curve. Top 80% of travel = fine trim 0 → -12 dB
+// (≈0.15 dB/px on a 100-px fader). Bottom 20% = rapid fade -12 → -90 dB
+// so dragging all the way down silences the channel cleanly. Same
+// idea as a console fader's '-∞' detent at the foot.
+const FADER_DB_TOP = 0;       // 0 dB at the top
+const FADER_DB_KNEE = -12;    // -12 dB at 80% travel (the knee)
+const FADER_DB_FLOOR = -90;   // effective silence at the bottom
+const FADER_KNEE_PCT = 80;    // % of travel where the curve breaks
 function faderYToDb(pct) {
   // pct: 0 = top of fader, 100 = bottom
-  return FADER_DB_TOP - (pct / 100) * FADER_DB_RANGE;
+  if (pct <= FADER_KNEE_PCT) {
+    return FADER_DB_TOP - (pct / FADER_KNEE_PCT) * (FADER_DB_TOP - FADER_DB_KNEE);
+  }
+  const t = (pct - FADER_KNEE_PCT) / (100 - FADER_KNEE_PCT);
+  return FADER_DB_KNEE + t * (FADER_DB_FLOOR - FADER_DB_KNEE);
 }
 function faderDbToY(db) {
-  const clamped = Math.max(FADER_DB_BOTTOM, Math.min(FADER_DB_TOP, db));
-  return ((FADER_DB_TOP - clamped) / FADER_DB_RANGE) * 100;
+  const clamped = Math.max(FADER_DB_FLOOR, Math.min(FADER_DB_TOP, db));
+  if (clamped >= FADER_DB_KNEE) {
+    return ((FADER_DB_TOP - clamped) / (FADER_DB_TOP - FADER_DB_KNEE)) * FADER_KNEE_PCT;
+  }
+  const t = (FADER_DB_KNEE - clamped) / (FADER_DB_KNEE - FADER_DB_FLOOR);
+  return FADER_KNEE_PCT + t * (100 - FADER_KNEE_PCT);
 }
 
 function setupFaderDrag(faderEl) {

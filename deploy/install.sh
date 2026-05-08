@@ -463,9 +463,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=/etc/default/phonon-ptp
+EnvironmentFile=-/etc/default/phonon-ptp
 ExecStartPre=/bin/sh -c 'if [ -z "$PTP_IFACE" ]; then echo PTP_IFACE=$(ip -o link show up | awk -F: "/state UP/ && \$2 !~ /lo/ {print \$2; exit}" | tr -d " ") > /run/phonon-ptp.env; else echo PTP_IFACE=$PTP_IFACE > /run/phonon-ptp.env; fi'
-EnvironmentFile=/run/phonon-ptp.env
+EnvironmentFile=-/run/phonon-ptp.env
 ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/phonon-aes67.conf -i ${PTP_IFACE} ${PTP_MODE_FLAG} -m
 Restart=on-failure
 RestartSec=5

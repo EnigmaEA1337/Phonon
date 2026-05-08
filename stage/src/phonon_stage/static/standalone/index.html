@@ -910,7 +910,11 @@ async function createMapping() {
       source_port_ids: srcPorts.map(p => p.id),
       sink_node_id: state.selectedSink.id,
       sink_port_ids: sinkPorts.map(p => p.id),
-      gain_db: 0, pan: 0, mute: false,
+      // Start the fader at 60% of its travel from the bottom (40%
+      // CSS-down from the top in our coord system) so a fresh mapping
+      // doesn't slam audio at unity. Restored mappings keep their
+      // persisted gain — the default only kicks in on UI create.
+      gain_db: faderYToDb(40), pan: 0, mute: false,
     }),
   });
 

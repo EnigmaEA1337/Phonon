@@ -217,19 +217,32 @@ async def _maybe_resync_stale_mappings() -> None:
         from phonon_stage.pipewire import cli as _cli
 
         dump = await _cli.pw_dump()
-        live_ids = {
+        live_node_ids = {
             int(item.get("id", 0)) for item in dump if item.get("type", "").endswith("Node")
+        }
+        live_link_ids = {
+            int(item.get("id", 0)) for item in dump if item.get("type", "").endswith("Link")
         }
     except Exception:
         return
 
+    # A mapping is stale when one of its node IDs is gone (USB
+    # hot-replug) or when any of its stored link IDs has been GC'd
+    # by PipeWire. The link case happens after a brief node suspend
+    # (WirePlumber re-routing a freshly plugged sink, autoswitch on
+    # default sink change…) — the nodes survive but the links don't,
+    # so the audio path is broken even though node-id checks pass.
     stale = False
     for m in mappings:
         if getattr(m, "mute", False):
             continue
         sid = getattr(m, "sink_node_id", 0)
         src = getattr(m, "source_node_id", 0)
-        if (sid and sid not in live_ids) or (src and src not in live_ids):
+        link_ids = getattr(m, "link_ids", []) or []
+        if (sid and sid not in live_node_ids) or (src and src not in live_node_ids):
+            stale = True
+            break
+        if link_ids and any(lid not in live_link_ids for lid in link_ids):
             stale = True
             break
     if not stale:

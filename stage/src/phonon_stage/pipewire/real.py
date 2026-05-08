@@ -129,6 +129,24 @@ class RealPipeWireBackend:
             except Exception:
                 logger.warning("pipewire.volume_set_failed", node_id=node_id, exc_info=True)
 
+    async def set_node_mute(self, node_id: int, muted: bool) -> None:
+        # WirePlumber starts every fresh playback sink in MUTED state
+        # (security default — avoids blasting audio at full volume the
+        # moment a USB sound card is plugged in). We unmute when a
+        # mapping points at it, otherwise the user gets a perfectly
+        # routed link that produces silence.
+        flag = "1" if muted else "0"
+        try:
+            await cli.run_command("wpctl", "set-mute", str(node_id), flag)
+            logger.info("pipewire.mute_set", node_id=node_id, muted=muted)
+        except Exception:
+            try:
+                pactl_flag = "1" if muted else "0"
+                await cli.run_command("pactl", "set-sink-mute", str(node_id), pactl_flag)
+                logger.info("pipewire.mute_set_pactl", node_id=node_id, muted=muted)
+            except Exception:
+                logger.warning("pipewire.mute_set_failed", node_id=node_id, exc_info=True)
+
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
         try:
             await cli.pw_cli_set_latency_offset(node_id, offset_ns)

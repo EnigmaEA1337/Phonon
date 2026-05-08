@@ -283,9 +283,15 @@ class MappingService:
         return link_ids
 
     async def _apply_volume(self, node_id: int, volume: float, pan: float) -> None:
-        """Apply volume and pan to a sink node."""
+        """Apply volume and pan to a sink node, and ensure it's unmuted.
+
+        WirePlumber starts USB sinks (e.g. a freshly-plugged Avantree
+        DG60 receiver) in MUTED state by default — that left users
+        with a perfectly-routed mapping that produced zero sound and
+        no obvious culprit. Setting volume here without clearing the
+        mute flag would silently fail. So we always unmute on every
+        mapping mutation: create, update, restore, resync.
+        """
         _left_gain, _right_gain = pan_to_stereo_gains(pan)
-        # PipeWire wpctl set-volume applies to the whole node
-        # For simplicity in standalone mode, we just set the overall volume
-        # Pan would require per-channel control which is more complex
         await self._pw.set_node_volume(node_id, volume)
+        await self._pw.set_node_mute(node_id, False)

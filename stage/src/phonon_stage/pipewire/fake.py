@@ -17,6 +17,7 @@ class FakePipeWireBackend:
         self.ports = list(ports or [])
         self.links: list[PwLink] = []
         self.volumes: dict[int, float] = {}
+        self.mutes: dict[int, bool] = {}
         self.latency_offsets: dict[int, int] = {}
         self._next_link_id = 100
 
@@ -47,6 +48,9 @@ class FakePipeWireBackend:
 
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
         self.volumes[node_id] = volume_linear
+
+    async def set_node_mute(self, node_id: int, muted: bool) -> None:
+        self.mutes[node_id] = muted
 
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
         self.latency_offsets[node_id] = offset_ns

@@ -1670,9 +1670,10 @@ function renderTopbarUpdate(u) {
   const el = document.getElementById('tb-update');
   const lab = document.getElementById('tb-update-label');
   if (!el || !lab) return;
-  // Show only when an update is actually available (≥1 commit behind)
-  // and the update mechanism is wired up. Otherwise hide entirely.
-  if (!u.available || u.behind === 0) {
+  // Show whenever there are commits to pull. Apply works in both prod
+  // (via sudo install.sh) and dev (in-process git pull) modes; the
+  // backend picks the right path. Hide only when truly up to date.
+  if (u.behind === 0) {
     el.style.display = 'none';
     return;
   }
@@ -1744,13 +1745,36 @@ async function applyUpdate() {
   const btn = document.getElementById('update-apply-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'APPLYING...'; }
   const r = await api('/system/update/apply', { method: 'POST' });
-  if (!r || r.status === 'not_configured') {
-    alert('Update mechanism not configured: ' + (r?.detail || '/usr/local/sbin/phonon-update missing'));
+  if (!r || r.status !== 'started') {
+    alert('Update failed: ' + (r?.detail || r?.status || 'unknown error'));
     if (btn) { btn.disabled = false; btn.textContent = 'APPLY UPDATE'; }
     return;
   }
-  // Replace modal content with progress + health-poll
+  if (!document.getElementById('update-spin-style')) {
+    const st = document.createElement('style');
+    st.id = 'update-spin-style';
+    st.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(st);
+  }
   const modal = document.querySelector('#update-modal .modal-body');
+  if (r.mode === 'dev') {
+    // Dev mode: in-process git pull, no service to restart automatically
+    if (modal) {
+      modal.innerHTML = `
+        <div style="padding:20px">
+          <div style="font-family:var(--font-d);font-size:14px;margin-bottom:12px;color:var(--green)">✓ git pull succeeded</div>
+          <div style="font-family:var(--font-m);font-size:10px;color:var(--text-dim);line-height:1.5">
+            Dev mode — no systemd unit to restart.<br>
+            <strong style="color:var(--text)">Stop and relaunch <code>phonon-stage</code></strong> for the new code to take effect.
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px">
+            <button class="btn" onclick="document.getElementById('update-modal').remove()">Got it</button>
+          </div>
+        </div>`;
+    }
+    return;
+  }
+  // Prod mode: poll /health for daemon reconnection
   if (modal) {
     modal.innerHTML = `
       <div style="text-align:center;padding:20px">
@@ -1761,13 +1785,6 @@ async function applyUpdate() {
         <div style="margin:20px auto;width:32px;height:32px;border:3px solid var(--bg-2);border-top-color:var(--cyan);border-radius:50%;animation:spin 0.8s linear infinite"></div>
         <div id="update-state" style="font-family:var(--font-m);font-size:10px;color:var(--text-fade);margin-top:8px">⏳ waiting for daemon to restart…</div>
       </div>`;
-  }
-  // Add a minimal spin keyframe if missing
-  if (!document.getElementById('update-spin-style')) {
-    const st = document.createElement('style');
-    st.id = 'update-spin-style';
-    st.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
-    document.head.appendChild(st);
   }
   pollHealthUntilUp();
 }

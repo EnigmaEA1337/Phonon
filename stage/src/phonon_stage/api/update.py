@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 
 import structlog
@@ -30,6 +31,26 @@ logger = structlog.get_logger()
 REPO_PATH_FILE = Path("/etc/phonon/repo-path")
 UPDATE_SCRIPT = Path("/usr/local/sbin/phonon-update")
 UPDATE_LOG = Path("/var/log/phonon/update.log")
+
+
+def _detect_mode(repo: Path) -> str:
+    """Decide how the apply step should run.
+
+    prod     — install.sh ran, /etc/phonon/repo-path + /usr/local/sbin/
+               phonon-update + sudoers grant all in place. Delegate to
+               sudo phonon-update (full pull + reinstall + service restart).
+    dev      — no install.sh, but the daemon's UID owns the repo. We
+               can `git pull` directly, no sudo. Daemon restart is the
+               user's job (no systemd unit in dev).
+    readonly — repo exists but we can't write to .git. Refuse apply
+               rather than fail half-way.
+    """
+    if REPO_PATH_FILE.is_file() and (UPDATE_SCRIPT.is_file() or UPDATE_SCRIPT.is_symlink()):
+        return "prod"
+    git_dir = repo / ".git"
+    if git_dir.is_dir() and os.access(git_dir, os.W_OK):
+        return "dev"
+    return "readonly"
 
 
 def _repo_root() -> Path | None:
@@ -215,25 +236,66 @@ async def update_preview() -> UpdatePreview:
 
 @router.post("/apply", status_code=202)
 async def update_apply() -> dict[str, str]:
-    """Trigger the update script. Fire-and-forget — it ends with a
-    systemctl restart of phonon-stage so this very request gets cut off
-    when the script reaches that step. UI must poll /health to detect
-    the daemon coming back up."""
-    if not (UPDATE_SCRIPT.is_file() or UPDATE_SCRIPT.is_symlink()):
+    """Trigger an update.
+
+    Mode auto-detected (prod / dev / readonly):
+      prod  — sudo /usr/local/sbin/phonon-update (pull + reinstall +
+              systemctl restart). UI polls /health for reconnection.
+      dev   — daemon does git pull --ff-only itself; no sudo, no
+              service restart. UI tells user to relaunch manually.
+      readonly — refuse with a hint to run install.sh.
+    """
+    repo = _repo_root()
+    if repo is None:
         return {
             "status": "not_configured",
-            "detail": f"{UPDATE_SCRIPT} missing — install.sh hasn't run",
+            "detail": "Repo path not found — clone the repo first",
+        }
+    mode = _detect_mode(repo)
+
+    if mode == "readonly":
+        return {
+            "status": "readonly",
+            "detail": (
+                f"Repo at {repo} is not writable by the daemon's user — "
+                "run install.sh on this host to wire prod-mode updates"
+            ),
         }
 
-    # Spawn under sudo (NOPASSWD entry set up by install.sh) and detach
-    proc = await asyncio.create_subprocess_exec(
-        "sudo",
-        "-n",
-        str(UPDATE_SCRIPT),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    logger.info("update.apply_spawned", pid=proc.pid)
-    return {"status": "started", "pid": str(proc.pid)}
+    if mode == "prod":
+        proc = await asyncio.create_subprocess_exec(
+            "sudo",
+            "-n",
+            str(UPDATE_SCRIPT),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("update.apply_spawned", mode="prod", pid=proc.pid)
+        return {"status": "started", "mode": "prod", "pid": str(proc.pid)}
+
+    # mode == "dev": daemon does the pull itself. Refuse fast-forward
+    # over local edits rather than corrupt the working tree.
+    rc, status = await _git(repo, "status", "--porcelain")
+    if rc == 0 and status.strip():
+        return {
+            "status": "dirty",
+            "detail": "Working tree has uncommitted changes — commit or stash first",
+        }
+    rc, fetch_err = await _git(repo, "fetch", "--quiet")
+    if rc != 0:
+        return {"status": "fetch_failed", "detail": fetch_err or "git fetch failed"}
+    rc, pull_out = await _git(repo, "pull", "--ff-only", timeout=30.0)
+    if rc != 0:
+        logger.warning("update.dev_pull_failed", out=pull_out)
+        return {"status": "pull_failed", "detail": pull_out[:300]}
+    logger.info("update.apply_dev_done", out=pull_out[:200])
+    return {
+        "status": "started",
+        "mode": "dev",
+        "detail": (
+            "git pull succeeded. Restart your `phonon-stage` process for the "
+            "new code to take effect (no systemd unit in dev mode)."
+        ),
+    }

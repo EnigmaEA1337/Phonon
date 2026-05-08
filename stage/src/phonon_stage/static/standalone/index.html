@@ -2171,11 +2171,12 @@ function updateSysStatus() {
   // unit file (typical on dev) shouldn't flag the system as degraded.
   // We further consider only services the user has enabled at boot
   // since a deliberately-disabled service down is the user's choice,
-  // not a system fault.
+  // not a system fault. Type=oneshot units (phonon-bt-unblock) are
+  // also excluded — 'inactive' is the success state for those.
   const services = _latestServices || [];
   const downRequired = services.filter(
     s => REQUIRED_SERVICES.has(s.name) && s.installed !== false
-         && s.enabled && !s.active
+         && s.enabled && !s.active && !s.oneshot
   );
   const downRouting = downRequired.filter(s => ROUTING_CRITICAL_SERVICES.has(s.name));
   const alerts = (_latestResources && _latestResources.alerts) || [];
@@ -2243,7 +2244,9 @@ function renderSystemServices(services) {
     const error = _actionErrors.get(s.name);
     const ledColor = pending ? 'var(--yellow)'
                    : notInstalled ? 'var(--text-fade)'
-                   : s.active ? 'var(--green)' : 'var(--red)';
+                   : s.active ? 'var(--green)'
+                   : s.oneshot ? 'var(--cyan)'   // ran at boot, exited cleanly
+                   : 'var(--red)';
     const ledGlow = pending ? `0 0 6px var(--yellow)`
                   : notInstalled ? 'none'
                   : `0 0 4px ${ledColor}`;
@@ -2254,7 +2257,9 @@ function renderSystemServices(services) {
     const pid = s.pid && !pending ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">pid ${s.pid}</span>` : '';
     const pendingTag = pending
       ? `<span class="svc-pending"><span class="svc-spinner"></span>${gerund[pending]}…</span>`
-      : '';
+      : (s.oneshot && !pending && !notInstalled
+        ? '<span style="font-size:9px;color:var(--cyan);font-family:var(--font-m);letter-spacing:0.5px" title="Type=oneshot — runs once at boot then exits, inactive is the success state">ONESHOT</span>'
+        : '');
     const errorTag = !pending && error
       ? `<span class="svc-error" title="${error.replace(/"/g, '&quot;')}">⚠ ${error.slice(0, 40)}${error.length > 40 ? '…' : ''}</span>`
       : '';

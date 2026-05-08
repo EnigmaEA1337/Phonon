@@ -394,6 +394,11 @@ class ServiceState(BaseModel):
     # install.sh yet. The UI hides the action buttons and the status
     # badge ignores such services.
     installed: bool = True
+    # True for Type=oneshot units (phonon-bt-unblock — runs once at
+    # boot then exits). is-active returns 'inactive' after a successful
+    # run, which would otherwise make the status badge flag DEGRADED.
+    # The UI excludes oneshots from the 'service is down' calc.
+    oneshot: bool = False
 
 
 async def _service_active_user(name: str) -> bool:
@@ -511,6 +516,10 @@ async def collect_services() -> list[ServiceState]:
                 f"systemctl {user_flag}show -p MainPID {n}.service 2>/dev/null | cut -d= -f2"
             )
             pid = int(pid_str) if pid_str.isdigit() and pid_str != "0" else 0
+            type_str = await _run(
+                f"systemctl {user_flag}show -p Type {n}.service 2>/dev/null | cut -d= -f2"
+            )
+            oneshot = type_str == "oneshot"
             version = ""
             if ver_cmd:
                 version = await _run(ver_cmd)
@@ -523,6 +532,7 @@ async def collect_services() -> list[ServiceState]:
                 version=version,
                 can_control=can_control,
                 installed=True,
+                oneshot=oneshot,
             )
 
         tasks.append(_fetch())

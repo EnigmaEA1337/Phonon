@@ -406,6 +406,11 @@ if [ -d "${REPO_ROOT}" ] && [ "${REPO_ROOT#/opt/}" = "${REPO_ROOT}" ]; then
     done
     chgrp -R "${PHONON_GROUP}" "${REPO_ROOT}" 2>/dev/null || true
     chmod -R g+rwX "${REPO_ROOT}" 2>/dev/null || true
+    # Modern git refuses to operate on a repo whose owner doesn't
+    # match the current user (CVE-2022-24765 mitigation). Allow the
+    # phonon daemon to read this specific repo without globally
+    # whitelisting "*", which would weaken the protection elsewhere.
+    git config --system --add safe.directory "${REPO_ROOT}" 2>/dev/null || true
     echo "  Repo perms granted to ${PHONON_GROUP} group (read/write for fetch+pull)"
 fi
 

@@ -69,9 +69,19 @@ def _repo_root() -> Path | None:
 
 async def _git(repo: Path, *args: str, timeout: float = 10.0) -> tuple[int, str]:
     """Run a git command in `repo`. Returns (rc, stdout). stderr is captured
-    and discarded — caller infers from rc."""
+    and discarded — caller infers from rc.
+
+    `-c safe.directory=*` bypasses git's 'dubious ownership' refusal —
+    the daemon (phonon user) almost always operates on a repo owned by
+    a different user (e.g. manager:manager in /home/manager/Phonon).
+    Without this every git command would fail with 'fatal: detected
+    dubious ownership' until the user manually adds a system-wide
+    safe.directory entry.
+    """
     proc = await asyncio.create_subprocess_exec(
         "git",
+        "-c",
+        "safe.directory=*",
         "-C",
         str(repo),
         *args,

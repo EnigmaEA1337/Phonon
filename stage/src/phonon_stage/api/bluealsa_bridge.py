@@ -317,3 +317,64 @@ async def list_bridges() -> dict[str, object]:
 async def list_bt_audio_devices() -> list[dict[str, str]]:
     """List connected BT audio devices with codec/rate info from BlueALSA."""
     return await _list_bluealsa_pcms()
+
+
+@router.get("/health")
+async def bridge_health() -> dict[str, object]:
+    """Per-active-bridge health snapshot — codec, sample rate, PipeWire
+    xruns on the bt_<name> sink, and bridge process aliveness. Used by
+    the UI to debug audio crackles: if xruns climb on a given bridge
+    you've got buffer starvation; if codec is SBC at low bitpool you
+    can hint at lossy a2dp; if pid_alive is False the bridge shell
+    crashed and audio's just silently dead."""
+    import contextlib
+    import os
+
+    from phonon_stage.pipewire.cli import pw_top_xruns
+
+    # Snapshot of negotiated codec & rate per (MAC, type)
+    pcms = await _list_bluealsa_pcms()
+    by_key = {f"{p['mac']}_{p['type']}": p for p in pcms}
+
+    # Snapshot of pw-top xrun counters keyed by node name. The bridge
+    # creates a null-sink named `bt_<safe_name>` (or `_in` for capture)
+    # that the user routes via mappings — that's the node that takes
+    # the hit when the audio buffer underflows.
+    xruns_by_name: dict[str, int] = {}
+    try:
+        for entry in (await pw_top_xruns()).values():
+            n = str(entry.get("name", ""))
+            if n.startswith("bt_"):
+                xruns_by_name[n] = int(entry.get("err", 0))
+    except Exception:
+        pass
+
+    bridges_health: list[dict[str, object]] = []
+    for key, br in _active_bridges.items():
+        mac, dtype = key.rsplit("_", 1)
+        sink_name = f"bt_{br.get('name', '')}" + ("_in" if dtype == "capture" else "")
+        pcm = by_key.get(key, {})
+        pid_raw = br.get("bridge_pid")
+        alive = False
+        if pid_raw is not None:
+            with contextlib.suppress(ProcessLookupError, OSError, ValueError):
+                os.kill(int(str(pid_raw)), 0)
+                alive = True
+        bridges_health.append(
+            {
+                "mac": mac,
+                "type": dtype,
+                "name": br.get("name", ""),
+                "sink_name": sink_name,
+                "codec": pcm.get("codec", ""),
+                "rate": pcm.get("rate", ""),
+                "channels": pcm.get("channels", ""),
+                "bridge_buffer_ms": int(str(br.get("buffer_ms", 50))),
+                "codec_latency_ms": int(pcm.get("codec_latency_ms", 0) or 0),
+                "xruns_total": xruns_by_name.get(sink_name, 0),
+                "pid_alive": alive,
+                "pid": int(str(pid_raw)) if pid_raw is not None else 0,
+            }
+        )
+
+    return {"bridges": bridges_health, "count": len(bridges_health)}

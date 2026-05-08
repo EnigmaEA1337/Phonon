@@ -470,6 +470,13 @@ body.mode-live .edit-only select { opacity: 0.4; }
         <div id="bt-controllers-cards" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
         <div id="bt-paired"></div>
         <div id="bt-scan-results" style="margin-top:8px"></div>
+        <div id="bt-health-panel" style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;display:none">
+          <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;display:flex;align-items:center;gap:6px">
+            BT Bridges health
+            <span style="color:var(--text-fade);text-transform:none;letter-spacing:0">— xrun jumps mean buffer starvation = crackles</span>
+          </div>
+          <div id="bt-health"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -2354,6 +2361,55 @@ setInterval(async () => {
   const buf = document.getElementById('bt-buffer-slider')?.value || 50;
   await api(`/bluealsa/sync?buffer_ms=${buf}`, { method: 'POST' });
 }, 30000);
+
+// ── BT bridge health (codec + xrun delta + bridge alive) ─────────────
+// Polls every 3s. We track the previous xrun count per bridge so we
+// can highlight a delta — that's the actual signal for crackles.
+const _btXrunPrev = new Map();    // sink_name → last xrun count
+const _btXrunRecentDelta = new Map(); // sink_name → delta from last tick
+async function refreshBtHealth() {
+  const r = await api('/bluealsa/health');
+  const panel = document.getElementById('bt-health-panel');
+  const list = document.getElementById('bt-health');
+  if (!panel || !list) return;
+  const bridges = r?.bridges || [];
+  if (!bridges.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  list.innerHTML = bridges.map(b => {
+    const prev = _btXrunPrev.get(b.sink_name);
+    const delta = (prev !== undefined) ? Math.max(0, b.xruns_total - prev) : 0;
+    if (delta > 0) _btXrunRecentDelta.set(b.sink_name, delta);
+    _btXrunPrev.set(b.sink_name, b.xruns_total);
+    const xrunColor = delta > 0 ? 'var(--red)'
+                    : b.xruns_total > 0 ? 'var(--yellow)'
+                    : 'var(--green)';
+    const codecBadge = b.codec
+      ? `<span style="font-size:9px;color:var(--cyan);font-family:var(--font-m);padding:1px 5px;border:1px solid var(--cyan);border-radius:3px">${b.codec}</span>`
+      : '<span style="color:var(--text-fade);font-size:9px">no codec</span>';
+    const aliveBadge = b.pid_alive
+      ? '<span style="color:var(--green);font-size:9px">● alive</span>'
+      : '<span style="color:var(--red);font-size:9px">● dead</span>';
+    const rate = b.rate ? `${b.rate} Hz` : '';
+    const ch = b.channels ? `${b.channels}ch` : '';
+    const lat = b.codec_latency_ms ? `~${b.codec_latency_ms + (b.bridge_buffer_ms||0)}ms lat` : '';
+    const typeColor = b.type === 'capture' ? 'var(--green)' : 'var(--magenta)';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-1);border:1px solid var(--border);border-radius:4px;margin-bottom:3px;font-size:10px;font-family:var(--font-m)">
+      <span style="color:${typeColor};text-transform:uppercase;letter-spacing:0.5px;font-size:9px;font-weight:600;min-width:46px">${b.type === 'capture' ? 'IN' : 'OUT'}</span>
+      <span style="color:var(--text)">${b.name || b.mac}</span>
+      ${codecBadge}
+      <span style="color:var(--text-dim)">${rate} ${ch}</span>
+      <span style="color:var(--text-fade)">${lat}</span>
+      <span style="flex:1"></span>
+      ${aliveBadge}
+      <span title="Total xruns since pipewire start (delta vs last 3s shown when ↑)" style="color:${xrunColor};font-weight:600">
+        ${b.xruns_total} xrun${delta > 0 ? ` <span style="color:var(--red)">↑${delta}</span>` : ''}
+      </span>
+    </div>`;
+  }).join('');
+}
+setInterval(refreshBtHealth, 3000);
+refreshBtHealth();
 
 // ── Modals ───────────────────────────────────────────
 async function showModal(type) {

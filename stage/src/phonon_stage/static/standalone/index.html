@@ -2367,6 +2367,34 @@ setInterval(async () => {
 // can highlight a delta — that's the actual signal for crackles.
 const _btXrunPrev = new Map();    // sink_name → last xrun count
 const _btXrunRecentDelta = new Map(); // sink_name → delta from last tick
+const _btXrunHistory = new Map(); // sink_name → [deltas] (oldest first)
+const BT_HISTORY_LEN = 10;         // 10 × 3s tick = 30s window
+
+function _btSparkline(history) {
+  // Tiny SVG bar chart of the last BT_HISTORY_LEN xrun deltas. Empty
+  // ticks are rendered as faint baseline rects so the timebase is
+  // always visible. A burst burns red, a couple of dropouts yellow.
+  const w = 110, h = 14, n = BT_HISTORY_LEN;
+  const barW = w / n;
+  const max = Math.max(1, ...history);
+  const padLeft = Math.max(0, n - history.length);
+  let bars = '';
+  for (let i = 0; i < n; i++) {
+    const idx = i - padLeft;
+    const v = idx >= 0 ? history[idx] : 0;
+    const x = i * barW + 0.5;
+    let bh, y, fill;
+    if (v === 0) {
+      bh = 1; y = h - 1; fill = 'var(--border)';
+    } else {
+      bh = Math.max(2, (v / max) * (h - 2));
+      y = h - bh;
+      fill = v > 5 ? 'var(--red)' : v > 1 ? 'var(--yellow)' : 'var(--green)';
+    }
+    bars += `<rect x="${x}" y="${y}" width="${Math.max(1, barW - 1)}" height="${bh}" fill="${fill}"/>`;
+  }
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle;background:var(--bg-0);border:1px solid var(--border);border-radius:2px" title="xrun deltas, last ${n*3}s">${bars}</svg>`;
+}
 async function refreshBtHealth() {
   const r = await api('/bluealsa/health');
   const panel = document.getElementById('bt-health-panel');
@@ -2376,11 +2404,26 @@ async function refreshBtHealth() {
   if (!bridges.length) { panel.style.display = 'none'; return; }
   panel.style.display = '';
 
+  // Drop history for bridges that disappeared so we don't leak memory
+  // across BT pair/unpair cycles.
+  const live = new Set(bridges.map(b => b.sink_name));
+  for (const k of _btXrunHistory.keys()) if (!live.has(k)) _btXrunHistory.delete(k);
+
   list.innerHTML = bridges.map(b => {
     const prev = _btXrunPrev.get(b.sink_name);
+    // First tick after the bridge appears we don't know the baseline,
+    // so push 0 to start the timebase rather than a fake spike.
     const delta = (prev !== undefined) ? Math.max(0, b.xruns_total - prev) : 0;
     if (delta > 0) _btXrunRecentDelta.set(b.sink_name, delta);
     _btXrunPrev.set(b.sink_name, b.xruns_total);
+
+    // Append delta to history (every tick, including 0 ticks, so the
+    // bar chart scrolls smoothly).
+    const hist = _btXrunHistory.get(b.sink_name) || [];
+    hist.push(delta);
+    while (hist.length > BT_HISTORY_LEN) hist.shift();
+    _btXrunHistory.set(b.sink_name, hist);
+
     const xrunColor = delta > 0 ? 'var(--red)'
                     : b.xruns_total > 0 ? 'var(--yellow)'
                     : 'var(--green)';
@@ -2402,7 +2445,8 @@ async function refreshBtHealth() {
       <span style="color:var(--text-fade)">${lat}</span>
       <span style="flex:1"></span>
       ${aliveBadge}
-      <span title="Total xruns since pipewire start (delta vs last 3s shown when ↑)" style="color:${xrunColor};font-weight:600">
+      ${_btSparkline(hist)}
+      <span title="Total xruns since pipewire start (delta vs last 3s shown when ↑)" style="color:${xrunColor};font-weight:600;min-width:74px;text-align:right">
         ${b.xruns_total} xrun${delta > 0 ? ` <span style="color:var(--red)">↑${delta}</span>` : ''}
       </span>
     </div>`;

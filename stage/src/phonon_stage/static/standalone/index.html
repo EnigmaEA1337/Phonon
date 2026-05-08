@@ -75,6 +75,15 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 .svc-btn:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
 .svc-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.svc-pending { display: inline-flex; align-items: center; gap: 4px;
+  font-size: 9px; color: var(--yellow); font-family: var(--font-m);
+  letter-spacing: 0.5px; text-transform: uppercase; }
+.svc-error { font-size: 9px; color: var(--red); font-family: var(--font-m); }
+.svc-spinner { display: inline-block; width: 10px; height: 10px;
+  border: 1.5px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; animation: svc-spin 0.7s linear infinite;
+  vertical-align: middle; }
+@keyframes svc-spin { to { transform: rotate(360deg); } }
 .res-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px;
   font-family: var(--font-m); font-size: 10px; }
 .res-label { width: 42px; color: var(--text-dim); font-weight: 600;
@@ -2084,6 +2093,13 @@ const REQUIRED_SERVICES = new Set([
 ]);
 let _latestServices = null;
 let _latestResources = null;
+// In-flight service action: name → 'start' | 'stop' | 'restart'.
+// Drives the row's pending visual state (yellow LED, gerund label,
+// disabled buttons). Cleared in svcAction's finally block.
+const _pendingActions = new Map();
+// Error message from the last action, sticky until the next click
+// on the same row. Cleared automatically when the user retries.
+const _actionErrors = new Map();
 
 function updateSysStatus() {
   // Only count services that are required AND installed — a missing
@@ -2125,30 +2141,52 @@ function renderSystemServices(services) {
   if (btn) btn.style.display = audioDown ? '' : 'none';
 
   if (!el) { updateSysStatus(); return; }
+  const gerund = { start: 'starting', stop: 'stopping', restart: 'restarting' };
   el.innerHTML = services.map(s => {
     const notInstalled = s.installed === false;
-    const ledColor = notInstalled ? 'var(--text-fade)'
+    const pending = _pendingActions.get(s.name);
+    const error = _actionErrors.get(s.name);
+    const ledColor = pending ? 'var(--yellow)'
+                   : notInstalled ? 'var(--text-fade)'
                    : s.active ? 'var(--green)' : 'var(--red)';
+    const ledGlow = pending ? `0 0 6px var(--yellow)`
+                  : notInstalled ? 'none'
+                  : `0 0 4px ${ledColor}`;
     const kindBadge = s.kind === 'user' ? 'USER' : 'SYS';
     const kindColor = s.kind === 'user' ? 'var(--cyan)' : 'var(--magenta)';
     const nameStyle = notInstalled ? 'opacity:0.45' : '';
-    const ver = s.version ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">${s.version}</span>` : '';
-    const pid = s.pid ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">pid ${s.pid}</span>` : '';
-    const disabled = !s.can_control;
+    const ver = s.version && !pending ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">${s.version}</span>` : '';
+    const pid = s.pid && !pending ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">pid ${s.pid}</span>` : '';
+    const pendingTag = pending
+      ? `<span class="svc-pending"><span class="svc-spinner"></span>${gerund[pending]}…</span>`
+      : '';
+    const errorTag = !pending && error
+      ? `<span class="svc-error" title="${error.replace(/"/g, '&quot;')}">⚠ ${error.slice(0, 40)}${error.length > 40 ? '…' : ''}</span>`
+      : '';
+    const disabled = !s.can_control || !!pending;
     const dtTitle = notInstalled
       ? 'Not installed on this host — run install.sh to deploy this unit'
-      : 'Not controllable from UI — install.sh hasn\\\'t set up the sudoers grant';
+      : !s.can_control
+        ? 'Not controllable from UI — install.sh hasn\\\'t set up the sudoers grant'
+        : 'Action in progress…';
     const dt = disabled ? `disabled title="${dtTitle}"` : '';
+    const btn = (verb, glyph) => {
+      const isThis = pending === verb;
+      const inner = isThis ? '<span class="svc-spinner"></span>' : glyph;
+      return `<button class="svc-btn" ${dt} onclick="svcAction('${s.name}','${verb}')">${inner}</button>`;
+    };
     return `<div class="svc-row" style="${nameStyle}">
-      <span class="svc-led" style="background:${ledColor};box-shadow:${notInstalled?'none':`0 0 4px ${ledColor}`}"></span>
+      <span class="svc-led" style="background:${ledColor};box-shadow:${ledGlow}"></span>
       <span class="svc-kind" style="color:${kindColor}">${kindBadge}</span>
       <span class="svc-name">${s.name}</span>
       ${ver}
       ${pid}
+      ${pendingTag}
+      ${errorTag}
       <span style="flex:1"></span>
-      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','start')">▶</button>
-      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','stop')">■</button>
-      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','restart')">↻</button>
+      ${btn('start', '▶')}
+      ${btn('stop', '■')}
+      ${btn('restart', '↻')}
     </div>`;
   }).join('');
   updateSysStatus();
@@ -2194,13 +2232,30 @@ function renderSystemResources(r) {
 }
 
 async function svcAction(name, action) {
-  const r = await api(`/system/services/${name}/${action}`, { method: 'POST' });
+  // Pending state immediately (yellow LED, spinner, disabled buttons)
+  // so the user sees the click took effect even before the API replies.
+  _pendingActions.set(name, action);
+  _actionErrors.delete(name);
+  if (_latestServices) renderSystemServices(_latestServices);
+
+  let r = null;
+  try {
+    r = await api(`/system/services/${name}/${action}`, { method: 'POST' });
+  } catch (e) {
+    _actionErrors.set(name, 'request failed');
+  }
   if (r && r.status !== 'ok') {
     const reason = r.status === 'not_installed'
-      ? `${name} is not installed on this host (run install.sh)`
+      ? 'not installed (run install.sh)'
       : (r.output || r.status);
-    alert(`${action} ${name}: ${reason}`);
+    _actionErrors.set(name, reason);
   }
+
+  _pendingActions.delete(name);
+  // Don't wait for the next 5s WS tick — refetch now so the row
+  // flips to its new active/inactive state right away.
+  const services = await api('/system/services');
+  if (services) renderSystemServices(services);
 }
 
 async function restartAudioStack() {

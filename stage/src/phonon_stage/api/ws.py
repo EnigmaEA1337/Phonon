@@ -90,6 +90,10 @@ async def _mode_loop() -> None:
 # need to rebuild bridges + mappings even though the click never went
 # through our endpoints.
 _last_audio_pids: dict[str, int] = {}
+# Same trick for bluealsa: a PID delta means every `arecord -D bluealsa`
+# we'd piped into pacat is now a zombie reading from a dead service.
+# Run /bluealsa/sync to rebuild bridges against the new daemon.
+_last_bluealsa_pid: int = 0
 
 
 async def _system_loop() -> None:
@@ -148,6 +152,28 @@ async def _system_loop() -> None:
                             replay_audio_state(reason=f"external:{','.join(changed)}")
                         )
                     )
+
+                # bluealsa restart detection — PID delta on bluealsa.service
+                # means every BT bridge is reading from a dead daemon.
+                global _last_bluealsa_pid
+                if not isinstance(services, BaseException):
+                    bluealsa = next((s for s in services if s.name == "bluealsa"), None)
+                    if bluealsa and bluealsa.active and bluealsa.pid:
+                        if _last_bluealsa_pid and _last_bluealsa_pid != bluealsa.pid:
+                            logger.info("ws.bluealsa_external_restart", pid=bluealsa.pid)
+                            from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+
+                            async def _delayed_bluealsa_sync() -> None:
+                                await asyncio.sleep(2.0)
+                                try:
+                                    await sync_bridges_impl(buffer_ms=50)
+                                except Exception:
+                                    logger.warning("ws.bluealsa_sync_failed", exc_info=True)
+
+                            _bg_tasks.append(asyncio.create_task(_delayed_bluealsa_sync()))
+                        _last_bluealsa_pid = bluealsa.pid
+                    else:
+                        _last_bluealsa_pid = 0
         except Exception:
             logger.warning("ws.system_tick_failed", exc_info=True)
         await asyncio.sleep(5)

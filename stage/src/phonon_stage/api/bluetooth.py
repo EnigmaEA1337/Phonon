@@ -139,9 +139,27 @@ async def pair_device(request: Request, body: DeviceRequest) -> dict[str, str]:
 async def connect_device(request: Request, body: DeviceRequest) -> dict[str, str]:
     try:
         await request.app.state.bt_backend.connect(body.device_address)
-        return {"status": "connected", "device": body.device_address}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Auto-sync — bluealsa exposes a fresh PCM for the device a moment
+    # after BlueZ reports 'connected', so the user shouldn't have to
+    # click 'Sync Inputs/Outputs' to start hearing audio. We do this
+    # in the background (don't block the HTTP response).
+    import asyncio as _asyncio
+
+    from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+
+    async def _delayed_sync() -> None:
+        import contextlib as _ctx
+
+        await _asyncio.sleep(2.0)
+        with _ctx.suppress(Exception):
+            await sync_bridges_impl(buffer_ms=50)
+
+    request.app.state.background_tasks = getattr(request.app.state, "background_tasks", [])
+    request.app.state.background_tasks.append(_asyncio.create_task(_delayed_sync()))
+    return {"status": "connected", "device": body.device_address}
 
 
 @router.delete("/disconnect", status_code=200)

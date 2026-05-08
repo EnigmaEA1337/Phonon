@@ -592,11 +592,23 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     # routing the user had set up disappears silently. Stop/disable
     # don't replay (the user explicitly asked for a teardown).
     replay_summary: dict[str, int] | None = None
-    if rc == 0 and action in {"start", "restart"} and name in AUDIO_USER_SERVICES:
-        await asyncio.sleep(1.5)
-        from phonon_stage.api.aes67 import replay_audio_state
+    sync_summary: dict[str, object] | None = None
+    if rc == 0 and action in {"start", "restart"}:
+        if name in AUDIO_USER_SERVICES:
+            await asyncio.sleep(1.5)
+            from phonon_stage.api.aes67 import replay_audio_state
 
-        replay_summary = await replay_audio_state(reason=f"control.{name}.{action}")
+            replay_summary = await replay_audio_state(reason=f"control.{name}.{action}")
+        elif name in BT_RUNTIME_SERVICES:
+            # Restarting bluealsa kills every `arecord -D bluealsa…` we
+            # had piped into pacat. Restarting bluetooth resets the
+            # adapter and disconnects every device. In both cases the
+            # right move is: wait for the daemon to settle, then run
+            # the same sync the UI's 'Sync Inputs/Outputs' button does.
+            await asyncio.sleep(2.0)
+            from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+
+            sync_summary = await sync_bridges_impl(buffer_ms=50)
 
     response: dict[str, Any] = {
         "status": "ok" if rc == 0 else "failed",
@@ -607,6 +619,11 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     }
     if replay_summary is not None:
         response["replay"] = replay_summary
+    if sync_summary is not None:
+        response["bluealsa_sync"] = {
+            "active": sync_summary.get("active", 0),
+            "actions": len(sync_summary.get("bridges", []) or []),  # type: ignore[arg-type]
+        }
     return response
 
 
@@ -614,6 +631,9 @@ async def control_service(name: str, action: str) -> dict[str, str]:
 # runtime audio state (bridges, links). Used by control_service and
 # the WS PID-delta watcher.
 AUDIO_USER_SERVICES = {"pipewire", "wireplumber", "pipewire-pulse"}
+# System services whose restart breaks our BT bridges and warrants an
+# automatic /bluealsa/sync after a settle delay.
+BT_RUNTIME_SERVICES = {"bluealsa", "bluetooth"}
 
 
 @router.post("/audio-stack/restart")

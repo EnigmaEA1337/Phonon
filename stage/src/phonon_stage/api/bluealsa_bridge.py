@@ -274,9 +274,11 @@ async def destroy_bridge(mac: str, device_type: str) -> dict[str, str]:
     return {"status": "destroyed", "mac": mac}
 
 
-@router.post("/sync")
-async def sync_bridges(request: Request, buffer_ms: int = 50) -> dict[str, object]:
-    """Auto-create bridges for all connected BlueALSA devices."""
+async def sync_bridges_impl(buffer_ms: int = 50) -> dict[str, object]:
+    """Reconcile bluealsa bridges with the current BlueALSA PCM list:
+    create missing bridges, drop stale ones. Public so other modules
+    (e.g. system.control_service after a bluealsa restart, BT connect)
+    can trigger a sync without going through HTTP."""
     pcms = await _list_bluealsa_pcms()
     results = []
     active_keys: set[str] = set()
@@ -291,7 +293,6 @@ async def sync_bridges(request: Request, buffer_ms: int = 50) -> dict[str, objec
         result = await create_bridge(mac, name, dtype, buffer_ms)
         results.append(result)
 
-    # Destroy bridges for disconnected devices
     stale_keys = set(_active_bridges.keys()) - active_keys
     for key in stale_keys:
         parts = key.rsplit("_", 1)
@@ -300,6 +301,12 @@ async def sync_bridges(request: Request, buffer_ms: int = 50) -> dict[str, objec
             results.append({"status": "removed_stale", "mac": parts[0], "type": parts[1]})
 
     return {"bridges": results, "active": len(_active_bridges)}
+
+
+@router.post("/sync")
+async def sync_bridges(request: Request, buffer_ms: int = 50) -> dict[str, object]:
+    """Auto-create bridges for all connected BlueALSA devices."""
+    return await sync_bridges_impl(buffer_ms=buffer_ms)
 
 
 @router.get("/bridges")

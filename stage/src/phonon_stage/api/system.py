@@ -7,6 +7,7 @@ import contextlib
 import os
 import platform
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
@@ -327,3 +328,363 @@ async def security_status(request: Request) -> SecurityStatusResponse:
         data_dir_permissions=data_perms,
         phonon_user_groups=groups,
     )
+
+
+# ── Service registry + control ────────────────────────────────────────────
+# Used by the new "Services" panel (rows with start/stop/restart buttons)
+# and the WS dashboard push. The "kind" field decides whether systemctl
+# runs as the daemon's user instance or via sudo against the system
+# instance. For prod-mode hosts the sudoers grant is set up by install.sh;
+# on dev hosts the system actions silently fail (caller marks the buttons
+# as disabled in the UI).
+
+SERVICES: dict[str, dict[str, str]] = {
+    # User-instance services — no sudo
+    "pipewire": {"kind": "user", "version_cmd": "pipewire --version 2>&1 | tail -1"},
+    "wireplumber": {
+        "kind": "user",
+        "version_cmd": (
+            "wireplumber --version 2>&1 | grep -o '[0-9]\\+\\.[0-9]\\+\\.[0-9]\\+' | head -1"
+        ),
+    },
+    "pipewire-pulse": {"kind": "user", "version_cmd": ""},
+    # System-instance services — need NOPASSWD sudoers grants
+    "bluetooth": {
+        "kind": "system",
+        "version_cmd": "bluetoothd --version 2>&1 | grep -o '[0-9]\\+\\.[0-9]\\+'",
+    },
+    "bluealsa": {"kind": "system", "version_cmd": ""},
+    "avahi-daemon": {
+        "kind": "system",
+        "version_cmd": "avahi-daemon --version 2>&1 | grep -o '[0-9]\\+\\.[0-9]\\+\\.[0-9]\\+'",
+    },
+    "phonon-bt-agent": {"kind": "system", "version_cmd": ""},
+    "phonon-bt-unblock": {"kind": "system", "version_cmd": ""},
+    "phonon-ptp4l": {"kind": "system", "version_cmd": ""},
+    "phonon-phc2sys": {"kind": "system", "version_cmd": ""},
+}
+
+# Allowed actions, mapped to systemctl verbs
+SERVICE_ACTIONS = {"start", "stop", "restart"}
+
+
+class ServiceState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    kind: str  # "user" | "system"
+    active: bool
+    enabled: bool
+    pid: int = 0
+    version: str = ""
+    can_control: bool = True
+
+
+async def _service_active_user(name: str) -> bool:
+    """Check active state for a user-instance service (no sudo)."""
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "--user",
+        "is-active",
+        f"{name}.service",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode().strip() == "active"
+
+
+async def _service_active_system(name: str) -> bool:
+    """Check active state for a system service (no sudo, read-only)."""
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "is-active",
+        f"{name}.service",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode().strip() == "active"
+
+
+async def _service_enabled(name: str, kind: str) -> bool:
+    args = ["systemctl"]
+    if kind == "user":
+        args.append("--user")
+    args.extend(["is-enabled", f"{name}.service"])
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    out, _ = await proc.communicate()
+    return out.decode().strip() in {"enabled", "static", "alias"}
+
+
+async def _can_sudo_systemctl(name: str) -> bool:
+    """Cheap probe: does sudo -n systemctl is-active <name> work? If yes,
+    the NOPASSWD entry is set up for this service; we'll accept control
+    requests against it. If sudo fails (asks password), button is disabled."""
+    proc = await asyncio.create_subprocess_exec(
+        "sudo",
+        "-n",
+        "/bin/systemctl",
+        "is-active",
+        f"{name}.service",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    # If the binary path or service is wrong sudo still returns 0 for the
+    # privilege check; sudo asks for password only when no NOPASSWD match.
+    return b"password" not in err.lower() and b"a terminal is required" not in err.lower()
+
+
+async def collect_services() -> list[ServiceState]:
+    """Snapshot every registered service in parallel."""
+    tasks: list[Any] = []
+    names: list[str] = []
+    for name, meta in SERVICES.items():
+        names.append(name)
+
+        async def _fetch(
+            n: str = name,
+            k: str = meta["kind"],
+            ver_cmd: str = meta["version_cmd"],
+        ) -> ServiceState:
+            if k == "user":
+                active = await _service_active_user(n)
+                can_control = True
+            else:
+                active = await _service_active_system(n)
+                can_control = await _can_sudo_systemctl(n)
+            enabled = await _service_enabled(n, k)
+            user_flag = "--user " if k == "user" else ""
+            pid_str = await _run(
+                f"systemctl {user_flag}show -p MainPID {n}.service 2>/dev/null | cut -d= -f2"
+            )
+            pid = int(pid_str) if pid_str.isdigit() and pid_str != "0" else 0
+            version = ""
+            if ver_cmd:
+                version = await _run(ver_cmd)
+            return ServiceState(
+                name=n,
+                kind=k,
+                active=active,
+                enabled=enabled,
+                pid=pid,
+                version=version,
+                can_control=can_control,
+            )
+
+        tasks.append(_fetch())
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: list[ServiceState] = []
+    for r in results:
+        if isinstance(r, ServiceState):
+            out.append(r)
+    return out
+
+
+@router.get("/services", response_model=list[ServiceState])
+async def list_services() -> list[ServiceState]:
+    return await collect_services()
+
+
+@router.post("/services/{name}/{action}")
+async def control_service(name: str, action: str) -> dict[str, str]:
+    if name not in SERVICES:
+        return {"status": "unknown_service", "name": name}
+    if action not in SERVICE_ACTIONS:
+        return {"status": "unknown_action", "action": action}
+    meta = SERVICES[name]
+    if meta["kind"] == "user":
+        cmd = ["systemctl", "--user", action, f"{name}.service"]
+    else:
+        cmd = ["sudo", "-n", "/bin/systemctl", action, f"{name}.service"]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate()
+    rc = proc.returncode or 0
+    text = (out + err).decode(errors="ignore").strip()
+    return {
+        "status": "ok" if rc == 0 else "failed",
+        "service": name,
+        "action": action,
+        "rc": str(rc),
+        "output": text[:500],
+    }
+
+
+@router.post("/audio-stack/restart")
+async def restart_audio_stack() -> dict[str, str]:
+    """Convenience: restart pipewire → wireplumber → pipewire-pulse in
+    that order. Useful when audio breaks (no devices, hung XRUN bridge).
+    All three are user services so no sudo needed."""
+    seq = ["pipewire", "wireplumber", "pipewire-pulse"]
+    results: list[str] = []
+    for name in seq:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "--user",
+            "restart",
+            f"{name}.service",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        rc = await proc.wait()
+        results.append(f"{name}={rc}")
+        # Small gap so the next service sees the previous one back up
+        await asyncio.sleep(0.5)
+    return {"status": "ok", "sequence": " ".join(results)}
+
+
+# ── Resource gauges (for the dashboard bars) ──────────────────────────────
+
+
+class Resources(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cpu_pct: float
+    cpu_count: int
+    cpu_load_1m: float
+    mem_total_mb: int
+    mem_used_mb: int
+    mem_pct: float
+    swap_total_mb: int
+    swap_used_mb: int
+    swap_pct: float
+    disk_total_gb: float
+    disk_used_gb: float
+    disk_pct: float
+    temp_c: float | None
+    net_rx_kbps: float
+    net_tx_kbps: float
+    xrun_total: int
+    throttled: int
+    alerts: list[str]
+
+
+_net_last: dict[str, tuple[float, int, int]] = {}  # iface -> (timestamp, rx, tx)
+
+
+async def _collect_resources() -> Resources:
+    import time
+
+    # CPU
+    cpu_count = os.cpu_count() or 1
+    load_1m = os.getloadavg()[0]
+    cpu_pct = round(load_1m / cpu_count * 100, 1)
+
+    # Memory
+    mem_total = mem_avail = swap_total = swap_used = 0
+    meminfo = Path("/proc/meminfo").read_text() if Path("/proc/meminfo").exists() else ""
+    for line in meminfo.splitlines():
+        if line.startswith("MemTotal:"):
+            mem_total = int(line.split()[1]) // 1024
+        elif line.startswith("MemAvailable:"):
+            mem_avail = int(line.split()[1]) // 1024
+        elif line.startswith("SwapTotal:"):
+            swap_total = int(line.split()[1]) // 1024
+        elif line.startswith("SwapFree:"):
+            swap_used = swap_total - int(line.split()[1]) // 1024
+    mem_used = mem_total - mem_avail
+    mem_pct = round(mem_used / mem_total * 100, 1) if mem_total else 0
+    swap_pct = round(swap_used / swap_total * 100, 1) if swap_total else 0
+
+    # Disk
+    disk_total = disk_used = disk_pct = 0.0
+    with contextlib.suppress(OSError):
+        st = os.statvfs("/")
+        disk_total = round(st.f_blocks * st.f_frsize / 1e9, 1)
+        disk_used = round((st.f_blocks - st.f_bfree) * st.f_frsize / 1e9, 1)
+        disk_pct = round(disk_used / disk_total * 100, 1) if disk_total else 0
+
+    # Temperature (Pi)
+    temp: float | None = None
+    temp_raw = await _run("vcgencmd measure_temp 2>/dev/null")
+    if "=" in temp_raw:
+        with contextlib.suppress(ValueError):
+            temp = float(temp_raw.split("=")[1].replace("'C", ""))
+    if temp is None:
+        # x86: thermal_zone0
+        tz = Path("/sys/class/thermal/thermal_zone0/temp")
+        if tz.is_file():
+            with contextlib.suppress(OSError, ValueError):
+                temp = round(int(tz.read_text().strip()) / 1000, 1)
+
+    # Network throughput on the default route's interface
+    rx_kbps = tx_kbps = 0.0
+    iface = ""
+    route = await _run("ip -4 route show default 2>/dev/null | head -1")
+    if "dev" in route:
+        parts = route.split()
+        if "dev" in parts:
+            i = parts.index("dev")
+            if i + 1 < len(parts):
+                iface = parts[i + 1]
+    if iface:
+        proc_dev = Path("/proc/net/dev")
+        if proc_dev.is_file():
+            for line in proc_dev.read_text().splitlines():
+                if line.lstrip().startswith(f"{iface}:"):
+                    cols = line.split()
+                    rx_bytes = int(cols[1])
+                    tx_bytes = int(cols[9])
+                    now = time.monotonic()
+                    prev = _net_last.get(iface)
+                    if prev:
+                        dt = now - prev[0]
+                        if dt > 0:
+                            rx_kbps = round((rx_bytes - prev[1]) * 8 / 1000 / dt, 1)
+                            tx_kbps = round((tx_bytes - prev[2]) * 8 / 1000 / dt, 1)
+                    _net_last[iface] = (now, rx_bytes, tx_bytes)
+                    break
+
+    # Throttle
+    throttled_val, t_alerts = parse_throttled(await _run("vcgencmd get_throttled 2>/dev/null"))
+
+    alerts = list(t_alerts)
+    if mem_total and mem_avail < mem_total * 0.10:
+        alerts.append(f"Low memory: {mem_avail} MB available")
+    if cpu_pct > 90:
+        alerts.append(f"High CPU: {cpu_pct}%")
+    if temp is not None and temp > 75:
+        alerts.append(f"High temp: {temp}°C")
+    if disk_pct > 90:
+        alerts.append(f"Disk almost full: {disk_pct}%")
+
+    # XRUN total — read pw-top cache so we don't double-spawn pw-top here
+    xrun_total = 0
+    try:
+        from phonon_stage.pipewire import cli as _cli
+
+        if _cli._pw_top_cache:
+            xrun_total = sum(int(v.get("err", 0)) for v in _cli._pw_top_cache.values())
+    except Exception:
+        pass
+
+    return Resources(
+        cpu_pct=cpu_pct,
+        cpu_count=cpu_count,
+        cpu_load_1m=load_1m,
+        mem_total_mb=mem_total,
+        mem_used_mb=mem_used,
+        mem_pct=mem_pct,
+        swap_total_mb=swap_total,
+        swap_used_mb=swap_used,
+        swap_pct=swap_pct,
+        disk_total_gb=disk_total,
+        disk_used_gb=disk_used,
+        disk_pct=disk_pct,
+        temp_c=temp,
+        net_rx_kbps=rx_kbps,
+        net_tx_kbps=tx_kbps,
+        xrun_total=xrun_total,
+        throttled=throttled_val,
+        alerts=alerts,
+    )
+
+
+@router.get("/resources", response_model=Resources)
+async def get_resources() -> Resources:
+    return await _collect_resources()

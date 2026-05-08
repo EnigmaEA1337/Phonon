@@ -84,6 +84,33 @@ async def _mode_loop() -> None:
         await asyncio.sleep(0.5)
 
 
+async def _system_loop() -> None:
+    """Push system snapshot (services + resource gauges) every 5 s.
+
+    Coalesces both reads (services state + resource gauges) into one
+    payload so the UI updates atomically without flicker. Two parallel
+    fetches per tick.
+    """
+    from phonon_stage.api.system import _collect_resources, collect_services
+
+    while True:
+        if clients:
+            try:
+                services, resources = await asyncio.gather(
+                    collect_services(), _collect_resources(), return_exceptions=True
+                )
+                payload: dict[str, Any] = {}
+                if not isinstance(services, BaseException):
+                    payload["services"] = [s.model_dump() for s in services]
+                if not isinstance(resources, BaseException):
+                    payload["resources"] = resources.model_dump()
+                if payload:
+                    await broadcast("system", payload)
+            except Exception:
+                logger.warning("ws.system_tick_failed", exc_info=True)
+        await asyncio.sleep(5)
+
+
 async def _alerts_loop() -> None:
     """Background task: push system alerts to clients every 10s."""
     last_alerts: list[str] = []
@@ -133,6 +160,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         _bg_tasks.append(asyncio.create_task(_levels_loop()))
         _bg_tasks.append(asyncio.create_task(_mode_loop()))
         _bg_tasks.append(asyncio.create_task(_alerts_loop()))
+        _bg_tasks.append(asyncio.create_task(_system_loop()))
 
     try:
         while True:

@@ -330,6 +330,26 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
+# System-instance services controllable from the UI's System panel
+# (start/stop/restart only — the daemon doesn't need to enable/disable).
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start bluetooth.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop bluetooth.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart bluetooth.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start bluealsa.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop bluealsa.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart bluealsa.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start avahi-daemon.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop avahi-daemon.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart avahi-daemon.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start phonon-bt-agent.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-bt-agent.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-bt-agent.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start phonon-bt-unblock.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-bt-unblock.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-bt-unblock.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-ptp4l.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-phc2sys.service
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 

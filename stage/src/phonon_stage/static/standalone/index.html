@@ -63,6 +63,26 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .tb-xrun.warn { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
 .tb-xrun.danger { color: var(--red); border-color: rgba(248,113,113,0.4);
   animation: pulse 1.5s infinite; }
+/* System dashboard rows */
+.svc-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px;
+  font-family: var(--font-m); font-size: 10px; }
+.svc-led { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.svc-kind { font-size: 8px; font-weight: 700; letter-spacing: 0.5px; min-width: 28px; }
+.svc-name { color: var(--text); font-weight: 600; }
+.svc-btn { background: var(--bg-1); color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 3px; width: 22px; height: 18px; font-size: 9px; cursor: pointer;
+  padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.svc-btn:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
+.svc-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.res-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px;
+  font-family: var(--font-m); font-size: 10px; }
+.res-label { width: 42px; color: var(--text-dim); font-weight: 600;
+  letter-spacing: 0.5px; flex-shrink: 0; }
+.res-bar { flex: 1; height: 8px; background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: 2px; overflow: hidden; }
+.res-fill { height: 100%; transition: width 0.3s ease; }
+.res-val { color: var(--text); min-width: 130px; text-align: right; font-size: 9px; }
 .tb-update { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
   border: 1px solid rgba(52,211,153,0.4); border-radius: 3px; font-family: var(--font-m);
   font-size: 9px; color: var(--green); cursor: pointer; font-weight: 700;
@@ -286,14 +306,6 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </svg>
     <span id="tb-update-label">UPDATE</span>
   </span>
-  <span class="tb-xrun" id="tb-xrun" title="XRUN — audio dropouts (parsed from pw-top)" onclick="alert(state.xruns ? JSON.stringify(state.xruns.nodes.filter(n=>n.err>0), null, 2) || 'No XRUN reported' : 'no data')">
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-      <line x1="12" y1="9" x2="12" y2="13"/>
-      <line x1="12" y1="17" x2="12.01" y2="17"/>
-    </svg>
-    <span class="tb-xrun-label" id="tb-xrun-label">0</span>
-  </span>
   <span class="tb-ptp" id="tb-ptp" title="PTP status (loading...)">
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="9"/>
@@ -321,11 +333,20 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- ─── Tab: General (default) ─── -->
   <div class="tab-pane active" data-tab-pane="general">
-    <!-- System Processes -->
+    <!-- System: Services + Resources -->
     <div class="section edit-only">
-      <div class="section-head" style="display:flex;align-items:center;gap:8px">System <span id="sys-status" style="font-weight:400;font-size:10px"></span></div>
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        System
+        <span id="sys-status" style="font-weight:400;font-size:10px"></span>
+        <span style="flex:1"></span>
+        <button class="btn" id="audio-stack-restart-btn" style="font-size:9px;padding:2px 8px;display:none"
+          onclick="restartAudioStack()" title="Restart pipewire → wireplumber → pipewire-pulse">
+          Restart audio stack
+        </button>
+      </div>
       <div class="section-body">
-        <div id="sys-processes" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+        <div id="sys-services" style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px"></div>
+        <div id="sys-resources" style="display:flex;flex-direction:column;gap:3px"></div>
       </div>
     </div>
 
@@ -1946,6 +1967,10 @@ function connectWS() {
       const msg = JSON.parse(e.data);
       if (msg.type === 'levels') vuLevels = msg.data;
       else if (msg.type === 'mode') applyMode(msg.data.mode);
+      else if (msg.type === 'system') {
+        if (msg.data.services) renderSystemServices(msg.data.services);
+        if (msg.data.resources) renderSystemResources(msg.data.resources);
+      }
       else if (msg.type === 'alerts') {
         const statusEl = document.getElementById('sys-status');
         if (statusEl) {
@@ -2046,68 +2071,110 @@ function segBar(pct, segs, color) {
   return html + '</div>';
 }
 
-async function refreshSystemStatus() {
-  const sys = await api('/system/status');
-  if (!sys) return;
-  const el = document.getElementById('sys-processes');
+// ── System dashboard (services + resources, driven by WS push) ───────
+function renderSystemServices(services) {
+  const el = document.getElementById('sys-services');
+  if (!el) return;
+  // Show "Restart audio stack" button only when one of the user audio
+  // services is actually down (otherwise it's redundant).
+  const audioDown = services.some(s =>
+    ['pipewire','wireplumber','pipewire-pulse'].includes(s.name) && !s.active);
+  const btn = document.getElementById('audio-stack-restart-btn');
+  if (btn) btn.style.display = audioDown ? '' : 'none';
 
-  // Process pills
-  let html = sys.processes.map(p => {
-    const led = p.running ? 'on' : 'off';
-    const ver = p.version ? `<span class="proc-ver">${p.version}</span>` : '';
-    return `<div class="proc-pill"><span class="proc-led ${led}"></span><span class="proc-name">${p.name}</span>${ver}</div>`;
+  el.innerHTML = services.map(s => {
+    const ledColor = s.active ? 'var(--green)' : 'var(--red)';
+    const kindBadge = s.kind === 'user' ? 'USER' : 'SYS';
+    const kindColor = s.kind === 'user' ? 'var(--cyan)' : 'var(--magenta)';
+    const ver = s.version ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">${s.version}</span>` : '';
+    const pid = s.pid ? `<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m)">pid ${s.pid}</span>` : '';
+    const disabled = !s.can_control;
+    const dt = disabled ? 'disabled title="Not controllable from UI — install.sh hasn\\\'t set up the sudoers grant"' : '';
+    return `<div class="svc-row">
+      <span class="svc-led" style="background:${ledColor};box-shadow:0 0 4px ${ledColor}"></span>
+      <span class="svc-kind" style="color:${kindColor}">${kindBadge}</span>
+      <span class="svc-name">${s.name}</span>
+      ${ver}
+      ${pid}
+      <span style="flex:1"></span>
+      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','start')">▶</button>
+      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','stop')">■</button>
+      <button class="svc-btn" ${dt} onclick="svcAction('${s.name}','restart')">↻</button>
+    </div>`;
   }).join('');
+}
 
-  // CPU gauge
-  html += `<div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
-    <div style="display:flex;justify-content:space-between;font-size:9px">
-      <span>CPU</span><span style="font-family:var(--font-m)">${sys.cpu_percent}%</span>
-    </div>
-    ${segBar(sys.cpu_percent, 16, '#06b6d4')}
-    <span class="proc-ver">load: ${sys.cpu_load_1m.toFixed(1)} / ${sys.cpu_load_5m.toFixed(1)} / ${sys.cpu_load_15m.toFixed(1)}</span>
-  </div>`;
+function renderSystemResources(r) {
+  const el = document.getElementById('sys-resources');
+  if (!el) return;
+  const row = (label, pct, valueText, color) =>
+    `<div class="res-row">
+      <span class="res-label">${label}</span>
+      <div class="res-bar"><div class="res-fill" style="width:${Math.min(100, Math.max(0, pct))}%;background:${color}"></div></div>
+      <span class="res-val">${valueText}</span>
+    </div>`;
 
-  // Memory gauge
-  html += `<div class="proc-pill" style="min-width:160px;flex-direction:column;align-items:stretch;gap:3px">
-    <div style="display:flex;justify-content:space-between;font-size:9px">
-      <span>Memory</span><span style="font-family:var(--font-m)">${sys.memory_percent}%</span>
-    </div>
-    ${segBar(sys.memory_percent, 16, '#34d399')}
-    <span class="proc-ver">${sys.memory_used_mb}/${sys.memory_total_mb} MB</span>
-  </div>`;
+  const cpuColor = r.cpu_pct > 90 ? 'var(--red)' : r.cpu_pct > 70 ? 'var(--yellow)' : 'var(--cyan)';
+  const memColor = r.mem_pct > 90 ? 'var(--red)' : r.mem_pct > 70 ? 'var(--yellow)' : 'var(--green)';
+  const swapColor = r.swap_pct > 50 ? 'var(--yellow)' : 'var(--text-dim)';
+  const diskColor = r.disk_pct > 90 ? 'var(--red)' : r.disk_pct > 75 ? 'var(--yellow)' : 'var(--cyan)';
+  const tempColor = (r.temp_c ?? 0) > 75 ? 'var(--red)' : (r.temp_c ?? 0) > 65 ? 'var(--yellow)' : 'var(--green)';
+  const xrunColor = r.xrun_total > 100 ? 'var(--red)' : r.xrun_total > 0 ? 'var(--yellow)' : 'var(--green)';
 
-  // USB buses
-  if (sys.usb_buses?.length) {
-    html += sys.usb_buses.map(b => {
-      const load = Math.min(b.device_count / 8 * 100, 100);
-      const spd = b.speed_mbps ? `${b.speed_mbps}M` : '';
-      return `<div class="proc-pill" style="min-width:140px;flex-direction:column;align-items:stretch;gap:3px">
-        <div style="display:flex;justify-content:space-between;font-size:9px">
-          <span>${b.bus} ${spd}</span><span style="font-family:var(--font-m)">${b.device_count} dev</span>
-        </div>
-        ${segBar(load, 12, '#a855f7')}
-        <span class="proc-ver">${b.devices.slice(0,3).map(d => d.split(' ').slice(0,3).join(' ')).join(', ')}</span>
-      </div>`;
-    }).join('');
+  let html = '';
+  html += row('CPU', r.cpu_pct, `${r.cpu_pct}% · load ${r.cpu_load_1m.toFixed(2)}`, cpuColor);
+  html += row('RAM', r.mem_pct, `${r.mem_used_mb} / ${r.mem_total_mb} MB`, memColor);
+  if (r.swap_total_mb > 0) {
+    html += row('SWAP', r.swap_pct, `${r.swap_used_mb} / ${r.swap_total_mb} MB`, swapColor);
   }
+  html += row('DISK', r.disk_pct, `${r.disk_used_gb} / ${r.disk_total_gb} GB`, diskColor);
+  if (r.temp_c !== null && r.temp_c !== undefined) {
+    html += row('TEMP', Math.min(r.temp_c, 100), `${r.temp_c}°C`, tempColor);
+  }
+  // Network: rx + tx in a single row, scale at 100 Mbps = 100k kbps
+  const netPct = Math.min(100, Math.max(r.net_rx_kbps, r.net_tx_kbps) / 1000);
+  html += row('NET',  netPct, `↓ ${r.net_rx_kbps} ↑ ${r.net_tx_kbps} kbps`, 'var(--cyan)');
+  // XRUN as a clamped percent (0 = green, >100 = red full)
+  const xrunPct = Math.min(100, r.xrun_total);
+  html += row('XRUN', xrunPct, `${r.xrun_total} dropouts`, xrunColor);
 
   el.innerHTML = html;
 
-  // Update system status badge
+  // Status badge in the header
   const statusEl = document.getElementById('sys-status');
   if (statusEl) {
-    if (!sys.alerts || sys.alerts.length === 0) {
+    if (!r.alerts || r.alerts.length === 0) {
       statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">OK</span>';
     } else {
-      const isNow = sys.alerts.some(a => a.includes('NOW') || a.includes('DOWN') || a.includes('OVER'));
+      const isNow = r.alerts.some(a => a.includes('NOW') || a.includes('OVER'));
       const color = isNow ? 'var(--red)' : 'var(--yellow)';
-      statusEl.innerHTML = `<span style="color:${color};font-weight:600">${sys.alerts[0]}</span>` +
-        (sys.alerts.length > 1 ? `<span style="color:var(--text-fade)"> +${sys.alerts.length - 1}</span>` : '');
+      statusEl.innerHTML = `<span style="color:${color};font-weight:600">${r.alerts[0]}</span>` +
+        (r.alerts.length > 1 ? `<span style="color:var(--text-fade)"> +${r.alerts.length - 1}</span>` : '');
     }
   }
 }
-refreshSystemStatus();
-setInterval(refreshSystemStatus, 30000);
+
+async function svcAction(name, action) {
+  const r = await api(`/system/services/${name}/${action}`, { method: 'POST' });
+  if (r && r.status !== 'ok') {
+    alert(`${action} ${name} failed: ${r.output || r.status}`);
+  }
+}
+
+async function restartAudioStack() {
+  const btn = document.getElementById('audio-stack-restart-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'restarting…'; }
+  await api('/system/audio-stack/restart', { method: 'POST' });
+  if (btn) { btn.disabled = false; btn.textContent = 'Restart audio stack'; }
+}
+
+// One-shot fetch on page load (the WS will take over after that)
+(async function _initialSystemFetch() {
+  const services = await api('/system/services');
+  const resources = await api('/system/resources');
+  if (services) renderSystemServices(services);
+  if (resources) renderSystemResources(resources);
+})();
 
 // Auto-sync bluealsa bridges every 30s (restart dead bridges after pause/resume)
 setInterval(async () => {

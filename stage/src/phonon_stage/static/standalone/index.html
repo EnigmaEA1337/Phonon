@@ -1015,7 +1015,9 @@ function renderMappings(mappings) {
 
   // VU segments for vertical bars (20 segments)
   const vuSegs = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('');
-  // Fader position: map dB (-90..+12) to % (100..0)
+  // Fader position: map dB (-12..0) to % (100..0). Linear scale —
+  // tight range so slider granularity is ~0.1 dB / px instead of the
+  // previous ~0.7 dB / px. For full silence use the M (mute) button.
   const dbToY = (db) => faderDbToY(db);
   // Knob angle: map 0-50ms to 0-270 degrees
   const delayToAngle = (ms) => Math.min(ms / 50, 1) * 270;
@@ -1090,8 +1092,7 @@ function renderMappings(mappings) {
           <div class="fader-handle" style="top:${faderY}%"></div>
         </div>
         <div class="fader-ticks">
-          <span>+12</span><span>+6</span><span class="unity">0</span><span>-6</span>
-          <span>-10</span><span>-20</span><span>-40</span><span>-∞</span>
+          <span class="unity">0</span><span>-3</span><span>-6</span><span>-9</span><span>-12</span>
         </div>
       </div>
       <div class="strip-db" id="gv-${m.id}">${m.gain_db.toFixed(1)} dB</div>
@@ -1103,14 +1104,20 @@ function renderMappings(mappings) {
   el.querySelectorAll('.knob-wrap').forEach(setupKnobDrag);
 }
 
-// Audio-curve fader mapping: top 70% = +12 to -40dB, bottom 30% = -40 to -90dB
+// Linear fader mapping: 0% (top) = 0 dB, 100% (bottom) = -12 dB.
+// Stored mappings with gains outside this window (e.g. legacy -40 dB
+// or +6 dB) are clamped on display so the handle stays on-screen,
+// but the persisted value is kept until the user drags.
+const FADER_DB_TOP = 0;
+const FADER_DB_BOTTOM = -12;
+const FADER_DB_RANGE = FADER_DB_TOP - FADER_DB_BOTTOM; // 12
 function faderYToDb(pct) {
-  if (pct <= 70) return 12 - (pct / 70) * 52;  // +12 to -40
-  return -40 - ((pct - 70) / 30) * 50;          // -40 to -90
+  // pct: 0 = top of fader, 100 = bottom
+  return FADER_DB_TOP - (pct / 100) * FADER_DB_RANGE;
 }
 function faderDbToY(db) {
-  if (db >= -40) return Math.max(0, Math.min(70, (12 - db) / 52 * 70));
-  return Math.min(100, 70 + (-40 - db) / 50 * 30);
+  const clamped = Math.max(FADER_DB_BOTTOM, Math.min(FADER_DB_TOP, db));
+  return ((FADER_DB_TOP - clamped) / FADER_DB_RANGE) * 100;
 }
 
 function setupFaderDrag(faderEl) {
@@ -1139,9 +1146,20 @@ function setupFaderDrag(faderEl) {
     e.preventDefault();
   };
   const onUp = () => { dragging = false; };
+  // Double-click resets to 0 dB (unity gain) — DAW convention.
+  const onDouble = (e) => {
+    const pct = faderDbToY(0);
+    handle.style.top = pct + '%';
+    fill.style.top = pct + '%';
+    const dbEl = document.getElementById('gv-' + mid);
+    if (dbEl) dbEl.textContent = '0.0 dB';
+    updateGain(mid, '0');
+    e.preventDefault();
+  };
 
   handle.addEventListener('mousedown', onDown);
   handle.addEventListener('touchstart', onDown, {passive: false});
+  faderEl.addEventListener('dblclick', onDouble);
   window.addEventListener('mousemove', onMove);
   window.addEventListener('touchmove', onMove, {passive: false});
   window.addEventListener('mouseup', onUp);

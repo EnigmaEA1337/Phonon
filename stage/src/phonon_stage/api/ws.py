@@ -161,12 +161,12 @@ async def _system_loop() -> None:
                     if bluealsa and bluealsa.active and bluealsa.pid:
                         if _last_bluealsa_pid and _last_bluealsa_pid != bluealsa.pid:
                             logger.info("ws.bluealsa_external_restart", pid=bluealsa.pid)
-                            from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+                            from phonon_stage.api.aes67 import sync_bt_state
 
                             async def _delayed_bluealsa_sync() -> None:
                                 await asyncio.sleep(2.0)
                                 try:
-                                    await sync_bridges_impl(buffer_ms=50)
+                                    await sync_bt_state(reason="external:bluealsa")
                                 except Exception:
                                     logger.warning("ws.bluealsa_sync_failed", exc_info=True)
 

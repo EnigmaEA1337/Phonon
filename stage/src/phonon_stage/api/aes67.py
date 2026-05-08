@@ -284,6 +284,54 @@ async def settings_changed() -> None:
     return
 
 
+async def sync_bt_state(reason: str) -> dict[str, int]:
+    """Lighter post-action cousin of replay_audio_state, scoped to BT.
+
+    Use cases:
+      * bluealsa restart — the bridge wrapper shells self-heal (their
+        `while true` loop reconnects arecord), but the new pacat that
+        takes over registers a fresh PW node ID, which orphans any
+        link the user had built against the previous one.
+      * bluetooth restart — controllers reset, devices momentarily
+        disconnect; the next sync rebuilds bridges for whoever's
+        still connected.
+      * BT connect via UI — bluealsa exposes a new PCM ~2s after
+        BlueZ confirms the connect; we want to bridge it without
+        forcing the user to click 'Sync Inputs/Outputs'.
+
+    Doesn't tear down existing bridges (cheaper than replay_audio_state).
+    Runs sync_bridges_impl to discover new/dropped PCMs, then resyncs
+    mappings with retry so links re-attach to current node IDs.
+    """
+    summary: dict[str, int] = {"bridges_active": 0, "mappings_total": 0, "mappings_ok": 0}
+
+    from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+
+    sync_result = await sync_bridges_impl(buffer_ms=50)
+    summary["bridges_active"] = int(sync_result.get("active", 0) or 0)
+
+    if _mapping_service is not None:
+        try:
+            resync = getattr(_mapping_service, "resync_mappings", None)
+            if resync is not None:
+                from phonon_stage.pipewire import cli as _cli
+
+                final: dict[str, int] = {"total": 0, "ok": 0, "skipped": 0}
+                for attempt in range(3):
+                    await asyncio.sleep(1.0 if attempt == 0 else 0.7)
+                    _cli._pw_dump_cache = []
+                    _cli._pw_dump_cache_time = 0.0
+                    final = await resync()
+                    if final.get("skipped", 0) == 0:
+                        break
+                summary["mappings_total"] = int(final.get("total", 0))
+                summary["mappings_ok"] = int(final.get("ok", 0))
+                logger.info("audio_replay.bt_mappings", reason=reason, **final)
+        except Exception:
+            logger.warning("audio_replay.bt_mappings_failed", exc_info=True)
+    return summary
+
+
 async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
     """Re-apply our app-level audio state after PipeWire/WirePlumber/
     pipewire-pulse have just been restarted.

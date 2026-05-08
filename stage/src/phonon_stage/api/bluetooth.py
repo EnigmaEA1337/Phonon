@@ -144,18 +144,19 @@ async def connect_device(request: Request, body: DeviceRequest) -> dict[str, str
 
     # Auto-sync — bluealsa exposes a fresh PCM for the device a moment
     # after BlueZ reports 'connected', so the user shouldn't have to
-    # click 'Sync Inputs/Outputs' to start hearing audio. We do this
-    # in the background (don't block the HTTP response).
+    # click 'Sync Inputs/Outputs' or 'Resync mappings'. sync_bt_state
+    # runs both: bridge reconcile + mapping re-attach, in background
+    # so the HTTP response doesn't block on the 3+ s settle delay.
     import asyncio as _asyncio
 
-    from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+    from phonon_stage.api.aes67 import sync_bt_state
 
     async def _delayed_sync() -> None:
         import contextlib as _ctx
 
         await _asyncio.sleep(2.0)
         with _ctx.suppress(Exception):
-            await sync_bridges_impl(buffer_ms=50)
+            await sync_bt_state(reason="bt.connect")
 
     request.app.state.background_tasks = getattr(request.app.state, "background_tasks", [])
     request.app.state.background_tasks.append(_asyncio.create_task(_delayed_sync()))

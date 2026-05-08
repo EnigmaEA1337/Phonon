@@ -592,7 +592,7 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     # routing the user had set up disappears silently. Stop/disable
     # don't replay (the user explicitly asked for a teardown).
     replay_summary: dict[str, int] | None = None
-    sync_summary: dict[str, object] | None = None
+    sync_summary: dict[str, int] | None = None
     if rc == 0 and action in {"start", "restart"}:
         if name in AUDIO_USER_SERVICES:
             await asyncio.sleep(1.5)
@@ -601,14 +601,15 @@ async def control_service(name: str, action: str) -> dict[str, str]:
             replay_summary = await replay_audio_state(reason=f"control.{name}.{action}")
         elif name in BT_RUNTIME_SERVICES:
             # Restarting bluealsa kills every `arecord -D bluealsa…` we
-            # had piped into pacat. Restarting bluetooth resets the
-            # adapter and disconnects every device. In both cases the
-            # right move is: wait for the daemon to settle, then run
-            # the same sync the UI's 'Sync Inputs/Outputs' button does.
+            # had piped into pacat. The wrapper `while true` re-spawns
+            # both, but the fresh pacat registers a new PW node ID —
+            # any user mapping built against the old one is orphan
+            # until a resync. sync_bt_state runs both: bridge reconcile
+            # + mapping re-attach.
             await asyncio.sleep(2.0)
-            from phonon_stage.api.bluealsa_bridge import sync_bridges_impl
+            from phonon_stage.api.aes67 import sync_bt_state
 
-            sync_summary = await sync_bridges_impl(buffer_ms=50)
+            sync_summary = await sync_bt_state(reason=f"control.{name}.{action}")
 
     response: dict[str, Any] = {
         "status": "ok" if rc == 0 else "failed",
@@ -620,10 +621,7 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     if replay_summary is not None:
         response["replay"] = replay_summary
     if sync_summary is not None:
-        response["bluealsa_sync"] = {
-            "active": sync_summary.get("active", 0),
-            "actions": len(sync_summary.get("bridges", []) or []),  # type: ignore[arg-type]
-        }
+        response["bluealsa_sync"] = sync_summary
     return response
 
 

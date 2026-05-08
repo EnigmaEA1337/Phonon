@@ -377,6 +377,11 @@ class ServiceState(BaseModel):
     pid: int = 0
     version: str = ""
     can_control: bool = True
+    # False when systemctl can't find a unit file for this service —
+    # typically a system unit on a dev workstation that hasn't run
+    # install.sh yet. The UI hides the action buttons and the status
+    # badge ignores such services.
+    installed: bool = True
 
 
 async def _service_active_user(name: str) -> bool:
@@ -418,6 +423,21 @@ async def _service_enabled(name: str, kind: str) -> bool:
     return out.decode().strip() in {"enabled", "static", "alias"}
 
 
+async def _service_installed(name: str, kind: str) -> bool:
+    """True if a unit file is registered for this service. Cheap read-only
+    check via `systemctl cat` — returns 0 if the unit exists, 1 with
+    'No files found for …' on stderr if not."""
+    args = ["systemctl"]
+    if kind == "user":
+        args.append("--user")
+    args.extend(["cat", f"{name}.service"])
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+    )
+    await proc.communicate()
+    return proc.returncode == 0
+
+
 async def _can_sudo_systemctl(name: str) -> bool:
     """Cheap probe: does sudo -n systemctl is-active <name> work? If yes,
     the NOPASSWD entry is set up for this service; we'll accept control
@@ -449,6 +469,16 @@ async def collect_services() -> list[ServiceState]:
             k: str = meta["kind"],
             ver_cmd: str = meta["version_cmd"],
         ) -> ServiceState:
+            if not await _service_installed(n, k):
+                return ServiceState(
+                    name=n,
+                    kind=k,
+                    active=False,
+                    enabled=False,
+                    can_control=False,
+                    installed=False,
+                    version="not installed",
+                )
             if k == "user":
                 active = await _service_active_user(n)
                 can_control = True
@@ -472,6 +502,7 @@ async def collect_services() -> list[ServiceState]:
                 pid=pid,
                 version=version,
                 can_control=can_control,
+                installed=True,
             )
 
         tasks.append(_fetch())
@@ -495,6 +526,15 @@ async def control_service(name: str, action: str) -> dict[str, str]:
     if action not in SERVICE_ACTIONS:
         return {"status": "unknown_action", "action": action}
     meta = SERVICES[name]
+    if not await _service_installed(name, meta["kind"]):
+        return {
+            "status": "not_installed",
+            "service": name,
+            "output": (
+                f"{name}.service has no unit file on this host — "
+                "run install.sh or skip this service."
+            ),
+        }
     if meta["kind"] == "user":
         cmd = ["systemctl", "--user", action, f"{name}.service"]
     else:

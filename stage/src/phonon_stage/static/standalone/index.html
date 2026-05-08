@@ -84,6 +84,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border-radius: 50%; animation: svc-spin 0.7s linear infinite;
   vertical-align: middle; }
 @keyframes svc-spin { to { transform: rotate(360deg); } }
+/* Boot enable/disable toggle: small iOS-style switch on each service row */
+.svc-toggle { display: inline-flex; align-items: center; gap: 5px;
+  font-size: 9px; color: var(--text-dim); font-family: var(--font-m);
+  letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer;
+  user-select: none; padding: 0 4px; }
+.svc-toggle.disabled { opacity: 0.35; cursor: not-allowed; }
+.svc-switch { width: 22px; height: 11px; background: var(--bg-1);
+  border: 1px solid var(--border); border-radius: 7px; position: relative;
+  transition: background 0.15s, border-color 0.15s; flex-shrink: 0; }
+.svc-switch::after { content: ''; position: absolute; left: 1px; top: 1px;
+  width: 7px; height: 7px; background: var(--text-dim); border-radius: 50%;
+  transition: left 0.15s, background 0.15s; }
+.svc-toggle.on .svc-switch { background: var(--cyan); border-color: var(--cyan); }
+.svc-toggle.on .svc-switch::after { left: 12px; background: var(--bg-0); }
 .res-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px;
   font-family: var(--font-m); font-size: 10px; }
 .res-label { width: 42px; color: var(--text-dim); font-weight: 600;
@@ -2141,7 +2155,8 @@ function renderSystemServices(services) {
   if (btn) btn.style.display = audioDown ? '' : 'none';
 
   if (!el) { updateSysStatus(); return; }
-  const gerund = { start: 'starting', stop: 'stopping', restart: 'restarting' };
+  const gerund = { start: 'starting', stop: 'stopping', restart: 'restarting',
+                   enable: 'enabling', disable: 'disabling' };
   el.innerHTML = services.map(s => {
     const notInstalled = s.installed === false;
     const pending = _pendingActions.get(s.name);
@@ -2175,6 +2190,24 @@ function renderSystemServices(services) {
       const inner = isThis ? '<span class="svc-spinner"></span>' : glyph;
       return `<button class="svc-btn" ${dt} onclick="svcAction('${s.name}','${verb}')">${inner}</button>`;
     };
+    // Boot toggle (enable/disable). Disabled while another action is
+    // pending, while a toggle action of its own is pending we show a
+    // spinner inside the switch slot.
+    const togglePending = pending === 'enable' || pending === 'disable';
+    const toggleDisabled = !s.can_control || notInstalled || (!!pending && !togglePending);
+    const toggleVerb = s.enabled ? 'disable' : 'enable';
+    const toggleClass = `svc-toggle ${s.enabled ? 'on' : ''} ${toggleDisabled ? 'disabled' : ''}`;
+    const toggleClick = toggleDisabled ? '' : `onclick="svcAction('${s.name}','${toggleVerb}')"`;
+    const toggleTitle = notInstalled
+      ? 'Not installed'
+      : !s.can_control
+        ? 'Not controllable from UI'
+        : s.enabled ? 'Boot enabled — click to disable at boot'
+                    : 'Boot disabled — click to enable at boot';
+    const toggleSwitch = togglePending
+      ? '<span class="svc-spinner" style="color:var(--yellow)"></span>'
+      : '<span class="svc-switch"></span>';
+    const toggle = `<span class="${toggleClass}" ${toggleClick} title="${toggleTitle}">${toggleSwitch}boot</span>`;
     return `<div class="svc-row" style="${nameStyle}">
       <span class="svc-led" style="background:${ledColor};box-shadow:${ledGlow}"></span>
       <span class="svc-kind" style="color:${kindColor}">${kindBadge}</span>
@@ -2184,6 +2217,7 @@ function renderSystemServices(services) {
       ${pendingTag}
       ${errorTag}
       <span style="flex:1"></span>
+      ${toggle}
       ${btn('start', '▶')}
       ${btn('stop', '■')}
       ${btn('restart', '↻')}

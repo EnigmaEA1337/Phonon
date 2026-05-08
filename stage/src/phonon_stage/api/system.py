@@ -365,7 +365,7 @@ SERVICES: dict[str, dict[str, str]] = {
 }
 
 # Allowed actions, mapped to systemctl verbs
-SERVICE_ACTIONS = {"start", "stop", "restart"}
+SERVICE_ACTIONS = {"start", "stop", "restart", "enable", "disable"}
 
 
 class ServiceState(BaseModel):

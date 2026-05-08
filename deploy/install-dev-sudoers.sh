@@ -53,15 +53,13 @@ ${USER_NAME} ALL=(ALL) NOPASSWD: /bin/hciconfig
 ${USER_NAME} ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
 HEADER
     emit_rule "is-active *"
-    for verb in start stop restart; do
-        for svc in bluetooth bluealsa avahi-daemon \
-                   phonon-bt-agent phonon-bt-unblock \
-                   phonon-ptp4l phonon-phc2sys; do
-            emit_rule "${verb} ${svc}.service"
-        done
-    done
-    for verb in enable disable; do
-        for svc in phonon-ptp4l phonon-phc2sys; do
+    CONTROLLABLE=(
+        bluetooth bluealsa avahi-daemon
+        phonon-bt-agent phonon-bt-unblock
+        phonon-ptp4l phonon-phc2sys
+    )
+    for verb in start stop restart enable disable; do
+        for svc in "${CONTROLLABLE[@]}"; do
             emit_rule "${verb} ${svc}.service"
         done
     done

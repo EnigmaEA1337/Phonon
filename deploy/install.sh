@@ -387,6 +387,28 @@ chmod 440 /etc/sudoers.d/phonon
 echo "${REPO_ROOT}" > "${CONFIG_DIR}/repo-path"
 chmod 0644 "${CONFIG_DIR}/repo-path"
 
+# The /system/update/status endpoint runs as the daemon (phonon user) and
+# does `git fetch` against REPO_ROOT — that needs read+exec on every
+# parent dir down to the repo, plus group write on .git/ so the fetch
+# can update FETCH_HEAD and the objects store. When the repo lives in a
+# user home (e.g. /home/manager/Phonon) the default 700 perms on the
+# home directory block phonon from even traversing in. Fix both:
+#   * +x on every ancestor so phonon can cd through
+#   * group ownership = phonon, g+rwX recursive on the repo
+# This is destructive enough that we only do it when a repo path is set
+# AND it's not under /opt (where install.sh deployed copies live with
+# perms already correct).
+if [ -d "${REPO_ROOT}" ] && [ "${REPO_ROOT#/opt/}" = "${REPO_ROOT}" ]; then
+    parent="${REPO_ROOT}"
+    while [ "${parent}" != "/" ] && [ "${parent}" != "" ]; do
+        chmod o+x "${parent}" 2>/dev/null || true
+        parent="$(dirname "${parent}")"
+    done
+    chgrp -R "${PHONON_GROUP}" "${REPO_ROOT}" 2>/dev/null || true
+    chmod -R g+rwX "${REPO_ROOT}" 2>/dev/null || true
+    echo "  Repo perms granted to ${PHONON_GROUP} group (read/write for fetch+pull)"
+fi
+
 if [ -f "${REPO_ROOT}/deploy/update.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/update.sh"
     ln -sf "${REPO_ROOT}/deploy/update.sh" /usr/local/sbin/phonon-update

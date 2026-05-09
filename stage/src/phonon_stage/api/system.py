@@ -736,8 +736,13 @@ async def _read_cpu_pct() -> float:
         idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
         return sum(parts), idle
 
+    # Sample over 800 ms — short enough to keep the WS tick responsive
+    # (system_loop fires every 5 s), long enough to smooth out the sub-
+    # second bursts of polkit / systemd / wireplumber that on a Pi 3
+    # would otherwise make cpu_pct flip between 1% and 90% between
+    # consecutive ticks. Top uses 1 s for the same reason.
     t1, i1 = _read()
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0.8)
     t2, i2 = _read()
     dt, di = t2 - t1, i2 - i1
     if dt <= 0:
@@ -828,7 +833,10 @@ async def _collect_resources() -> Resources:
     alerts = list(t_alerts)
     if mem_total and mem_avail < mem_total * 0.10:
         alerts.append(f"Low memory: {mem_avail} MB available")
-    if cpu_pct > 90:
+    # Pair the instantaneous cpu_pct with the 1-min load average so a
+    # single 800 ms burst doesn't flip the badge to DEGRADED. Alert
+    # only when both are sustained.
+    if cpu_pct > 90 and load_1m / cpu_count > 0.85:
         alerts.append(f"High CPU: {cpu_pct}%")
     if temp is not None and temp > 75:
         alerts.append(f"High temp: {temp}°C")

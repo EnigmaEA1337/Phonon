@@ -461,6 +461,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
           <button class="btn btn-primary" id="bt-power" onclick="btPower()">Power ON</button>
           <button class="btn" id="bt-scan" onclick="btScan()">Scan</button>
           <button class="btn" onclick="btSyncBridges()" title="Create PipeWire bridges for connected BT devices">Sync Inputs/Outputs</button>
+          <button class="btn" onclick="btFactoryReset()" style="color:var(--red);border-color:var(--red)" title="Wipe every paired device + discovery cache, restart the BT stack. Use when pairings get stuck.">Factory Reset BT</button>
           <span style="font-size:9px;color:var(--text-dim)">Buffer</span>
           <input type="range" min="20" max="200" step="10" value="50" id="bt-buffer-slider"
             style="width:60px;accent-color:var(--cyan)" oninput="document.getElementById('bt-buffer-val').textContent=this.value+'ms'">
@@ -1533,6 +1534,29 @@ async function btSyncBridges() {
   const result = await api(`/bluealsa/sync?buffer_ms=${buf}`, { method: 'POST' });
   document.getElementById('bt-status').textContent = result ? `${result.active} bridge(s) active` : 'Sync failed';
   await refreshAll();
+}
+
+async function btFactoryReset() {
+  // Two-step confirmation: a generic confirm then a typed-token check
+  // so a misclick can't wipe every paired device.
+  if (!confirm('Wipe ALL paired Bluetooth devices and discovery cache?\n\nYou will need to re-pair every speaker / phone after this. The BT services restart for ~5 s during the reset.')) return;
+  const token = prompt('Type RESET to confirm:');
+  if (token !== 'RESET') {
+    document.getElementById('bt-status').textContent = 'Reset cancelled (token mismatch)';
+    return;
+  }
+  document.getElementById('bt-status').textContent = 'Factory-resetting BT...';
+  const r = await api('/bluetooth/factory-reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: 'BT_RESET' }),
+  });
+  if (r?.status === 'started') {
+    document.getElementById('bt-status').textContent = 'BT reset running… refreshing in 8 s';
+    setTimeout(async () => { await refreshAll(); document.getElementById('bt-status').textContent = 'BT reset done — re-pair your devices'; }, 8000);
+  } else {
+    document.getElementById('bt-status').textContent = 'Reset failed: ' + (r?.detail || r?.status || 'unknown');
+  }
 }
 
 // ── Stages ───────────────────────────────────────────

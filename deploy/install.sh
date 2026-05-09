@@ -359,6 +359,7 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-reset
 # System-instance services controllable from the UI's System panel
 # (start/stop/restart only — the daemon doesn't need to enable/disable).
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *
@@ -431,6 +432,12 @@ if [ -f "${REPO_ROOT}/deploy/update.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/update.sh"
     ln -sf "${REPO_ROOT}/deploy/update.sh" /usr/local/sbin/phonon-update
     echo "  Self-update wired (sudo phonon-update available, log at /var/log/phonon/update.log)"
+fi
+
+if [ -f "${REPO_ROOT}/deploy/bt-reset.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/bt-reset.sh"
+    ln -sf "${REPO_ROOT}/deploy/bt-reset.sh" /usr/local/sbin/phonon-bt-reset
+    echo "  BT factory reset wired (sudo phonon-bt-reset available, log at /var/log/phonon/bt-reset.log)"
 fi
 
 # Enable persistent journal

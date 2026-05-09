@@ -197,6 +197,40 @@ async def unpair_device(request: Request, body: DeviceRequest) -> dict[str, str]
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/factory-reset", status_code=202)
+async def factory_reset(body: dict[str, str] | None = None) -> dict[str, str]:
+    """Wipe every paired device and discovery cache from BlueZ, restart
+    the BT stack. Caller must include {"confirm": "BT_RESET"} in the body
+    to avoid accidental clicks. Runs phonon-bt-reset (NOPASSWD sudo)
+    in the background; result is in /var/log/phonon/bt-reset.log."""
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    if not body or body.get("confirm") != "BT_RESET":
+        raise HTTPException(
+            status_code=400,
+            detail="Missing confirmation — POST {\"confirm\": \"BT_RESET\"} to proceed",
+        )
+    script = _Path("/usr/local/sbin/phonon-bt-reset")
+    if not (script.is_file() or script.is_symlink()):
+        raise HTTPException(
+            status_code=503,
+            detail="phonon-bt-reset script not installed — run install.sh on this host",
+        )
+    proc = await _asyncio.create_subprocess_exec(
+        "sudo", "-n", str(script),
+        stdin=_asyncio.subprocess.DEVNULL,
+        stdout=_asyncio.subprocess.DEVNULL,
+        stderr=_asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {
+        "status": "started",
+        "pid": str(proc.pid),
+        "log": "/var/log/phonon/bt-reset.log",
+    }
+
+
 @router.get("/devices", response_model=list[BluetoothDeviceResponse])
 async def list_paired_devices(
     request: Request, controller_address: str

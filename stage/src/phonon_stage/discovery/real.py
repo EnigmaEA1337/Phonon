@@ -51,9 +51,7 @@ class RealDiscoveryBackend:
             # Last-resort fallback: let zeroconf rename us with a numeric
             # suffix so we at least come up. The TXT 'stage_id' stays the
             # canonical identifier; only the mDNS instance name drifts.
-            logger.warning(
-                "discovery.name_collision_falling_back_to_rename", stage_id=stage_id
-            )
+            logger.warning("discovery.name_collision_falling_back_to_rename", stage_id=stage_id)
             await self._azc.async_register_service(
                 self._info, allow_name_change=True, cooperating_responders=True
             )

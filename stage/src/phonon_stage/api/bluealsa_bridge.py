@@ -170,9 +170,8 @@ async def create_bridge(
     existing_mods = await _run("pactl list modules short")
     for line in existing_mods.splitlines():
         # Match the exact name=token to avoid 'bt_1337' wiping 'bt_1337-2_in'.
-        if (
-            ("module-alsa-source" in line or "module-alsa-sink" in line)
-            and (f"{sink_or_source}={name_token}" in line)
+        if ("module-alsa-source" in line or "module-alsa-sink" in line) and (
+            f"{sink_or_source}={name_token}" in line
         ):
             old_mid = line.split()[0]
             await _run(f"pactl unload-module {old_mid}")
@@ -191,7 +190,7 @@ async def create_bridge(
         period = max(64, int(play_rate * buffer_ms / 1000))
         module_id = await _run(
             "pactl load-module module-alsa-sink "
-            f'sink_name=bt_{safe_name} '
+            f"sink_name=bt_{safe_name} "
             f'sink_properties=device.description="{safe_name}-BT" '
             f'device="{bluealsa_pcm}" '
             f"rate={play_rate} channels=2 format=s16le "
@@ -218,7 +217,7 @@ async def create_bridge(
         period = max(64, int(cap_rate * buffer_ms / 1000))
         module_id = await _run(
             "pactl load-module module-alsa-source "
-            f'source_name=bt_{safe_name}_in '
+            f"source_name=bt_{safe_name}_in "
             f'source_properties=device.description="{safe_name}-BT-In" '
             f'device="{bluealsa_pcm}" '
             f"rate={cap_rate} channels=2 format=s16le "
@@ -355,9 +354,7 @@ async def bridge_health() -> dict[str, object]:
     # loaded modules once and look up by id.
     loaded_modules_raw = await _run("pactl list modules short")
     loaded_module_ids = {
-        line.split("\t", 1)[0]
-        for line in loaded_modules_raw.splitlines()
-        if line.strip()
+        line.split("\t", 1)[0] for line in loaded_modules_raw.splitlines() if line.strip()
     }
 
     bridges_health: list[dict[str, object]] = []

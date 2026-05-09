@@ -122,7 +122,7 @@ async def scan_devices(
                 paired=d.paired,
                 connected=d.connected,
                 icon=d.icon,
-                rssi=getattr(d, 'rssi', 0),
+                rssi=getattr(d, "rssi", 0),
             )
             for d in devices
         ]
@@ -209,7 +209,7 @@ async def factory_reset(body: dict[str, str] | None = None) -> dict[str, str]:
     if not body or body.get("confirm") != "BT_RESET":
         raise HTTPException(
             status_code=400,
-            detail="Missing confirmation — POST {\"confirm\": \"BT_RESET\"} to proceed",
+            detail='Missing confirmation — POST {"confirm": "BT_RESET"} to proceed',
         )
     script = _Path("/usr/local/sbin/phonon-bt-reset")
     if not (script.is_file() or script.is_symlink()):
@@ -218,7 +218,9 @@ async def factory_reset(body: dict[str, str] | None = None) -> dict[str, str]:
             detail="phonon-bt-reset script not installed — run install.sh on this host",
         )
     proc = await _asyncio.create_subprocess_exec(
-        "sudo", "-n", str(script),
+        "sudo",
+        "-n",
+        str(script),
         stdin=_asyncio.subprocess.DEVNULL,
         stdout=_asyncio.subprocess.DEVNULL,
         stderr=_asyncio.subprocess.DEVNULL,

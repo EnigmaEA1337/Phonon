@@ -217,10 +217,14 @@ async def create_bridge(
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback")
 
     elif device_type == "capture":
-        # Same rate matching as playback above. Most A2DP sources are
-        # 44.1 kHz (phones over SBC) but a Bluetooth handsfree gateway
-        # could negotiate 48 kHz — pass-through what bluealsa says.
-        cap_rate = rate if rate > 0 else 44100
+        # Capture bridges feed PipeWire / AES67 send, which run at 48 kHz.
+        # Forcing the null-sink to 48 kHz means bluealsa does the
+        # 44.1->48 resample internally inside arecord (well-tested
+        # codepath), and the rest of the chain is rate-pure. Letting
+        # the null-sink track the negotiated rate (44.1 kHz for SBC
+        # phones) instead pushed the resample into PipeWire's graph,
+        # which on a Pi 3 audibly crackles when AES67 is also active.
+        cap_rate = 48000
         # For capture (phone→Pi): create a pipe-source that exposes as Audio/Source
         # arecord from bluealsa → write to FIFO → pw-cat reads FIFO as source
         # Simpler: use module-null-sink but expose the MONITOR as the usable source

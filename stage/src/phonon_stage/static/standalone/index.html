@@ -2388,13 +2388,17 @@ function renderSystemResources(r) {
       <span class="res-val">${valueText}</span>
     </div>`;
 
-  // Red only when EMA-smoothed cpu_pct AND load average both agree the
-  // system is actually struggling. Single instantaneous bursts from our
-  // own polling can hit 90+ momentarily without the system being loaded.
+  // Bar value = 1-minute load avg as % of cores. That's the metric
+  // that answers 'is my Pi struggling right now over the last minute?'
+  // — naturally smooth, no busts. The instantaneous /proc/stat-derived
+  // cpu_pct stays in the right-side text as a 'live spike' indicator.
+  // A short subprocess burst (collect_services spawns 50+ forks every
+  // 5 s) can hit 90+ for 200 ms while load stays under 1.0 — by
+  // showing load on the bar, the user sees the truth.
   const loadFrac = r.cpu_load_1m / Math.max(1, r.cpu_count);
-  const cpuOverloaded = r.cpu_pct > 90 && loadFrac > 0.85;
-  const cpuColor = cpuOverloaded ? 'var(--red)'
-                 : r.cpu_pct > 70 ? 'var(--yellow)'
+  const cpuBarPct = Math.min(100, Math.round(loadFrac * 100));
+  const cpuColor = loadFrac > 0.90 ? 'var(--red)'
+                 : loadFrac > 0.70 ? 'var(--yellow)'
                  : 'var(--cyan)';
   const memColor = r.mem_pct > 90 ? 'var(--red)' : r.mem_pct > 70 ? 'var(--yellow)' : 'var(--green)';
   const swapColor = r.swap_pct > 50 ? 'var(--yellow)' : 'var(--text-dim)';
@@ -2403,7 +2407,9 @@ function renderSystemResources(r) {
   const xrunColor = r.xrun_total > 100 ? 'var(--red)' : r.xrun_total > 0 ? 'var(--yellow)' : 'var(--green)';
 
   let html = '';
-  html += row('CPU', r.cpu_pct, `${r.cpu_pct}% · load ${r.cpu_load_1m.toFixed(2)}`, cpuColor);
+  // Bar uses load% (smooth), text shows both: load% (sustained) and
+  // live cpu_pct (instant — useful for spotting bursts).
+  html += row('CPU', cpuBarPct, `${cpuBarPct}% sustained · ${r.cpu_pct}% live`, cpuColor);
   html += row('RAM', r.mem_pct, `${r.mem_used_mb} / ${r.mem_total_mb} MB`, memColor);
   if (r.swap_total_mb > 0) {
     html += row('SWAP', r.swap_pct, `${r.swap_used_mb} / ${r.swap_total_mb} MB`, swapColor);

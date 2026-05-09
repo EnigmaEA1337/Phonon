@@ -88,18 +88,29 @@ async def _read_journal_state() -> tuple[str, int | None]:
     ptp4l and the phonon-ptp4l systemd service — `-u` would only see the
     service variant.
     """
+    # Pull a much larger window than 50 lines: PMC subscribers (one per
+    # /ptp/status hit) produce ~12 'subscriber timed out' lines per minute
+    # that quickly evict the actual state-transition logs in any short tail.
+    # 2000 lines covers ~2-3 hours of subscriber spam plus the boot lines.
     proc = await asyncio.create_subprocess_exec(
         "journalctl",
         "-t",
         "ptp4l",
         "-n",
-        "50",
+        "2000",
         "--no-pager",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
     out, _ = await proc.communicate()
-    text = out.decode(errors="ignore")
+    raw = out.decode(errors="ignore")
+    if not raw.strip():
+        return "unknown", None
+    # Drop the noisy PMC subscriber lines — they are not state transitions
+    # and would otherwise crowd out the role markers we actually care about.
+    text = "\n".join(
+        line for line in raw.splitlines() if "subscriber" not in line and "timed out" not in line
+    )
     if not text.strip():
         return "unknown", None
     role = "unknown"

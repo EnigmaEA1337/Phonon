@@ -1847,6 +1847,15 @@ async function openUpdateModal() {
 async function applyUpdate() {
   const btn = document.getElementById('update-apply-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'APPLYING...'; }
+  // Snapshot uptime so the poller can detect a restart that's too
+  // fast to catch as 'offline' (fast path = ~5 s gap, we'd miss it
+  // between two 1.5 s polls and time out at 90 s).
+  let preUptime = 999999;
+  try {
+    const h = await api('/health');
+    if (h && typeof h.uptime_seconds === 'number') preUptime = h.uptime_seconds;
+  } catch (_) {}
+  window._preUpdateUptime = preUptime;
   const r = await api('/system/update/apply', { method: 'POST' });
   if (!r || r.status !== 'started') {
     alert('Update failed: ' + (r?.detail || r?.status || 'unknown error'));
@@ -1894,7 +1903,15 @@ async function applyUpdate() {
 
 async function pollHealthUntilUp() {
   const stateEl = document.getElementById('update-state');
-  // Wait a bit before polling (the daemon hasn't restarted yet)
+  // Two signals indicate the daemon has restarted:
+  //   1) we briefly saw it offline (slow path / full reinstall)
+  //   2) uptime_seconds dropped below the pre-update reading
+  //      (fast path — restart happens between two polls, we never
+  //      see 'down' but the new process has uptime < the old one).
+  const preUptime = window._preUpdateUptime ?? 0;
+  const restartedSignal = (uptime) => {
+    return uptime < preUptime - 1 || uptime < 30;
+  };
   await new Promise(r => setTimeout(r, 4000));
   let downSeen = false;
   const start = Date.now();
@@ -1903,8 +1920,7 @@ async function pollHealthUntilUp() {
       const r = await fetch(API + '/health', { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        if (downSeen && j.uptime_seconds < 30) {
-          // Came back AND it's a fresh process
+        if ((downSeen || restartedSignal(j.uptime_seconds))) {
           if (stateEl) stateEl.textContent = '✓ daemon back up — refreshing UI…';
           await new Promise(r => setTimeout(r, 800));
           location.reload();

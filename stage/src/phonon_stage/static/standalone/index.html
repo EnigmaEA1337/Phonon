@@ -2055,7 +2055,7 @@ async function aes67Subscribe(key, suggestedName) {
   const r = await api('/aes67/subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, name: suggestedName, loop: true }),
+    body: JSON.stringify({ key, name: suggestedName, loop: false }),
   });
   document.getElementById('aes67-status').textContent = r ? `subscribed as ${r.name}` : 'failed';
   await refreshAll();

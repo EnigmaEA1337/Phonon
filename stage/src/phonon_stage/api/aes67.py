@@ -93,7 +93,7 @@ class CreateStreamRequest(BaseModel):
     channels: int = Field(default=2, ge=1, le=8)
     sample_rate: int = Field(default=48000)
     audio_format: str = Field(default="S16BE")
-    ptime_ms: float = Field(default=1.0, ge=0.125, le=10.0)
+    ptime_ms: float = Field(default=4.0, ge=0.125, le=10.0)
     loop: bool = Field(default=True, description="IP_MULTICAST_LOOP — true for local-host testing")
     # Receiver-only — ignored for send streams.
     recv_buffer_ms: int | None = Field(
@@ -793,7 +793,11 @@ class SubscribeRequest(BaseModel):
 
     key: str
     name: str = Field(min_length=1, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
-    loop: bool = True
+    # Default to False for subscribed recv streams — IP_MULTICAST_LOOP
+    # only affects packets we *send*, so it's a no-op on a pure receiver
+    # socket. Leaving it true just lit the ↻ icon in the UI for no
+    # actual loopback behaviour.
+    loop: bool = False
 
 
 @router.post("/subscribe", status_code=201)

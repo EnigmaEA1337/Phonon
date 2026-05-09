@@ -81,6 +81,80 @@ async def _ptp4l_interface() -> str:
     return m.group(1) if m else ""
 
 
+async def _query_pmc_state() -> tuple[str, int | None]:
+    """Ask ptp4l directly via the PTP Management Client (pmc).
+
+    Way more reliable than scraping the journal: a node running stably
+    as MASTER for hours emits no log lines (only the original transition,
+    which has already rolled out), so the journal-based parser fell back
+    to 'unknown'. pmc returns the live `portState` of port 1, regardless
+    of how long the daemon has been running.
+
+    Two queries:
+      * PORT_DATA_SET → portState (LISTENING / MASTER / SLAVE …)
+      * CURRENT_DATA_SET → meanPathDelay + offsetFromMaster (slave only)
+
+    Both pmc invocations run via sudo because pmc binds to a root-owned
+    UDS socket exposed by ptp4l. The NOPASSWD grant is scoped exactly
+    to these two read-only queries by install.sh.
+    """
+    role = "unknown"
+    offset_ns: int | None = None
+    proc = await asyncio.create_subprocess_exec(
+        "sudo",
+        "-n",
+        "/usr/sbin/pmc",
+        "-u",
+        "-b",
+        "0",
+        "GET",
+        "PORT_DATA_SET",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except TimeoutError:
+        proc.kill()
+        return role, offset_ns
+    if proc.returncode != 0:
+        return role, offset_ns
+    text = out.decode(errors="ignore")
+    m = re.search(r"portState\s+(\w+)", text)
+    if m:
+        s = m.group(1).upper()
+        if s == "MASTER":
+            role = "grandmaster"
+        elif s in ("SLAVE", "UNCALIBRATED"):
+            role = "slave"
+        elif s == "LISTENING":
+            role = "listening"
+
+    # Pull current offset for slave nodes
+    if role == "slave":
+        proc2 = await asyncio.create_subprocess_exec(
+            "sudo",
+            "-n",
+            "/usr/sbin/pmc",
+            "-u",
+            "-b",
+            "0",
+            "GET",
+            "CURRENT_DATA_SET",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=2.0)
+            if proc2.returncode == 0:
+                m2 = re.search(r"offsetFromMaster\s+(-?\d+)", out2.decode(errors="ignore"))
+                if m2:
+                    offset_ns = int(m2.group(1))
+        except TimeoutError:
+            proc2.kill()
+    return role, offset_ns
+
+
 async def _read_journal_state() -> tuple[str, int | None]:
     """Try to extract role + offset from the most recent ptp4l log lines.
 
@@ -294,7 +368,13 @@ async def ptp_status() -> PtpStatus:
             profile="",
             note=note,
         )
-    role, offset_ns = await _read_journal_state()
+    # Prefer pmc (live ptp4l Unix-domain query) — works even when the
+    # journal has rolled past the original state transitions. Fall back
+    # to the journal parser if pmc is missing or the sudoers grant
+    # hasn't been applied yet.
+    role, offset_ns = await _query_pmc_state()
+    if role == "unknown":
+        role, offset_ns = await _read_journal_state()
     via_unit = await _service_active(PTP4L_SERVICE)
     iface = await _ptp4l_interface()
 

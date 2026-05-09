@@ -131,141 +131,107 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
 async def create_bridge(
     mac: str, name: str, device_type: str, buffer_ms: int = 50, rate: int = 0
 ) -> dict[str, object]:
-    """Create a PipeWire null sink bridged to a BlueALSA device.
+    """Bridge a BlueALSA PCM into PipeWire as a native ALSA-backed node.
 
-    `rate` is the A2DP-negotiated sample rate from bluealsa-aplay -L.
-    When 0 (legacy callers), we fall back to 48 kHz for playback and
-    44.1 kHz for capture — the previous hardcoded defaults. Matching
-    the negotiated rate avoids a software resample inside bluealsa
-    that on a Pi 3 turns into audible crackles + xruns under load."""
+    Replaces the previous shell-wrapper approach (`while true; arecord
+    | pacat`) with a single PipeWire-managed module-alsa-source / -sink
+    that wraps the bluealsa: PCM directly. Eliminates:
+      - the shell wrapper process and its `sleep 0.5` respawn loop
+      - the per-bridge fork/exec of arecord+pacat (or parec+aplay)
+      - the WirePlumber graph re-routing every time those clients
+        connect/disconnect — the dominant CPU cost on the Pi 3 sender
+
+    `rate` is the A2DP-negotiated rate from bluealsa-aplay -L; when 0
+    we fall back to 48 kHz playback / 48 kHz capture (capture is
+    pinned at 48 kHz so PipeWire's graph stays rate-pure for the
+    AES67 send hop).
+    """
     safe_name = name.replace(" ", "-").replace("(", "").replace(")", "")
     key = f"{mac}_{device_type}"
 
     if key in _active_bridges:
-        # Check if bridge process is still alive
         existing = _active_bridges[key]
-        pid = existing.get("bridge_pid")
-        if pid is not None:
-            try:
-                os.kill(int(str(pid)), 0)  # Signal 0 = check if alive
+        # The module-id is enough to verify the bridge is still loaded —
+        # there's no shell wrapper process to ping anymore. If pactl
+        # reports the module gone, recreate.
+        module_id = existing.get("module_id")
+        if module_id is not None:
+            mods = await _run("pactl list modules short")
+            if any(line.startswith(f"{module_id}\t") for line in mods.splitlines()):
                 return {"status": "already_exists", "mac": mac, "name": safe_name}
-            except (ProcessLookupError, OSError):
-                # Process dead, clean up and recreate
-                module_id = existing.get("module_id")
-                if module_id is not None:
-                    await _run(f"pactl unload-module {module_id}")
-                del _active_bridges[key]
-                logger.warning("bluealsa.bridge_dead_recreating", mac=mac, btype=device_type)
+            del _active_bridges[key]
+            logger.warning("bluealsa.bridge_module_gone_recreating", mac=mac, btype=device_type)
 
-    # Clean up any existing pactl module with EXACTLY this sink_name. Use the
-    # full token (with delimiters) — a substring match would also blow away
-    # a bridge whose name is a prefix of ours, e.g. cleaning "bt_1337" also
-    # killed "bt_1337-2_in" when two BT phones were paired.
-    target_token = (
-        f"sink_name=bt_{safe_name}_in"
-        if device_type == "capture"
-        else f"sink_name=bt_{safe_name} "
-    )
+    # Sweep any leftover pactl module with this exact sink/source name —
+    # protects against a stale entry from a previous daemon run that
+    # left the module loaded but lost its in-memory tracking.
+    sink_or_source = "source_name" if device_type == "capture" else "sink_name"
+    name_token = f"bt_{safe_name}_in" if device_type == "capture" else f"bt_{safe_name}"
     existing_mods = await _run("pactl list modules short")
     for line in existing_mods.splitlines():
-        # pactl list modules short emits the args field as a tab/space-separated
-        # blob — match against the exact sink_name=… token, not substring.
-        if "module-null-sink" in line and target_token in line + " ":
-            # Also ensure exact: the next char after sink_name=bt_<safe_name>
-            # must be ' ' or end-of-args (for capture, '_in' is part of the token)
+        # Match the exact name=token to avoid 'bt_1337' wiping 'bt_1337-2_in'.
+        if (
+            ("module-alsa-source" in line or "module-alsa-sink" in line)
+            and (f"{sink_or_source}={name_token}" in line)
+        ):
             old_mid = line.split()[0]
             await _run(f"pactl unload-module {old_mid}")
             logger.info("bluealsa.old_module_cleaned", name=safe_name, module=old_mid)
 
+    bluealsa_pcm = f"bluealsa:DEV={mac},PROFILE=a2dp"
+
     if device_type == "playback":
-        # Use the A2DP-negotiated rate when known. JBL Xtreme 3 / Pulse 3
-        # negotiate 44.1 kHz; UE Boom and most newer speakers negotiate 48
-        # kHz. Wrong rate → bluealsa resamples in software and audio
-        # melts on a Pi 3.
+        # Phonon → BT speaker. The A2DP-negotiated rate matters: JBL
+        # Xtreme 3 / Pulse 3 = 44.1 kHz, UE Boom = 48 kHz. Wrong rate
+        # forces bluealsa to resample in software and on a Pi 3 the
+        # CPU spike crackles. module-alsa-sink replaces both the
+        # null-sink AND the parec|aplay shell pipeline — PipeWire owns
+        # the read-from-monitor + write-to-bluealsa loop natively.
         play_rate = rate if rate > 0 else 48000
+        period = max(64, int(play_rate * buffer_ms / 1000))
         module_id = await _run(
-            f"pactl load-module module-null-sink "
-            f"sink_name=bt_{safe_name} "
-            f"sink_properties=device.description={safe_name}-BT "
-            f"format=s16le rate={play_rate} channels=2"
+            "pactl load-module module-alsa-sink "
+            f'sink_name=bt_{safe_name} '
+            f'sink_properties=device.description="{safe_name}-BT" '
+            f'device="{bluealsa_pcm}" '
+            f"rate={play_rate} channels=2 format=s16le "
+            f"fragment_size={period}"
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
-
-        period = int(play_rate * buffer_ms / 1000)
-        bridge_cmd = (
-            f"while true; do "
-            f"parec --device=bt_{safe_name}.monitor "
-            f"--format=s16le --rate={play_rate} --channels=2 "
-            f"--latency-msec={buffer_ms} "
-            f"--property=node.dont-reconnect=true "
-            f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r {play_rate} -c 2 '
-            f"--period-size={period} --buffer-size={period * 2} - 2>/dev/null; "
-            f"sleep 0.5; done"
-        )
-        proc = await asyncio.create_subprocess_shell(
-            bridge_cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
         _active_bridges[key] = {
             "module_id": int(module_id.strip()),
-            "bridge_pid": proc.pid,
             "type": "playback",
             "name": safe_name,
+            "rate": play_rate,
+            "buffer_ms": buffer_ms,
         }
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback")
 
     elif device_type == "capture":
-        # Capture bridges feed PipeWire / AES67 send, which run at 48 kHz.
-        # Forcing the null-sink to 48 kHz means bluealsa does the
-        # 44.1->48 resample internally inside arecord (well-tested
-        # codepath), and the rest of the chain is rate-pure. Letting
-        # the null-sink track the negotiated rate (44.1 kHz for SBC
-        # phones) instead pushed the resample into PipeWire's graph,
-        # which on a Pi 3 audibly crackles when AES67 is also active.
+        # BT phone → Phonon. Pin to 48 kHz so PipeWire graph (and the
+        # AES67 send module reading from this source) stays rate-pure.
+        # bluealsa's internal arecord-driven 44.1 → 48 resample is well-
+        # tested. module-alsa-source emits a regular Audio/Source node
+        # whose ports plug straight into mappings.
         cap_rate = 48000
-        # For capture (phone→Pi): create a pipe-source that exposes as Audio/Source
-        # arecord from bluealsa → write to FIFO → pw-cat reads FIFO as source
-        # Simpler: use module-null-sink but expose the MONITOR as the usable source
-        # The monitor ports have direction "output" → they appear as sources in Patch Bay
+        period = max(64, int(cap_rate * buffer_ms / 1000))
         module_id = await _run(
-            f"pactl load-module module-null-sink "
-            f"sink_name=bt_{safe_name}_in "
-            f"sink_properties=device.description={safe_name}-BT-In "
-            f"format=s16le rate={cap_rate} channels=2"
+            "pactl load-module module-alsa-source "
+            f'source_name=bt_{safe_name}_in '
+            f'source_properties=device.description="{safe_name}-BT-In" '
+            f'device="{bluealsa_pcm}" '
+            f"rate={cap_rate} channels=2 format=s16le "
+            f"fragment_size={period}"
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
-
-        # Bridge: bluealsa capture → pacat into the null sink
-        # The null sink's MONITOR becomes the source in PipeWire
-        period = int(cap_rate * buffer_ms / 1000)
-        bridge_cmd = (
-            f"while true; do "
-            f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" '
-            f"-f S16_LE -r {cap_rate} -c 2 "
-            f"--period-size={period} --buffer-size={period * 2} - "
-            f"2>/dev/null "
-            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate={cap_rate} --channels=2 "
-            f"--latency-msec={buffer_ms} "
-            # Prevent WirePlumber session manager from auto-routing this stream
-            # to the default sink (otherwise audio leaks to speakers in addition
-            # to the intended null-sink target).
-            f"--property=node.dont-reconnect=true "
-            f"--property=node.passive=true; "
-            f"sleep 0.5; done"
-        )
-        proc = await asyncio.create_subprocess_shell(
-            bridge_cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
         _active_bridges[key] = {
             "module_id": int(module_id.strip()),
-            "bridge_pid": proc.pid,
             "type": "capture",
             "name": safe_name,
+            "rate": cap_rate,
+            "buffer_ms": buffer_ms,
         }
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="capture")
 
@@ -279,6 +245,10 @@ async def destroy_bridge(mac: str, device_type: str) -> dict[str, str]:
     if not bridge:
         return {"status": "not_found", "mac": mac}
 
+    # Legacy bridges had a 'bridge_pid' from the shell wrapper era.
+    # New module-alsa-source/sink bridges only own a pactl module id.
+    # Kill the wrapper if present (no-op for new bridges) AND unload
+    # the pactl module — covers both formats during the transition.
     pid = bridge.get("bridge_pid")
     if pid is not None:
         with contextlib.suppress(ProcessLookupError):
@@ -380,17 +350,33 @@ async def bridge_health() -> dict[str, object]:
     except Exception:
         pass
 
+    # New bridges (module-alsa-source/sink) are alive iff their pactl
+    # module id is still loaded — no shell wrapper PID to ping. Snapshot
+    # loaded modules once and look up by id.
+    loaded_modules_raw = await _run("pactl list modules short")
+    loaded_module_ids = {
+        line.split("\t", 1)[0]
+        for line in loaded_modules_raw.splitlines()
+        if line.strip()
+    }
+
     bridges_health: list[dict[str, object]] = []
     for key, br in _active_bridges.items():
         mac, dtype = key.rsplit("_", 1)
         sink_name = f"bt_{br.get('name', '')}" + ("_in" if dtype == "capture" else "")
         pcm = by_key.get(key, {})
+        # Aliveness: legacy = wrapper shell pid still running; new =
+        # pactl module still loaded. Either signal proves the bridge
+        # is wired.
         pid_raw = br.get("bridge_pid")
+        module_id = br.get("module_id")
         alive = False
         if pid_raw is not None:
             with contextlib.suppress(ProcessLookupError, OSError, ValueError):
                 os.kill(int(str(pid_raw)), 0)
                 alive = True
+        if not alive and module_id is not None:
+            alive = str(module_id) in loaded_module_ids
         bridges_health.append(
             {
                 "mac": mac,

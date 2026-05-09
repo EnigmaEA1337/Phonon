@@ -35,12 +35,13 @@ async def broadcast(msg_type: str, data: Any) -> None:
 
 
 async def _levels_loop() -> None:
-    """Background task: read VU levels and push to clients every 250ms.
+    """Background task: read VU levels and push to clients every 1 s.
 
-    250ms = 4 Hz update rate, smooth enough for a UI VU meter while
-    keeping the per-tick parec subprocess spawns reasonable. At 10 Hz
-    we were saturating CPU on slower hosts (and even noticeable on dev).
-    """
+    Each tick spawns one short-lived parec per active capture bridge.
+    On a Pi 3 the parec startup + WirePlumber re-routing it triggers
+    is the dominant CPU cost (~25-44% on the sender). 1 Hz is enough
+    for visual feedback without saturating the graph; we'll switch to
+    a single persistent parec stream later for smoother UX."""
     from phonon_stage.api.bluealsa_bridge import _active_bridges
     from phonon_stage.api.levels import _read_peak
 
@@ -61,9 +62,12 @@ async def _levels_loop() -> None:
                 # the speaker — they don't need a UI VU for that side.
                 if btype != "capture":
                     continue
-                sink_name = f"bt_{name}_in"
+                # Capture bridge = module-alsa-source, parec reads it
+                # directly (no .monitor suffix). Source name is
+                # bt_<safe_name>_in.
+                source_name = f"bt_{name}_in"
                 keys.append(key)
-                tasks.append(_read_peak(sink_name, duration_ms=20))
+                tasks.append(_read_peak(source_name, duration_ms=20))
 
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -72,7 +76,7 @@ async def _levels_loop() -> None:
 
             await broadcast("levels", levels)
 
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(1.0)
 
 
 async def _mode_loop() -> None:

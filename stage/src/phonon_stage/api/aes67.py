@@ -141,6 +141,7 @@ def _render_send_conf(req: CreateStreamRequest, node_name: str) -> str:
       sess.name = "{node_name}"
       sess.min-ptime = {req.ptime_ms}
       sess.max-ptime = {req.ptime_ms}
+      sess.ts-refclk = "clock.system"
       audio.format = {req.audio_format}
       audio.rate = {req.sample_rate}
       audio.channels = {req.channels}
@@ -171,6 +172,8 @@ def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
       source.port = {req.port}
       sess.latency.msec = {latency_ms}
       sess.name = "{node_name}"
+      sess.ts-refclk = "clock.system"
+      sess.ts-direct = true
       audio.format = {req.audio_format}
       audio.rate = {req.sample_rate}
       audio.channels = {req.channels}

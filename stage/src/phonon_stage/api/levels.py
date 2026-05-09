@@ -20,8 +20,17 @@ _levels_cache_time: float = 0
 _LEVELS_CACHE_TTL = 0.5
 
 
-async def _read_peak(sink_name: str, duration_ms: int = 50) -> float:
-    """Read RMS level from a PipeWire sink's monitor port. Returns 0.0-1.0."""
+async def _read_peak(device: str, duration_ms: int = 50) -> float:
+    """Read peak level from a PipeWire device. Returns 0.0-1.0.
+
+    `device` is the literal parec --device argument:
+      - source name (e.g. 'bt_jbl_in')          for module-alsa-source
+      - sink_name + '.monitor' (e.g. 'bt_jbl.monitor')  for sinks
+    The previous version always appended '.monitor', which only worked
+    for the legacy null-sink bridges. Since the bridges are now real
+    ALSA-source / -sink modules, capture bridges expose a SOURCE that
+    parec can read directly with no suffix.
+    """
     rate = 48000
     channels = 2
     bytes_needed = int(rate * channels * 2 * duration_ms / 1000)
@@ -29,7 +38,7 @@ async def _read_peak(sink_name: str, duration_ms: int = 50) -> float:
     try:
         proc = await asyncio.create_subprocess_exec(
             "parec",
-            f"--device={sink_name}.monitor",
+            f"--device={device}",
             "--format=s16le",
             f"--rate={rate}",
             f"--channels={channels}",
@@ -84,13 +93,15 @@ async def get_levels() -> dict[str, float]:
         name = bridge.get("name", "")
         btype = bridge.get("type", "")
         if btype == "playback":
-            sink_name = f"bt_{name}"
+            # bt_<name> is a sink — read from its monitor
+            device = f"bt_{name}.monitor"
         elif btype == "capture":
-            sink_name = f"bt_{name}_in"
+            # bt_<name>_in is a source (module-alsa-source) — read directly
+            device = f"bt_{name}_in"
         else:
             continue
         keys.append(key)
-        tasks.append(_read_peak(sink_name, duration_ms=30))
+        tasks.append(_read_peak(device, duration_ms=30))
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)

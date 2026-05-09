@@ -129,9 +129,15 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
 
 
 async def create_bridge(
-    mac: str, name: str, device_type: str, buffer_ms: int = 50
+    mac: str, name: str, device_type: str, buffer_ms: int = 50, rate: int = 0
 ) -> dict[str, object]:
-    """Create a PipeWire null sink bridged to a BlueALSA device."""
+    """Create a PipeWire null sink bridged to a BlueALSA device.
+
+    `rate` is the A2DP-negotiated sample rate from bluealsa-aplay -L.
+    When 0 (legacy callers), we fall back to 48 kHz for playback and
+    44.1 kHz for capture — the previous hardcoded defaults. Matching
+    the negotiated rate avoids a software resample inside bluealsa
+    that on a Pi 3 turns into audible crackles + xruns under load."""
     safe_name = name.replace(" ", "-").replace("(", "").replace(")", "")
     key = f"{mac}_{device_type}"
 
@@ -172,23 +178,28 @@ async def create_bridge(
             logger.info("bluealsa.old_module_cleaned", name=safe_name, module=old_mid)
 
     if device_type == "playback":
+        # Use the A2DP-negotiated rate when known. JBL Xtreme 3 / Pulse 3
+        # negotiate 44.1 kHz; UE Boom and most newer speakers negotiate 48
+        # kHz. Wrong rate → bluealsa resamples in software and audio
+        # melts on a Pi 3.
+        play_rate = rate if rate > 0 else 48000
         module_id = await _run(
             f"pactl load-module module-null-sink "
             f"sink_name=bt_{safe_name} "
             f"sink_properties=device.description={safe_name}-BT "
-            f"format=s16le rate=48000 channels=2"
+            f"format=s16le rate={play_rate} channels=2"
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
 
-        period_48 = int(48000 * buffer_ms / 1000)
+        period = int(play_rate * buffer_ms / 1000)
         bridge_cmd = (
             f"while true; do "
-            f"parec --device=bt_{safe_name}.monitor --format=s16le --rate=48000 --channels=2 "
+            f"parec --device=bt_{safe_name}.monitor --format=s16le --rate={play_rate} --channels=2 "
             f"--latency-msec={buffer_ms} "
             f"--property=node.dont-reconnect=true "
-            f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r 48000 -c 2 '
-            f"--period-size={period_48} --buffer-size={period_48 * 2} - 2>/dev/null; "
+            f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r {play_rate} -c 2 '
+            f"--period-size={period} --buffer-size={period * 2} - 2>/dev/null; "
             f"sleep 0.5; done"
         )
         proc = await asyncio.create_subprocess_shell(
@@ -205,6 +216,10 @@ async def create_bridge(
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback")
 
     elif device_type == "capture":
+        # Same rate matching as playback above. Most A2DP sources are
+        # 44.1 kHz (phones over SBC) but a Bluetooth handsfree gateway
+        # could negotiate 48 kHz — pass-through what bluealsa says.
+        cap_rate = rate if rate > 0 else 44100
         # For capture (phone→Pi): create a pipe-source that exposes as Audio/Source
         # arecord from bluealsa → write to FIFO → pw-cat reads FIFO as source
         # Simpler: use module-null-sink but expose the MONITOR as the usable source
@@ -213,23 +228,21 @@ async def create_bridge(
             f"pactl load-module module-null-sink "
             f"sink_name=bt_{safe_name}_in "
             f"sink_properties=device.description={safe_name}-BT-In "
-            f"format=s16le rate=44100 channels=2"
+            f"format=s16le rate={cap_rate} channels=2"
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl failed: {module_id}"}
 
         # Bridge: bluealsa capture → pacat into the null sink
         # The null sink's MONITOR becomes the source in PipeWire
-        period_44 = int(44100 * buffer_ms / 1000)
-        # Use --duration=0 and let the while loop handle restart
-        # sleep 0.5 for fast restart after stream ends
+        period = int(cap_rate * buffer_ms / 1000)
         bridge_cmd = (
             f"while true; do "
             f'arecord -D "bluealsa:DEV={mac},PROFILE=a2dp" '
-            f"-f S16_LE -r 44100 -c 2 "
-            f"--period-size={period_44} --buffer-size={period_44 * 2} - "
+            f"-f S16_LE -r {cap_rate} -c 2 "
+            f"--period-size={period} --buffer-size={period * 2} - "
             f"2>/dev/null "
-            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate=44100 --channels=2 "
+            f"| pacat --device=bt_{safe_name}_in --format=s16le --rate={cap_rate} --channels=2 "
             f"--latency-msec={buffer_ms} "
             # Prevent WirePlumber session manager from auto-routing this stream
             # to the default sink (otherwise audio leaks to speakers in addition
@@ -289,8 +302,14 @@ async def sync_bridges_impl(buffer_ms: int = 50) -> dict[str, object]:
         dtype = pcm.get("type", "")
         if not mac or not dtype:
             continue
+        # bluealsa-aplay -L parser stores rate as a string ('44100' / '48000');
+        # fall back to 0 so create_bridge picks the legacy default per type.
+        try:
+            negotiated_rate = int(pcm.get("rate", 0) or 0)
+        except (TypeError, ValueError):
+            negotiated_rate = 0
         active_keys.add(f"{mac}_{dtype}")
-        result = await create_bridge(mac, name, dtype, buffer_ms)
+        result = await create_bridge(mac, name, dtype, buffer_ms, rate=negotiated_rate)
         results.append(result)
 
     stale_keys = set(_active_bridges.keys()) - active_keys

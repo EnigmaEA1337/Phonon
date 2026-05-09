@@ -115,22 +115,25 @@ async def _read_journal_state() -> tuple[str, int | None]:
         return "unknown", None
     role = "unknown"
     offset: int | None = None
-    # ptp4l logs port state transitions as:
-    #   "port 1 (eth0): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED"
-    #   "port 1 (eth0): LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES"
-    # We want the *destination* state (after "to") since that's the current
-    # role. Also accept "assuming the grand master role" / "selected local
-    # clock" as explicit grandmaster markers.
-    if "selected local clock" in text or "assuming the grand master role" in text:
-        role = "grandmaster"
-    elif re.search(r"port \d+.*\bto SLAVE\b", text):
-        role = "slave"
-    elif re.search(r"port \d+.*\bto MASTER\b", text):
-        role = "grandmaster"
-    elif re.search(r"port \d+.*\bto LISTENING\b", text) or re.search(
-        r"port \d+.*: INITIALIZING to LISTENING", text
-    ):
-        role = "listening"
+    # Walk the log forwards and keep updating role on every state-change
+    # marker — only the LATEST event reflects the current role. ptp4l
+    # often elects itself master first, then sees a peer with a better
+    # clock identity and demotes to slave; if we used 'first match'
+    # semantics we'd permanently report grandmaster on a slave node.
+    state_markers = (
+        # (regex, role)
+        (re.compile(r"port \d+.*\bto SLAVE\b"), "slave"),
+        (re.compile(r"port \d+.*\bto MASTER\b"), "grandmaster"),
+        (re.compile(r"port \d+.*\bto LISTENING\b"), "listening"),
+        (re.compile(r"port \d+.*: INITIALIZING to LISTENING"), "listening"),
+        (re.compile(r"selected local clock"), "grandmaster"),
+        (re.compile(r"assuming the grand master role"), "grandmaster"),
+    )
+    for line in text.splitlines():
+        for pattern, candidate in state_markers:
+            if pattern.search(line):
+                role = candidate
+                break
     # Pick the LAST master-offset reading so the displayed offset is current
     # (slaves emit one per sync interval).
     last_offset = None

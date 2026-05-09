@@ -116,10 +116,15 @@ else
     echo "  User ${PHONON_USER} created"
 fi
 
-# Add to audio + bluetooth groups
+# Add to audio + bluetooth groups, plus systemd-journal so the
+# /ptp/status and /system/services endpoints can read the system
+# journal (ptp4l, phonon-bt-agent…) — without it journalctl returns
+# 'No journal files were opened due to insufficient permissions',
+# which surfaces as the PTP role permanently stuck on 'unknown'.
 usermod -aG audio "${PHONON_USER}" 2>/dev/null || true
 usermod -aG bluetooth "${PHONON_USER}" 2>/dev/null || true
-echo "  User in audio + bluetooth groups"
+usermod -aG systemd-journal "${PHONON_USER}" 2>/dev/null || true
+echo "  User in audio + bluetooth + systemd-journal groups"
 
 # Install D-Bus policy for BlueZ access
 if [ -f "${SCRIPT_DIR}/dbus/phonon-bluetooth.conf" ]; then

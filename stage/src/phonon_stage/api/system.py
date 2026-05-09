@@ -719,13 +719,43 @@ class Resources(BaseModel):
 _net_last: dict[str, tuple[float, int, int]] = {}  # iface -> (timestamp, rx, tx)
 
 
+async def _read_cpu_pct() -> float:
+    """Real CPU usage % from /proc/stat deltas, not load average.
+
+    Load average counts every R + D-state task on the run queue, so a
+    host with many processes blocked on I/O reports load > cpu_count
+    while the CPUs are idle. Two /proc/stat snapshots 200 ms apart
+    give the accurate user+system / total ratio that top displays.
+    """
+    import time as _time
+
+    def _read() -> tuple[int, int]:
+        line = Path("/proc/stat").read_text().split("\n", 1)[0]
+        parts = [int(x) for x in line.split()[1:]]
+        # user nice system idle iowait irq softirq steal guest guest_nice
+        idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+        return sum(parts), idle
+
+    t1, i1 = _read()
+    await asyncio.sleep(0.2)
+    t2, i2 = _read()
+    dt, di = t2 - t1, i2 - i1
+    if dt <= 0:
+        return 0.0
+    _ = _time  # keep import next to existing usage pattern
+    return round((1.0 - di / dt) * 100.0, 1)
+
+
 async def _collect_resources() -> Resources:
     import time
 
-    # CPU
+    # CPU — real usage from /proc/stat deltas (NOT load average, which
+    # includes D-state processes and is wildly misleading on a Pi 3
+    # whose USB-Ethernet adapter occasionally puts kernel threads in
+    # iowait without touching CPU).
     cpu_count = os.cpu_count() or 1
     load_1m = os.getloadavg()[0]
-    cpu_pct = round(load_1m / cpu_count * 100, 1)
+    cpu_pct = await _read_cpu_pct()
 
     # Memory
     mem_total = mem_avail = swap_total = swap_used = 0

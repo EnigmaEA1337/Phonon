@@ -29,10 +29,14 @@ class TestSettingsModel:
         assert s.ptp.profile == "aes67"
         assert s.ptp.domain == 0
 
-        # AES67 defaults — AES67 spec: 48 kHz, L16BE, 1 ms ptime
+        # AES67 defaults — 48 kHz / S16BE / 2ch matches the AES67 spec.
+        # ptime defaulted to 4 ms instead of the spec's 1 ms because Pi 3
+        # software-timed RTP at 1 ms saturates one core (one wake per
+        # packet × 1000 packets/sec). 4 ms is still well under any
+        # human-perceptible latency.
         assert s.aes67.sample_rate == 48000
         assert s.aes67.audio_format == "S16BE"
-        assert s.aes67.ptime_ms == 1.0
+        assert s.aes67.ptime_ms == 4.0
         assert s.aes67.channels == 2
 
     def test_sap_interval_bounds(self) -> None:

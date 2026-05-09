@@ -53,12 +53,15 @@ async def _levels_loop() -> None:
             for key, bridge in _active_bridges.items():
                 name = bridge.get("name", "")
                 btype = bridge.get("type", "")
-                if btype == "playback":
-                    sink_name = f"bt_{name}"
-                elif btype == "capture":
-                    sink_name = f"bt_{name}_in"
-                else:
+                # Playback bridges (Phonon → BT speaker via aplay/bluealsa)
+                # are skipped: spawning a parec on bt_<name>.monitor 4×/s
+                # competes with the bridge's own parec for graph time on
+                # a Pi 3, which under load creates jitter on the aplay
+                # output and crackly audio at the JBL. The user can hear
+                # the speaker — they don't need a UI VU for that side.
+                if btype != "capture":
                     continue
+                sink_name = f"bt_{name}_in"
                 keys.append(key)
                 tasks.append(_read_peak(sink_name, duration_ms=20))
 

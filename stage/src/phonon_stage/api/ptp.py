@@ -128,6 +128,13 @@ async def _read_journal_state() -> tuple[str, int | None]:
         (re.compile(r"port \d+.*: INITIALIZING to LISTENING"), "listening"),
         (re.compile(r"selected local clock"), "grandmaster"),
         (re.compile(r"assuming the grand master role"), "grandmaster"),
+        # ptp4l in SLAVE state emits periodic 'rms ... max ... freq ... delay'
+        # stats. After the journal has rolled past the original LISTENING→
+        # SLAVE transition, those stats are the only surviving evidence
+        # that this node is acting as a slave.
+        (re.compile(r"\brms\s+\d+\s+max\s+\d+\s+freq"), "slave"),
+        # 'master offset' lines also imply SLAVE (only slaves report it).
+        (re.compile(r"\bmaster offset\s+-?\d+"), "slave"),
     )
     for line in text.splitlines():
         for pattern, candidate in state_markers:

@@ -195,7 +195,8 @@ async def create_bridge(
         period = int(play_rate * buffer_ms / 1000)
         bridge_cmd = (
             f"while true; do "
-            f"parec --device=bt_{safe_name}.monitor --format=s16le --rate={play_rate} --channels=2 "
+            f"parec --device=bt_{safe_name}.monitor "
+            f"--format=s16le --rate={play_rate} --channels=2 "
             f"--latency-msec={buffer_ms} "
             f"--property=node.dont-reconnect=true "
             f'| aplay -D "bluealsa:DEV={mac},PROFILE=a2dp" -f S16_LE -r {play_rate} -c 2 '

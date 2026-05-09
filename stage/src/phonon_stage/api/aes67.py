@@ -484,6 +484,12 @@ async def restore_existing_aes67() -> None:
         }
     if _active_streams:
         logger.info("aes67.streams_restored", count=len(_active_streams))
+        # Push the recomputed mode (STANDALONE → MESH) into mDNS TXT.
+        # Without this, the daemon comes up advertising STANDALONE
+        # forever after a restart, even though it has live AES67
+        # streams — neighbouring stages then see this Stage as
+        # 'STANDALONE' and refuse to subscribe.
+        await _announce_mode()
 
 
 async def cleanup_stale_aes67() -> None:

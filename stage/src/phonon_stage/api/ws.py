@@ -53,8 +53,8 @@ async def _levels_loop() -> None:
             for key, bridge in _active_bridges.items():
                 name = bridge.get("name", "")
                 btype = bridge.get("type", "")
-                # Playback bridges (Phonon → BT speaker via aplay/bluealsa)
-                # are skipped: spawning a parec on bt_<name>.monitor 4×/s
+                # Playback bridges (Phonon -> BT speaker via aplay/bluealsa)
+                # are skipped: spawning a parec on bt_<name>.monitor 4x/s
                 # competes with the bridge's own parec for graph time on
                 # a Pi 3, which under load creates jitter on the aplay
                 # output and crackly audio at the JBL. The user can hear

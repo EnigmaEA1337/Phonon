@@ -67,10 +67,57 @@ if [ "${BEFORE}" = "${AFTER}" ]; then
 fi
 
 echo "------------------------------------------------------------"
-echo "Pulled $(git rev-list --count "${BEFORE}..${AFTER}") commits — running install.sh"
+echo "Pulled $(git rev-list --count "${BEFORE}..${AFTER}") commits"
 echo "------------------------------------------------------------"
 
-bash "${REPO_ROOT}/deploy/install.sh"
+# Decide between full install.sh (heavy: ~30-60s on Pi 3 — apt update,
+# systemd unit rewrites, sudoers, BT/PTP scaffolding) and a fast path
+# (just pip-reinstall + restart, ~5-10s) based on what actually changed.
+# Anything under deploy/ or a pyproject.toml change → full reinstall.
+# Otherwise we trust install.sh's prior run and only refresh the venv.
+CHANGED_FILES="$(git diff --name-only "${BEFORE}..${AFTER}")"
+NEEDS_FULL=false
+WHY=""
+while IFS= read -r f; do
+    case "$f" in
+        deploy/*)             NEEDS_FULL=true; WHY="$f"; break ;;
+        */pyproject.toml)     NEEDS_FULL=true; WHY="$f"; break ;;
+        pyproject.toml)       NEEDS_FULL=true; WHY="$f"; break ;;
+    esac
+done <<< "${CHANGED_FILES}"
+
+if [ "${NEEDS_FULL}" = "true" ]; then
+    echo "Full reinstall required (changed: ${WHY})"
+    echo "------------------------------------------------------------"
+    bash "${REPO_ROOT}/deploy/install.sh"
+else
+    echo "Fast path: only Python/static changes — pip reinstall + restart"
+    echo "------------------------------------------------------------"
+
+    VENV_DIR=/opt/phonon/stage/.venv
+    STAGE_SRC="${REPO_ROOT}/stage"
+
+    if [ ! -d "${VENV_DIR}" ]; then
+        echo "[error] venv missing at ${VENV_DIR} — falling back to full install.sh"
+        bash "${REPO_ROOT}/deploy/install.sh"
+    else
+        # Force-reinstall the package source — pip otherwise short-circuits
+        # on 'Requirement already satisfied' and our changes don't land.
+        # --no-deps because we know nothing in pyproject changed (caught
+        # above) and we want the fast path to stay fast.
+        "${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${STAGE_SRC}" --quiet
+
+        # Restart the user-instance phonon-stage. Same pattern as install.sh
+        # step 11/11: needs systemd-run because we're root and the daemon
+        # runs in the phonon user's systemd --user session.
+        PHONON_UID="$(id -u phonon)"
+        systemd-run --uid="${PHONON_UID}" --gid="${PHONON_UID}" \
+            -p PAMName=login --pipe --wait -- \
+            systemctl --user restart phonon-stage 2>&1 || true
+
+        echo "  Restarted phonon-stage with new code"
+    fi
+fi
 
 echo "============================================================"
 echo "phonon update finished at $(date -Iseconds)"

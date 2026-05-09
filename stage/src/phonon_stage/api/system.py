@@ -463,10 +463,27 @@ async def _service_installed(name: str, kind: str) -> bool:
     return proc.returncode == 0
 
 
+_can_sudo_cache: dict[str, tuple[bool, float]] = {}
+_CAN_SUDO_TTL = 60.0  # seconds
+
+
 async def _can_sudo_systemctl(name: str) -> bool:
     """Cheap probe: does sudo -n systemctl is-active <name> work? If yes,
     the NOPASSWD entry is set up for this service; we'll accept control
-    requests against it. If sudo fails (asks password), button is disabled."""
+    requests against it. If sudo fails (asks password), button is disabled.
+
+    Cached for 60 s — the NOPASSWD grant is part of install.sh and
+    doesn't flip mid-run. Without the cache, this probe ran on every
+    /system/services tick for every system service (~14 sudo
+    invocations per second on a 7-system-service host) and on a Pi 3
+    the polkit auth path that fired around each sudo dominated CPU.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    cached = _can_sudo_cache.get(name)
+    if cached is not None and now - cached[1] < _CAN_SUDO_TTL:
+        return cached[0]
     proc = await asyncio.create_subprocess_exec(
         "sudo",
         "-n",
@@ -479,7 +496,9 @@ async def _can_sudo_systemctl(name: str) -> bool:
     _, err = await proc.communicate()
     # If the binary path or service is wrong sudo still returns 0 for the
     # privilege check; sudo asks for password only when no NOPASSWD match.
-    return b"password" not in err.lower() and b"a terminal is required" not in err.lower()
+    result = b"password" not in err.lower() and b"a terminal is required" not in err.lower()
+    _can_sudo_cache[name] = (result, now)
+    return result
 
 
 async def collect_services() -> list[ServiceState]:

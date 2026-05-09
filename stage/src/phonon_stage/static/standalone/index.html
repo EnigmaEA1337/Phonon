@@ -2388,7 +2388,14 @@ function renderSystemResources(r) {
       <span class="res-val">${valueText}</span>
     </div>`;
 
-  const cpuColor = r.cpu_pct > 90 ? 'var(--red)' : r.cpu_pct > 70 ? 'var(--yellow)' : 'var(--cyan)';
+  // Red only when EMA-smoothed cpu_pct AND load average both agree the
+  // system is actually struggling. Single instantaneous bursts from our
+  // own polling can hit 90+ momentarily without the system being loaded.
+  const loadFrac = r.cpu_load_1m / Math.max(1, r.cpu_count);
+  const cpuOverloaded = r.cpu_pct > 90 && loadFrac > 0.85;
+  const cpuColor = cpuOverloaded ? 'var(--red)'
+                 : r.cpu_pct > 70 ? 'var(--yellow)'
+                 : 'var(--cyan)';
   const memColor = r.mem_pct > 90 ? 'var(--red)' : r.mem_pct > 70 ? 'var(--yellow)' : 'var(--green)';
   const swapColor = r.swap_pct > 50 ? 'var(--yellow)' : 'var(--text-dim)';
   const diskColor = r.disk_pct > 90 ? 'var(--red)' : r.disk_pct > 75 ? 'var(--yellow)' : 'var(--cyan)';

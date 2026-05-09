@@ -717,6 +717,13 @@ class Resources(BaseModel):
 
 
 _net_last: dict[str, tuple[float, int, int]] = {}  # iface -> (timestamp, rx, tx)
+# Exponential-moving-average of the cpu_pct sample. Each call mixes
+# the fresh raw reading with the previous EMA at alpha=0.3 so a single
+# ~80-100 ms spike from our own collect_services subprocess burst
+# can't pin the UI bar to red. Half-life ≈ 4 ticks (~20 s) which is
+# the user-perceived 'is this Pi struggling' window.
+_cpu_pct_ema: float | None = None
+_CPU_EMA_ALPHA = 0.3
 
 
 async def _read_cpu_pct() -> float:
@@ -760,7 +767,16 @@ async def _collect_resources() -> Resources:
     # iowait without touching CPU).
     cpu_count = os.cpu_count() or 1
     load_1m = os.getloadavg()[0]
-    cpu_pct = await _read_cpu_pct()
+    raw_cpu_pct = await _read_cpu_pct()
+    # Smooth raw cpu_pct with EMA — single sample windows hit our own
+    # subprocess polling bursts (collect_services spawns ~50 systemctl
+    # forks every 5 s) and can flip 5% → 90% between consecutive ticks.
+    global _cpu_pct_ema
+    if _cpu_pct_ema is None:
+        _cpu_pct_ema = raw_cpu_pct
+    else:
+        _cpu_pct_ema = _CPU_EMA_ALPHA * raw_cpu_pct + (1 - _CPU_EMA_ALPHA) * _cpu_pct_ema
+    cpu_pct = round(_cpu_pct_ema, 1)
 
     # Memory
     mem_total = mem_avail = swap_total = swap_used = 0

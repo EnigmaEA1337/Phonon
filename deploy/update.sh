@@ -2,20 +2,22 @@
 # Phonon — self-update script triggered by /system/update/apply.
 # Runs under root via NOPASSWD sudoers grant on /usr/local/sbin/phonon-update.
 #
-# - flock prevents concurrent runs.
-# - Pulls fast-forward only (refuses to merge over local changes).
-# - Reinstalls (install.sh is idempotent and re-runs the systemd unit).
-# - All output captured to /var/log/phonon/update.log so the UI can show
-#   the trail later.
+# Strategy:
+#   * Auto-stash any local changes (chmod, mode flips, leftovers) before
+#     pulling so a perm-difference doesn't refuse fast-forward.
+#   * Diff BEFORE..AFTER to pick the cheapest deploy strategy:
+#       - structural change (deploy/, sudoers, systemd, pyproject.toml)
+#         → full install.sh (~30-60 s)
+#       - Python source only → pip --force-reinstall + daemon restart
+#         (~5-10 s)
+#       - static/HTML only → daemon restart only (~2-3 s)
+#       - docs/tests only → no-op (just record the SHA)
+#   * Concurrent-safe via flock; full output streamed to update.log.
 
 set -euo pipefail
 
-# When invoked via the symlink at /usr/local/sbin/phonon-update,
-# `$0` is the symlink path itself — `dirname $0` yields /usr/local/sbin,
-# and ../.. resolves to /usr/local (no .git). Prefer the canonical repo
-# path written by install.sh; fall back to readlink -f resolution so a
-# manual invocation of deploy/update.sh still works on a host that
-# hasn't run install.sh yet.
+# Resolve REPO_ROOT — symlink-aware. /usr/local/sbin/phonon-update is a
+# symlink to deploy/update.sh; dirname $0 alone would land in /usr/local.
 if [ -f /etc/phonon/repo-path ] && [ -d "$(cat /etc/phonon/repo-path)/.git" ]; then
     REPO_ROOT="$(cat /etc/phonon/repo-path)"
 else
@@ -23,16 +25,14 @@ else
 fi
 LOG=/var/log/phonon/update.log
 LOCK=/run/phonon-update.lock
+VENV_DIR=/opt/phonon/stage/.venv
 
 mkdir -p "$(dirname "$LOG")"
-
 exec 200>"$LOCK"
 if ! flock -n 200; then
     echo "[$(date -Iseconds)] update already in progress — bailing out" >&2
     exit 1
 fi
-
-# Tee everything to the log + stderr (which sudo captures)
 exec > >(tee -a "$LOG") 2>&1
 
 echo "============================================================"
@@ -42,21 +42,53 @@ echo "============================================================"
 
 cd "${REPO_ROOT}"
 
+# core.fileMode=false makes git stop tracking exec-bit changes, which
+# install.sh's chmod loops would otherwise present as a 'dirty tree'
+# and block fast-forward. Set on the repo (idempotent).
+git config --local core.fileMode false 2>/dev/null || true
+
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 BEFORE="$(git rev-parse HEAD)"
-
 echo "branch: ${BRANCH}"
 echo "before: ${BEFORE}"
 
-# Hard fail if the working tree is dirty — we won't ff-merge over local edits.
+# Auto-stash local changes (chmod, mode flips, anything we couldn't
+# prevent from leaking through). Keeping --include-untracked so even
+# stray files don't block the pull. Empty stash is a no-op.
+STASH_REF=""
 if [ -n "$(git status --porcelain)" ]; then
-    echo "[error] working tree has uncommitted changes — aborting"
-    git status --short
-    exit 2
+    echo "auto-stash before pull"
+    if git stash push --include-untracked -m "phonon-update auto-stash $(date -Iseconds)" >/dev/null; then
+        STASH_REF="stash@{0}"
+    fi
 fi
 
-git fetch --quiet || { echo "[error] git fetch failed"; exit 3; }
-git pull --ff-only
+# Pull with retries — git fetch can transiently fail on flaky networks.
+FETCH_OK=false
+for attempt in 1 2 3; do
+    if git fetch --quiet 2>/dev/null; then
+        FETCH_OK=true
+        break
+    fi
+    sleep 2
+done
+if [ "${FETCH_OK}" != true ]; then
+    echo "[error] git fetch failed after 3 attempts"
+    [ -n "${STASH_REF}" ] && git stash pop --quiet 2>/dev/null || true
+    exit 3
+fi
+
+if ! git pull --ff-only --quiet; then
+    echo "[error] fast-forward refused — repo may have diverged commits"
+    [ -n "${STASH_REF}" ] && git stash pop --quiet 2>/dev/null || true
+    exit 4
+fi
+
+# Restore stash silently — conflicts are non-fatal, the user's local
+# changes are preserved in stash list for them to inspect.
+if [ -n "${STASH_REF}" ]; then
+    git stash pop --quiet 2>/dev/null || echo "(stashed changes kept in 'git stash list')"
+fi
 
 AFTER="$(git rev-parse HEAD)"
 echo "after:  ${AFTER}"
@@ -66,57 +98,57 @@ if [ "${BEFORE}" = "${AFTER}" ]; then
     exit 0
 fi
 
-echo "------------------------------------------------------------"
-echo "Pulled $(git rev-list --count "${BEFORE}..${AFTER}") commits"
+COMMITS_PULLED=$(git rev-list --count "${BEFORE}..${AFTER}")
+CHANGED_FILES="$(git diff --name-only "${BEFORE}..${AFTER}")"
+echo "Pulled ${COMMITS_PULLED} commits, ${#CHANGED_FILES} files changed"
 echo "------------------------------------------------------------"
 
-# Decide between full install.sh (heavy: ~30-60s on Pi 3 — apt update,
-# systemd unit rewrites, sudoers, BT/PTP scaffolding) and a fast path
-# (just pip-reinstall + restart, ~5-10s) based on what actually changed.
-# Anything under deploy/ or a pyproject.toml change → full reinstall.
-# Otherwise we trust install.sh's prior run and only refresh the venv.
-CHANGED_FILES="$(git diff --name-only "${BEFORE}..${AFTER}")"
+# Strategy selection
 NEEDS_FULL=false
+NEEDS_PY=false
+NEEDS_RESTART=false
 WHY=""
 while IFS= read -r f; do
+    [ -z "$f" ] && continue
     case "$f" in
-        deploy/*)             NEEDS_FULL=true; WHY="$f"; break ;;
-        */pyproject.toml)     NEEDS_FULL=true; WHY="$f"; break ;;
-        pyproject.toml)       NEEDS_FULL=true; WHY="$f"; break ;;
+        deploy/*|*/sudoers*|*/systemd/*|*/dbus/*|*/udev/*)
+            NEEDS_FULL=true; WHY="${WHY}${WHY:+, }${f}" ;;
+        */pyproject.toml|pyproject.toml)
+            NEEDS_FULL=true; WHY="${WHY}${WHY:+, }${f}" ;;
+        stage/src/*.py|stage/src/*/*.py|stage/src/*/*/*.py|stage/src/*/*/*/*.py)
+            NEEDS_PY=true; NEEDS_RESTART=true ;;
+        stage/src/*static*|stage/src/*/static/*|stage/src/*/*/static/*)
+            # Static assets are picked up at the next HTTP fetch — daemon
+            # restart not strictly required, but reload of the running
+            # FastAPI app is so cheap we do it anyway for predictability.
+            NEEDS_RESTART=true ;;
+        # docs/, tests/, .github/, README, etc. → no-op (just SHA bump)
     esac
 done <<< "${CHANGED_FILES}"
 
-if [ "${NEEDS_FULL}" = "true" ]; then
-    echo "Full reinstall required (changed: ${WHY})"
+if [ "${NEEDS_FULL}" = true ]; then
+    echo "Full reinstall (changed: ${WHY})"
     echo "------------------------------------------------------------"
     bash "${REPO_ROOT}/deploy/install.sh"
-else
-    echo "Fast path: only Python/static changes — pip reinstall + restart"
-    echo "------------------------------------------------------------"
-
-    VENV_DIR=/opt/phonon/stage/.venv
-    STAGE_SRC="${REPO_ROOT}/stage"
-
+elif [ "${NEEDS_PY}" = true ] || [ "${NEEDS_RESTART}" = true ]; then
     if [ ! -d "${VENV_DIR}" ]; then
-        echo "[error] venv missing at ${VENV_DIR} — falling back to full install.sh"
+        echo "[warn] venv missing at ${VENV_DIR} — falling back to install.sh"
         bash "${REPO_ROOT}/deploy/install.sh"
     else
-        # Force-reinstall the package source — pip otherwise short-circuits
-        # on 'Requirement already satisfied' and our changes don't land.
-        # --no-deps because we know nothing in pyproject changed (caught
-        # above) and we want the fast path to stay fast.
-        "${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${STAGE_SRC}" --quiet
-
-        # Restart the user-instance phonon-stage. Same pattern as install.sh
-        # step 11/11: needs systemd-run because we're root and the daemon
-        # runs in the phonon user's systemd --user session.
+        if [ "${NEEDS_PY}" = true ]; then
+            echo "Python reinstall (--force-reinstall --no-deps)"
+            "${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${REPO_ROOT}/stage" --quiet
+        else
+            echo "Static/HTML only — skipping pip reinstall"
+        fi
+        echo "Restarting phonon-stage user service"
         PHONON_UID="$(id -u phonon)"
         systemd-run --uid="${PHONON_UID}" --gid="${PHONON_UID}" \
             -p PAMName=login --pipe --wait -- \
             systemctl --user restart phonon-stage 2>&1 || true
-
-        echo "  Restarted phonon-stage with new code"
     fi
+else
+    echo "Docs/tests only — daemon stays as-is."
 fi
 
 echo "============================================================"

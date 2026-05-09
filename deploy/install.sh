@@ -416,19 +416,45 @@ chmod 0644 "${CONFIG_DIR}/repo-path"
 # AND it's not under /opt (where install.sh deployed copies live with
 # perms already correct).
 if [ -d "${REPO_ROOT}" ] && [ "${REPO_ROOT#/opt/}" = "${REPO_ROOT}" ]; then
+    # Make every parent dir traversable by phonon (one-shot, no harm
+    # if already done). 'o+x' alone — we don't add group/owner perms
+    # to /home/<user> since phonon shouldn't read those.
     parent="${REPO_ROOT}"
     while [ "${parent}" != "/" ] && [ "${parent}" != "" ]; do
         chmod o+x "${parent}" 2>/dev/null || true
         parent="$(dirname "${parent}")"
     done
-    chgrp -R "${PHONON_GROUP}" "${REPO_ROOT}" 2>/dev/null || true
-    chmod -R g+rwX "${REPO_ROOT}" 2>/dev/null || true
-    # Modern git refuses to operate on a repo whose owner doesn't
-    # match the current user (CVE-2022-24765 mitigation). Allow the
-    # phonon daemon to read this specific repo without globally
-    # whitelisting "*", which would weaken the protection elsewhere.
+
+    # Idempotent group ownership + perms. Only run chgrp/chmod if the
+    # repo's group or perms aren't already what we want — the previous
+    # 'chgrp -R + chmod -R g+rwX every install' loop dirtied the working
+    # tree (mode bits flipped to 755 on existing 644 files) so a
+    # subsequent ff-pull refused. Detect and skip when state matches.
+    needs_chmod=false
+    if [ "$(stat -c '%G' "${REPO_ROOT}")" != "${PHONON_GROUP}" ]; then
+        needs_chmod=true
+    fi
+    if ! find "${REPO_ROOT}" -maxdepth 2 -type d ! -perm -g+rx -print -quit | grep -q .; then
+        :  # group rx already there everywhere — keep it
+    else
+        needs_chmod=true
+    fi
+    if [ "${needs_chmod}" = true ]; then
+        chgrp -R "${PHONON_GROUP}" "${REPO_ROOT}" 2>/dev/null || true
+        chmod -R g+rwX "${REPO_ROOT}" 2>/dev/null || true
+        echo "  Repo perms granted to ${PHONON_GROUP} group"
+    fi
+
+    # Belt-and-braces: even when chmod doesn't run, tell git locally to
+    # ignore exec-bit changes. install.sh historically chmod'd binaries
+    # on each pass and git tracked the mode flips as 'modifications',
+    # which then blocked the next ff-pull. core.fileMode=false makes
+    # git stop tracking those flips.
+    git -C "${REPO_ROOT}" config --local core.fileMode false 2>/dev/null || true
+
+    # CVE-2022-24765 mitigation: git refuses to operate on a repo whose
+    # owner differs from the caller. Whitelist this specific path.
     git config --system --add safe.directory "${REPO_ROOT}" 2>/dev/null || true
-    echo "  Repo perms granted to ${PHONON_GROUP} group (read/write for fetch+pull)"
 fi
 
 if [ -f "${REPO_ROOT}/deploy/update.sh" ]; then

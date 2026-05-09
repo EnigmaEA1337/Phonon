@@ -231,13 +231,62 @@ async def factory_reset(body: dict[str, str] | None = None) -> dict[str, str]:
     }
 
 
+async def _list_disk_bonds(controller_address: str) -> list[dict]:
+    """Read every bonded device record under /var/lib/bluetooth/<adapter>/.
+
+    BlueZ unloads paired devices from D-Bus when they've been offline for
+    a while (typical for a BT speaker that goes to standby). The bond
+    record stays on disk and can still serve a `connect` call. We surface
+    those offline-bonded entries so the user keeps seeing the device with
+    a Connect button — same UX as for a phone that BlueZ keeps loaded.
+
+    Reads via the NOPASSWD-sudo helper /usr/local/sbin/phonon-bt-list-bonds
+    (the daemon doesn't have read access on /var/lib/bluetooth itself).
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from pathlib import Path as _Path
+
+    helper = _Path("/usr/local/sbin/phonon-bt-list-bonds")
+    if not (helper.is_file() or helper.is_symlink()):
+        return []
+    proc = await _asyncio.create_subprocess_exec(
+        "sudo",
+        "-n",
+        str(helper),
+        stdout=_asyncio.subprocess.PIPE,
+        stderr=_asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await _asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except TimeoutError:
+        proc.kill()
+        return []
+    if proc.returncode != 0:
+        return []
+    bonds: list[dict] = []
+    target = controller_address.upper()
+    for line in out.decode(errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if str(entry.get("adapter", "")).upper() != target:
+            continue
+        bonds.append(entry)
+    return bonds
+
+
 @router.get("/devices", response_model=list[BluetoothDeviceResponse])
 async def list_paired_devices(
     request: Request, controller_address: str
 ) -> list[BluetoothDeviceResponse]:
     try:
         devices = await request.app.state.bt_backend.list_paired_devices(controller_address)
-        return [
+        live = [
             BluetoothDeviceResponse(
                 address=d.address,
                 name=d.name,
@@ -245,9 +294,29 @@ async def list_paired_devices(
                 paired=d.paired,
                 connected=d.connected,
                 icon=d.icon,
-                rssi=getattr(d, 'rssi', 0),
+                rssi=getattr(d, "rssi", 0),
             )
             for d in devices
         ]
+        # Merge in offline bonds — D-Bus list takes precedence (it has
+        # current Connected/RSSI), disk bonds fill the gap when BlueZ has
+        # let a paired device fall off D-Bus.
+        seen = {d.address.upper() for d in live}
+        for bond in await _list_disk_bonds(controller_address):
+            mac = str(bond.get("address", "")).upper()
+            if not mac or mac in seen:
+                continue
+            live.append(
+                BluetoothDeviceResponse(
+                    address=mac,
+                    name=str(bond.get("name", "")) or mac,
+                    alias=str(bond.get("name", "")) or mac,
+                    paired=True,
+                    connected=False,
+                    icon="audio-card",
+                    rssi=0,
+                )
+            )
+        return live
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

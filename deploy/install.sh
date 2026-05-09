@@ -598,6 +598,14 @@ sleep 3
 # already running — re-running install.sh on a live host then would
 # leave the OLD daemon process in place and the user would never see
 # the new code take effect.
+# Restart the user-instance systemd manager so group membership
+# changes (e.g. systemd-journal added above) propagate to the
+# eventual phonon-stage process. Just restarting phonon-stage is
+# not enough — it inherits the manager's group set, which was
+# captured when user@<uid>.service first started.
+systemctl restart "user@${PHONON_UID}.service" 2>&1 || true
+sleep 2
+
 systemd-run --uid="${PHONON_USER}" --gid="${PHONON_GROUP}" \
     -p PAMName=login --pipe --wait -- \
     systemctl --user daemon-reload 2>&1 || true

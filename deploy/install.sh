@@ -88,6 +88,7 @@ if ! apt-get install -y -qq \
     pipewire-alsa \
     pipewire-pulse \
     wireplumber \
+    pulseaudio-utils \
     linuxptp ; then
     echo "  ERROR: apt-get install failed — fix the network or repo issue and rerun" >&2
     exit 1
@@ -96,7 +97,7 @@ fi
 # Verify the binaries the rest of install.sh expects to find. Catches
 # the rare case where a package was 'installed' but its binary lives
 # under a different path (e.g. a sysroot mismatch on cross-builds).
-for bin in /usr/sbin/ptp4l /usr/sbin/phc2sys /usr/bin/wpctl /usr/bin/pw-link; do
+for bin in /usr/sbin/ptp4l /usr/sbin/phc2sys /usr/bin/wpctl /usr/bin/pw-link /usr/bin/pactl; do
     if [ ! -x "${bin}" ]; then
         echo "  ERROR: expected binary ${bin} missing after apt install" >&2
         exit 1

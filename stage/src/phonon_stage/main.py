@@ -117,6 +117,18 @@ def create_app(
         except Exception:
             logger.warning("stage.bluealsa_cleanup_failed", exc_info=True)
 
+        # Wire the discovery backend into aes67 BEFORE restoring streams
+        # so restore_existing_aes67 can push the MESH mDNS update if any
+        # streams are reloaded. Otherwise mode stays STANDALONE forever
+        # after a daemon restart, even with active AES67 streams.
+        try:
+            from phonon_stage.api.aes67 import set_discovery_backend, set_mapping_service
+
+            set_discovery_backend(discovery)
+            set_mapping_service(svc)
+        except Exception:
+            logger.warning("stage.aes67_wiring_failed", exc_info=True)
+
         # Restore AES67 streams from on-disk conf snippets — they're already
         # loaded by PipeWire, we just need to know about them in-memory.
         try:
@@ -129,14 +141,10 @@ def create_app(
         # Start SAP listener + announcer for AES67 stream discovery
         try:
             from phonon_stage.api.aes67 import (
-                set_discovery_backend,
-                set_mapping_service,
                 start_sap_announcer,
                 start_sap_listener,
             )
 
-            set_discovery_backend(discovery)
-            set_mapping_service(svc)
             await start_sap_listener()
             await start_sap_announcer()
         except Exception:

@@ -115,6 +115,11 @@ class StreamInfo(BaseModel):
     channels: int
     sample_rate: int
     audio_format: str
+    # IP_MULTICAST_LOOP — true means packets sent on this socket also
+    # come back to local subscribers (useful when send + recv coexist
+    # on the same host for testing). Surfaced to the UI so the user
+    # can tell at a glance whether a stream is local-loopback enabled.
+    loop: bool = True
 
 
 def _node_name(kind: str, name: str) -> str:
@@ -472,6 +477,7 @@ async def restore_existing_aes67() -> None:
         rate_match = re.search(r"audio\.rate\s*=\s*(\d+)", text)
         fmt_match = re.search(r"audio\.format\s*=\s*(\S+)", text)
         name_match = re.search(r'node\.name\s*=\s*"aes67-\w+-([^"]+)"', text)
+        loop_match = re.search(r"net\.loop\s*=\s*(true|false)", text)
         _active_streams[stream_id] = {
             "kind": kind,
             "name": name_match.group(1) if name_match else stream_id,
@@ -480,6 +486,7 @@ async def restore_existing_aes67() -> None:
             "channels": int(ch_match.group(1)) if ch_match else 2,
             "sample_rate": int(rate_match.group(1)) if rate_match else 48000,
             "audio_format": fmt_match.group(1) if fmt_match else "S16BE",
+            "loop": loop_match.group(1) == "true" if loop_match else True,
             "conf_path": str(path),
         }
     if _active_streams:
@@ -557,6 +564,7 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
         "channels": req.channels,
         "sample_rate": req.sample_rate,
         "audio_format": req.audio_format,
+        "loop": req.loop,
         "conf_path": str(path),
     }
 
@@ -572,6 +580,7 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
         channels=req.channels,
         sample_rate=req.sample_rate,
         audio_format=req.audio_format,
+        loop=req.loop,
     )
 
 
@@ -605,6 +614,7 @@ async def list_streams() -> list[StreamInfo]:
             channels=int(s.get("channels", 2)),  # type: ignore[call-overload]
             sample_rate=int(s.get("sample_rate", 48000)),  # type: ignore[call-overload]
             audio_format=str(s.get("audio_format", "S16BE")),
+            loop=bool(s.get("loop", True)),
         )
         for sid, s in _active_streams.items()
     ]

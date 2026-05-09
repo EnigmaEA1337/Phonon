@@ -1539,8 +1539,16 @@ function renderAes67(streams) {
   el.innerHTML = streams.map(s => {
     const color = s.kind === 'send' ? 'var(--magenta)' : 'var(--green)';
     const arrow = s.kind === 'send' ? '→' : '←';
+    // Loop badge: ↻ cyan when local-loopback enabled (test-friendly),
+    // ⊘ grey when disabled (production / inter-host topology). Tooltip
+    // explains so the user doesn't have to remember which symbol means
+    // what every time.
+    const loopBadge = s.loop
+      ? `<span title="loop=on — multicast packets sent here also reach local subscribers (test-friendly)" style="color:var(--cyan);font-size:11px;font-weight:600">↻</span>`
+      : `<span title="loop=off — only remote hosts receive this stream" style="color:var(--text-fade);font-size:11px">⊘</span>`;
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
       <span style="color:${color};font-weight:600;width:38px">${s.kind.toUpperCase()}</span>
+      ${loopBadge}
       <span style="color:var(--text)">${s.name}</span>
       <span style="color:var(--text-dim)">${arrow} ${s.multicast_group}:${s.port}</span>
       <span style="color:var(--text-fade)">${s.audio_format} ${s.sample_rate/1000}kHz ${s.channels}ch</span>

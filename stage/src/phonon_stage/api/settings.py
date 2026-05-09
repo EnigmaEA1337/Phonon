@@ -46,7 +46,7 @@ class Aes67Defaults(BaseModel):
     channels: int = Field(default=2, ge=1, le=8)
     sample_rate: int = 48000
     audio_format: Literal["S16BE", "S24BE", "S32BE"] = "S16BE"
-    # 4 ms ptime cuts the sender's per-packet CPU ~4× vs the AES67-default
+    # 4 ms ptime cuts the sender's per-packet CPU ~4x vs the AES67-default
     # 1 ms while staying under any human-perceptible latency. On a Pi 3
     # software-timed RTP at 1 ms saturates one core just to wake up 1000
     # times/second to emit a 192-byte packet — 4 ms is the right default

@@ -26,6 +26,9 @@ class BluetoothDeviceResponse(BaseModel):
     paired: bool
     connected: bool
     icon: str
+    # RSSI dBm from the latest advertisement (negative when live).
+    # 0 = cached entry, the real device isn't transmitting right now.
+    rssi: int = 0
 
 
 class RoleRequest(BaseModel):
@@ -119,6 +122,7 @@ async def scan_devices(
                 paired=d.paired,
                 connected=d.connected,
                 icon=d.icon,
+                rssi=getattr(d, 'rssi', 0),
             )
             for d in devices
         ]
@@ -207,6 +211,7 @@ async def list_paired_devices(
                 paired=d.paired,
                 connected=d.connected,
                 icon=d.icon,
+                rssi=getattr(d, 'rssi', 0),
             )
             for d in devices
         ]

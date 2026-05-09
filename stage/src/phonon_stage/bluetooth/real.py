@@ -497,6 +497,11 @@ class RealBluetoothBackend:
                     paired=_prop(props, "Paired", False),
                     connected=_prop(props, "Connected", False),
                     icon=_prop(props, "Icon", "audio-card"),
+                    # BlueZ exposes RSSI only when the adapter actually
+                    # received an advertisement during the current
+                    # discovery. Cached entries from a previous scan
+                    # don't carry it → 0 here means 'cached, not live'.
+                    rssi=_prop(props, "RSSI", 0),
                 )
             )
         return devices

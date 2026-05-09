@@ -1467,10 +1467,28 @@ function renderBtPairedDevices(devices) {
 function renderBtScanResults(devices) {
   const el = document.getElementById('bt-scan-results');
   if (!devices?.length) { el.innerHTML = ''; return; }
+  // Sort live entries (rssi !== 0) ahead of cached ones so the user
+  // sees what's actually advertising right now at the top.
+  const sorted = [...devices].sort((a,b) => {
+    const aLive = a.rssi !== 0, bLive = b.rssi !== 0;
+    if (aLive !== bLive) return bLive - aLive;
+    return (b.rssi || -200) - (a.rssi || -200);
+  });
+  // RSSI badge: live devices get a colored dBm reading and signal-bar
+  // glyph; cached entries (rssi=0) get a faint 'CACHED' label so the
+  // user knows clicking Quick Pair on them is likely to fail because
+  // the device isn't transmitting.
+  const rssiBadge = (rssi) => {
+    if (rssi === 0) return '<span style="color:var(--text-fade);font-size:9px;font-family:var(--font-m);letter-spacing:0.5px" title="No live RSSI — entry is cached from a previous scan, the device may be off / out of range">CACHED</span>';
+    const color = rssi > -55 ? 'var(--green)' : rssi > -75 ? 'var(--yellow)' : 'var(--red)';
+    const bars = rssi > -55 ? '▰▰▰' : rssi > -65 ? '▰▰▱' : rssi > -80 ? '▰▱▱' : '▱▱▱';
+    return `<span style="color:${color};font-size:9px;font-family:var(--font-m)" title="RSSI ${rssi} dBm — live signal">${bars} ${rssi}</span>`;
+  };
   el.innerHTML = '<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Discovered devices</div>' +
-    devices.map(d => `<div class="bt-row">
+    sorted.map(d => `<div class="bt-row">
       <div class="bt-device">${d.alias || d.name || d.address}</div>
       <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${d.address}</span>
+      ${rssiBadge(d.rssi || 0)}
       <button class="btn btn-primary" onclick="btQuickPair('${d.address}')" id="qp-${d.address.replace(/:/g,'')}">Quick Pair</button>
     </div>`).join('');
 }

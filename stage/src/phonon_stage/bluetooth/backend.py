@@ -30,6 +30,12 @@ class BluetoothDevice:
     paired: bool
     connected: bool
     icon: str  # "audio-card", "phone", etc.
+    # RSSI in dBm of the most recent advertisement seen by the adapter.
+    # 0 means the property is absent — typically a cached entry from a
+    # previous discovery whose source is no longer transmitting (BT
+    # speaker powered off, phone out of range). Live entries are
+    # negative (e.g. -45 dBm strong, -90 dBm weak).
+    rssi: int = 0
 
 
 class BluetoothBackend(Protocol):

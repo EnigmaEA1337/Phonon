@@ -32,7 +32,7 @@ class TestSettingsModel:
         # AES67 defaults — 48 kHz / S16BE / 2ch matches the AES67 spec.
         # ptime defaulted to 4 ms instead of the spec's 1 ms because Pi 3
         # software-timed RTP at 1 ms saturates one core (one wake per
-        # packet × 1000 packets/sec). 4 ms is still well under any
+        # packet x 1000 packets/sec). 4 ms is still well under any
         # human-perceptible latency.
         assert s.aes67.sample_rate == 48000
         assert s.aes67.audio_format == "S16BE"

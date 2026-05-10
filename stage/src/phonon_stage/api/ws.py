@@ -62,10 +62,15 @@ async def _levels_loop() -> None:
                 # the speaker — they don't need a UI VU for that side.
                 if btype != "capture":
                     continue
-                # Capture bridge = module-alsa-source, parec reads it
-                # directly (no .monitor suffix). Source name is
-                # bt_<safe_name>_in.
-                source_name = f"bt_{name}_in"
+                # Capture bridge is now a null-sink (`bt_<name>_in`) fed
+                # by `arecord | pacat` — the readable PipeWire source is
+                # the null-sink's MONITOR port (`bt_<name>_in.monitor`).
+                # Reading from `bt_<name>_in` directly grabs the silent
+                # sink-side input port, which is why VUs flat-lined after
+                # 260fa8b reverted the alsa-source approach. Keep the
+                # bare-name fallback in the read in case a transitional
+                # bridge variant is still around.
+                source_name = f"bt_{name}_in.monitor"
                 keys.append(key)
                 tasks.append(_read_peak(source_name, duration_ms=20))
 

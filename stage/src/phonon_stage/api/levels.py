@@ -93,11 +93,14 @@ async def get_levels() -> dict[str, float]:
         name = bridge.get("name", "")
         btype = bridge.get("type", "")
         if btype == "playback":
-            # bt_<name> is a sink — read from its monitor
+            # bt_<name> is a module-alsa-sink — read from its monitor
             device = f"bt_{name}.monitor"
         elif btype == "capture":
-            # bt_<name>_in is a source (module-alsa-source) — read directly
-            device = f"bt_{name}_in"
+            # bt_<name>_in is a null-sink fed by pacat — the readable
+            # source is the null-sink's monitor port. (Pre-260fa8b the
+            # capture path used module-alsa-source where the source name
+            # had no `.monitor` suffix, hence the bug after the revert.)
+            device = f"bt_{name}_in.monitor"
         else:
             continue
         keys.append(key)

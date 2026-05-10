@@ -361,8 +361,8 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-reset
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-list-bonds
-phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 "GET PORT_DATA_SET"
-phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 "GET CURRENT_DATA_SET"
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query port
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query current
 # System-instance services controllable from the UI's System panel
 # (start/stop/restart only — the daemon doesn't need to enable/disable).
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *
@@ -473,6 +473,12 @@ if [ -f "${REPO_ROOT}/deploy/bt-list-bonds.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/bt-list-bonds.sh"
     ln -sf "${REPO_ROOT}/deploy/bt-list-bonds.sh" /usr/local/sbin/phonon-bt-list-bonds
     echo "  BT bond enumerator wired (sudo phonon-bt-list-bonds available)"
+fi
+
+if [ -f "${REPO_ROOT}/deploy/ptp-query.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/ptp-query.sh"
+    ln -sf "${REPO_ROOT}/deploy/ptp-query.sh" /usr/local/sbin/phonon-ptp-query
+    echo "  PTP query wrapper wired (sudo phonon-ptp-query port|current available)"
 fi
 
 # Enable persistent journal

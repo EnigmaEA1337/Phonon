@@ -100,18 +100,16 @@ async def _query_pmc_state() -> tuple[str, int | None]:
     """
     role = "unknown"
     offset_ns: int | None = None
-    # pmc treats its trailing 'GET <SET>' as a single quoted argument;
-    # passing 'GET' and 'PORT_DATA_SET' as separate argv slots makes
-    # pmc error with 'bad command: GET / bad command: PORT_DATA_SET'.
-    # Sudoers grants the literally-quoted form too.
+    # Routed through the /usr/local/sbin/phonon-ptp-query wrapper so the
+    # sudoers grant is on a no-arg-quirk script (NOPASSWD: phonon-ptp-query
+    # port). Direct `sudo /usr/sbin/pmc -u -b 0 "GET PORT_DATA_SET"` runs
+    # into sudoers/argv tokenizer issues with the quoted command token —
+    # the wrapper sidesteps that entirely.
     proc = await asyncio.create_subprocess_exec(
         "sudo",
         "-n",
-        "/usr/sbin/pmc",
-        "-u",
-        "-b",
-        "0",
-        "GET PORT_DATA_SET",
+        "/usr/local/sbin/phonon-ptp-query",
+        "port",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -138,11 +136,8 @@ async def _query_pmc_state() -> tuple[str, int | None]:
         proc2 = await asyncio.create_subprocess_exec(
             "sudo",
             "-n",
-            "/usr/sbin/pmc",
-            "-u",
-            "-b",
-            "0",
-            "GET CURRENT_DATA_SET",
+            "/usr/local/sbin/phonon-ptp-query",
+            "current",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

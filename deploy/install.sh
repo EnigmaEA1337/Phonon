@@ -287,6 +287,17 @@ fi
 
 echo "[8/11] Installing BT auxiliary services..."
 
+# Capture user-set enable/disable state of BT helpers BEFORE we touch
+# the unit files. We read it now (returns 'not-found' on a fresh
+# machine, 'enabled' or 'disabled' on a previously-installed one) so a
+# subsequent re-run of install.sh respects `systemctl disable
+# phonon-bt-agent` set manually by a user who's running DG60s instead
+# of BlueZ. cat-overwriting the .service file does NOT change the
+# enable symlinks, so capturing here is equivalent to capturing right
+# before the enable step — but doing it now keeps the intent obvious.
+BT_AGENT_PREVSTATE=$(systemctl is-enabled phonon-bt-agent.service 2>/dev/null || echo "not-found")
+BT_UNBLOCK_PREVSTATE=$(systemctl is-enabled phonon-bt-unblock.service 2>/dev/null || echo "not-found")
+
 # Install python3-dbus + python3-gi for bt-agent
 apt-get install -y -qq python3-dbus python3-gi bluez-alsa-utils 2>/dev/null || true
 
@@ -485,13 +496,45 @@ fi
 mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null
 
-# Reload and enable
+# Reload — always pick up unit file changes
 systemctl daemon-reload
-systemctl enable phonon-bt-agent.service --quiet 2>/dev/null
-systemctl enable phonon-bt-unblock.service --quiet 2>/dev/null
-systemctl restart phonon-bt-agent.service 2>/dev/null
-systemctl start phonon-bt-unblock.service 2>/dev/null
-echo "  BT services installed"
+
+# Honor pre-existing user state captured at the top of step 8:
+#   not-found  -> fresh install, enable + start (default behaviour)
+#   enabled    -> keep enabled, restart so the new unit file takes effect
+#   disabled   -> user explicitly disabled (DG60-only Pi, etc.) — do NOT
+#                 re-enable, do NOT start; the unit file is updated but
+#                 left inactive
+#   masked     -> aggressive form of disabled; same handling as disabled
+case "${BT_AGENT_PREVSTATE}" in
+    enabled)
+        systemctl restart phonon-bt-agent.service 2>/dev/null
+        echo "  phonon-bt-agent restarted (kept enabled)"
+        ;;
+    disabled|masked)
+        echo "  phonon-bt-agent left ${BT_AGENT_PREVSTATE} (user state preserved)"
+        ;;
+    *)
+        systemctl enable phonon-bt-agent.service --quiet 2>/dev/null
+        systemctl restart phonon-bt-agent.service 2>/dev/null
+        echo "  phonon-bt-agent enabled (first install)"
+        ;;
+esac
+
+case "${BT_UNBLOCK_PREVSTATE}" in
+    enabled)
+        systemctl restart phonon-bt-unblock.service 2>/dev/null
+        echo "  phonon-bt-unblock restarted (kept enabled)"
+        ;;
+    disabled|masked)
+        echo "  phonon-bt-unblock left ${BT_UNBLOCK_PREVSTATE} (user state preserved)"
+        ;;
+    *)
+        systemctl enable phonon-bt-unblock.service --quiet 2>/dev/null
+        systemctl start phonon-bt-unblock.service 2>/dev/null
+        echo "  phonon-bt-unblock enabled (first install)"
+        ;;
+esac
 
 # -- Step 9/11: Install PTP (linuxptp) ----------------------------------------
 

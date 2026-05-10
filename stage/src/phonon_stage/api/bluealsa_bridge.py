@@ -42,6 +42,15 @@ _ALLOWED_PERIOD_MS = (10, 25, 50, 100, 200)
 _ALLOWED_CHANNELS = (1, 2)
 _ALLOWED_FORMATS = ("s16le", "s24_3le", "s32le")
 
+# arecord(1) wants its format names in a different style than pacat / pactl:
+# 's16le' → 'S16_LE', 's24_3le' → 'S24_3LE', etc. Hardcoded map > parse-and-
+# rebuild because the underscore placement isn't deterministic.
+_ARECORD_FORMAT = {
+    "s16le": "S16_LE",
+    "s24_3le": "S24_3LE",
+    "s32le": "S32_LE",
+}
+
 
 def _settings_key(mac: str, dtype: str) -> str:
     return f"{mac.upper()}_{dtype}"
@@ -92,13 +101,22 @@ def set_bridge_override(mac: str, dtype: str, override: dict[str, Any]) -> None:
 
 
 async def cleanup_stale_bridges() -> None:
-    """Remove any null-sink modules and bridge processes left from a previous run."""
+    """Remove any leftover bridge modules and shell-wrapper processes from a
+    previous run. Covers all three module flavors that have shipped:
+      * module-null-sink — capture path (current) + legacy playback
+      * module-alsa-sink — playback path (current)
+      * module-alsa-source — capture path (transitional, no longer used)
+    Then SIGTERMs every shell wrapper that could still be respawning a pipe."""
     # Clear in-memory registry
     _active_bridges.clear()
-    # Unload all bt_ null-sink modules
     raw = await _run("pactl list modules short")
     for line in raw.splitlines():
-        if "module-null-sink" in line and "bt_" in line:
+        is_bt_module = (
+            ("module-null-sink" in line and "bt_" in line)
+            or ("module-alsa-sink" in line and "bt_" in line)
+            or ("module-alsa-source" in line and "bt_" in line)
+        )
+        if is_bt_module:
             mid = line.split()[0]
             await _run(f"pactl unload-module {mid}")
             logger.info("bluealsa.stale_bridge_cleaned", module=mid)
@@ -404,24 +422,62 @@ async def create_bridge(
         logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback", **eff)
 
     elif device_type == "capture":
-        # BT phone → Phonon. Use the (possibly user-overridden) effective rate.
-        # Pinning bluealsa to a non-negotiated rate forces its internal SRC to
-        # run on every period; combined with module-alsa-source's rigid
-        # period-based polling on a Pi 3 the CPU spike produces underruns.
-        # PipeWire's spa-resample handles rate→graph conversion downstream.
-        period = max(64, int(eff["rate"] * eff["period_ms"] / 1000))
+        # BT phone → Phonon. We DELIBERATELY do NOT use module-alsa-source
+        # here, despite it being the "modern" path that worked for the sink
+        # direction. Empirically on Pi 3 with bluealsa as the underlying PCM:
+        #   * module-alsa-source opens bluealsa via the ALSA plugin, which
+        #     polls() on a fixed period. bluealsa delivers BT-driven bursts
+        #     (~26 ms at 44.1 kHz SBC) so poll() boundaries don't align,
+        #     buffer overflows, and snd_pcm_mmap_commit fails with EPIPE
+        #     in a continuous storm. The source stays SUSPENDED forever
+        #     (WirePlumber: "link failed: 2 of 2 PipeWire links failed to
+        #     activate"), no audio reaches downstream.
+        #   * We tested mmap=false, smaller fragments, tsched=0 — all the
+        #     levers — and the EPIPE storm persists. The plugin layer is
+        #     fundamentally too strict for bluealsa's bursty delivery.
+        # The shell wrapper (arecord | pacat → null-sink) is tolerant
+        # because arecord blocks on the bluealsa fd (no poll timing) and
+        # pacat uses the PipeWire stream API (not ALSA) which absorbs jitter
+        # via its own clock recovery. while-true respawns on disconnect.
+        # The bt_<name>_in null-sink's monitor port is what mappings consume.
+        arecord_format = _ARECORD_FORMAT.get(eff["format"], "S16_LE")
+        period_frames = max(64, int(eff["rate"] * eff["period_ms"] / 1000))
         module_id = await _run(
-            "pactl load-module module-alsa-source "
-            f"source_name=bt_{safe_name}_in "
-            f'source_properties=device.description="{safe_name}-BT-In" '
-            f'device="{bluealsa_pcm}" '
-            f"rate={eff['rate']} channels={eff['channels']} format={eff['format']} "
-            f"fragment_size={period}"
+            "pactl load-module module-null-sink "
+            f"sink_name=bt_{safe_name}_in "
+            f'sink_properties=device.description="{safe_name}-BT-In" '
+            f"format={eff['format']} rate={eff['rate']} channels={eff['channels']}"
         )
         if not module_id or not module_id.strip().isdigit():
-            return {"status": "error", "detail": f"pactl failed: {module_id}"}
+            return {"status": "error", "detail": f"pactl null-sink failed: {module_id}"}
+        bridge_cmd = (
+            f"while true; do "
+            f'arecord -D "{bluealsa_pcm}" '
+            f"-f {arecord_format} -r {eff['rate']} -c {eff['channels']} "
+            f"--period-size={period_frames} --buffer-size={period_frames * 2} - "
+            f"2>/dev/null "
+            f"| pacat --device=bt_{safe_name}_in "
+            f"--format={eff['format']} --rate={eff['rate']} --channels={eff['channels']} "
+            f"--latency-msec={eff['period_ms']} "
+            # Prevent WirePlumber from auto-routing this stream to the
+            # default sink — its sole consumer is the null-sink we just
+            # created, mappings hang off the .monitor port.
+            f"--property=node.dont-reconnect=true "
+            f"--property=node.passive=true 2>/dev/null; "
+            f"sleep 0.5; done"
+        )
+        proc = await asyncio.create_subprocess_shell(
+            bridge_cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            # New session = new process group, so destroy_bridge can SIGTERM
+            # the whole pipeline (parent shell + arecord + pacat) at once.
+            start_new_session=True,
+        )
         _active_bridges[key] = {
             "module_id": int(module_id.strip()),
+            "bridge_pid": proc.pid,
             "type": "capture",
             "name": safe_name,
             "rate": eff["rate"],
@@ -441,14 +497,18 @@ async def destroy_bridge(mac: str, device_type: str) -> dict[str, str]:
     if not bridge:
         return {"status": "not_found", "mac": mac}
 
-    # Legacy bridges had a 'bridge_pid' from the shell wrapper era.
-    # New module-alsa-source/sink bridges only own a pactl module id.
-    # Kill the wrapper if present (no-op for new bridges) AND unload
-    # the pactl module — covers both formats during the transition.
+    # Two bridge variants coexist now:
+    #   * capture: shell wrapper (`arecord | pacat`) feeding a null-sink
+    #     → has both bridge_pid (process-group leader) and module_id
+    #   * playback: module-alsa-sink only → just module_id
+    # Kill the wrapper's whole process group (SIGTERM the leader → all
+    # descendants get the signal) so arecord and pacat go down together.
+    # Single-pid os.kill leaves orphan children that keep arecord-ing
+    # the bluealsa PCM and produce ghost EPIPE storms.
     pid = bridge.get("bridge_pid")
     if pid is not None:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(int(str(pid)), signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(int(str(pid)), signal.SIGTERM)
 
     module_id = bridge.get("module_id")
     if module_id is not None:

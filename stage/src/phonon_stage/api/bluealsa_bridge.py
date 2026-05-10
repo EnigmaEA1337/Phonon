@@ -362,16 +362,41 @@ async def create_bridge(
             )
             await destroy_bridge(mac, device_type)
         else:
-            # The module-id is enough to verify the bridge is still loaded.
+            # Two liveness signals to check:
+            #   * pactl module loaded (covers both playback module-alsa-sink
+            #     AND capture null-sink — both go through pactl)
+            #   * bridge_pid alive (capture wrapper only — None for sinks)
+            # If EITHER signal is dead we must recreate. Old code only
+            # looked at the module: when the wrapper crashed (or got
+            # killed during diagnostics), the null-sink module stayed
+            # loaded so 'already_exists' kept lying while the pacat that
+            # actually feeds it was gone — bridge looked alive but
+            # produced silence forever.
             module_id = existing.get("module_id")
+            module_alive = False
             if module_id is not None:
                 mods = await _run("pactl list modules short")
-                if any(line.startswith(f"{module_id}\t") for line in mods.splitlines()):
-                    return {"status": "already_exists", "mac": mac, "name": safe_name}
-                del _active_bridges[key]
-                logger.warning(
-                    "bluealsa.bridge_module_gone_recreating", mac=mac, btype=device_type
-                )
+                module_alive = any(line.startswith(f"{module_id}\t") for line in mods.splitlines())
+            pid_raw = existing.get("bridge_pid")
+            pid_alive = True  # if no PID stored (sink path), don't fail on it
+            if pid_raw is not None:
+                pid_alive = False
+                with contextlib.suppress(ProcessLookupError, OSError, ValueError):
+                    os.kill(int(str(pid_raw)), 0)
+                    pid_alive = True
+            if module_alive and pid_alive:
+                return {"status": "already_exists", "mac": mac, "name": safe_name}
+            # One side died — destroy_bridge cleans up whatever's left
+            # (kills any stale process group, unloads the module) so we
+            # start fresh below.
+            await destroy_bridge(mac, device_type)
+            logger.warning(
+                "bluealsa.bridge_dead_recreating",
+                mac=mac,
+                btype=device_type,
+                module_alive=module_alive,
+                pid_alive=pid_alive,
+            )
 
     # Sweep any leftover pactl module with this exact sink/source name —
     # protects against a stale entry from a previous daemon run that

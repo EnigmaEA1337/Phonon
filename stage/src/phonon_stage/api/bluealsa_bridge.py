@@ -341,16 +341,33 @@ async def create_bridge(
 
     if key in _active_bridges:
         existing = _active_bridges[key]
-        # The module-id is enough to verify the bridge is still loaded —
-        # there's no shell wrapper process to ping anymore. If pactl
-        # reports the module gone, recreate.
-        module_id = existing.get("module_id")
-        if module_id is not None:
-            mods = await _run("pactl list modules short")
-            if any(line.startswith(f"{module_id}\t") for line in mods.splitlines()):
-                return {"status": "already_exists", "mac": mac, "name": safe_name}
-            del _active_bridges[key]
-            logger.warning("bluealsa.bridge_module_gone_recreating", mac=mac, btype=device_type)
+        # If the negotiated A2DP rate has changed (typical: a sync ran
+        # during boot before bluealsa published the codec line, so we
+        # fell back to 48 kHz; a later sync sees the real 44.1 kHz of
+        # the SBC phone), tear down and recreate. Otherwise the wrapper
+        # stays stuck forcing bluealsa to do internal SRC for the entire
+        # run and we eat CPU + crackle for nothing.
+        stored_rate = int(existing.get("rate", 0) or 0)
+        if rate > 0 and stored_rate > 0 and rate != stored_rate:
+            logger.info(
+                "bluealsa.bridge_rate_changed_recreating",
+                mac=mac,
+                btype=device_type,
+                old_rate=stored_rate,
+                new_rate=rate,
+            )
+            await destroy_bridge(mac, device_type)
+        else:
+            # The module-id is enough to verify the bridge is still loaded.
+            module_id = existing.get("module_id")
+            if module_id is not None:
+                mods = await _run("pactl list modules short")
+                if any(line.startswith(f"{module_id}\t") for line in mods.splitlines()):
+                    return {"status": "already_exists", "mac": mac, "name": safe_name}
+                del _active_bridges[key]
+                logger.warning(
+                    "bluealsa.bridge_module_gone_recreating", mac=mac, btype=device_type
+                )
 
     # Sweep any leftover pactl module with this exact sink/source name —
     # protects against a stale entry from a previous daemon run that

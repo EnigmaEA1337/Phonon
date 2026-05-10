@@ -496,15 +496,29 @@ async def create_bridge(
         )
         if not module_id or not module_id.strip().isdigit():
             return {"status": "error", "detail": f"pactl null-sink failed: {module_id}"}
+        # Empirical Pi 3 tuning, learned the hard way:
+        #   * arecord buffer = 4x period absorbs the BT-bursty delivery
+        #     (~26 ms SBC frames at 44.1 kHz) without wedging the kernel
+        #     pipe to pacat. 2x was tight enough that a single missed
+        #     scheduling slice triggered cascading xruns on pacat → graph
+        #     stall after ~1 s of audio.
+        #   * pacat --latency-msec is the target stream latency, which on
+        #     Pi 3 needs at least 4x the bluealsa frame interval to ride
+        #     out scheduling jitter. 50 ms == 2 BT frames, too short.
+        #     200 ms is comfortable and still well within human-acceptable
+        #     monitoring latency for our use case (mostly distributed
+        #     reinforcement, not live monitoring of self).
+        pacat_latency_ms = max(eff["period_ms"], 200)
+        arecord_buf_frames = period_frames * 4
         bridge_cmd = (
             f"while true; do "
             f'arecord -D "{bluealsa_pcm}" '
             f"-f {arecord_format} -r {eff['rate']} -c {eff['channels']} "
-            f"--period-size={period_frames} --buffer-size={period_frames * 2} - "
+            f"--period-size={period_frames} --buffer-size={arecord_buf_frames} - "
             f"2>/dev/null "
             f"| pacat --device=bt_{safe_name}_in "
             f"--format={eff['format']} --rate={eff['rate']} --channels={eff['channels']} "
-            f"--latency-msec={eff['period_ms']} "
+            f"--latency-msec={pacat_latency_ms} "
             # Prevent WirePlumber from auto-routing this stream to the
             # default sink — its sole consumer is the null-sink we just
             # created, mappings hang off the .monitor port. We do NOT

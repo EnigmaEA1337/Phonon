@@ -492,6 +492,17 @@ if [ -f "${REPO_ROOT}/deploy/ptp-query.sh" ]; then
     echo "  PTP query wrapper wired (sudo phonon-ptp-query port|current available)"
 fi
 
+# Disable rival PipeWire stacks for non-phonon users. Two pipewire+
+# wireplumber instances on the same hardware fight over ALSA mixer state,
+# manifests as 0% hardware volumes after a reboot or stuck profiles.
+# Idempotent — the script masks user units in each user's home, then
+# stops live ones. Only phonon's stack stays.
+if [ -f "${REPO_ROOT}/deploy/disable-rival-audio.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/disable-rival-audio.sh"
+    PHONON_USER="${PHONON_USER}" bash "${REPO_ROOT}/deploy/disable-rival-audio.sh" \
+        --phonon-user "${PHONON_USER}" 2>&1 | sed 's/^/  /'
+fi
+
 # Enable persistent journal
 mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null

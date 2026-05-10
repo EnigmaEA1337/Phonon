@@ -341,20 +341,24 @@ async def create_bridge(
 
     if key in _active_bridges:
         existing = _active_bridges[key]
-        # If the negotiated A2DP rate has changed (typical: a sync ran
-        # during boot before bluealsa published the codec line, so we
-        # fell back to 48 kHz; a later sync sees the real 44.1 kHz of
-        # the SBC phone), tear down and recreate. Otherwise the wrapper
-        # stays stuck forcing bluealsa to do internal SRC for the entire
-        # run and we eat CPU + crackle for nothing.
+        # Compare the bridge's stored rate against the rate we'd USE if we
+        # were creating fresh right now (override > negotiated > 48000).
+        # Naive "stored vs negotiated" compares apples to oranges: if the
+        # user set an override forcing 48000 and the phone negotiates
+        # 44100, every sync detects "stored 48000 ≠ negotiated 44100",
+        # recreates with override applied → 48000 again → infinite recreate
+        # loop. Resolving effective on both sides means the rate-change
+        # path only fires when the bridge would actually come up different.
         stored_rate = int(existing.get("rate", 0) or 0)
-        if rate > 0 and stored_rate > 0 and rate != stored_rate:
+        next_override = get_bridge_override(mac, device_type)
+        next_rate = _resolve_effective_params(next_override, rate, buffer_ms)["rate"]
+        if stored_rate > 0 and next_rate != stored_rate:
             logger.info(
                 "bluealsa.bridge_rate_changed_recreating",
                 mac=mac,
                 btype=device_type,
                 old_rate=stored_rate,
-                new_rate=rate,
+                new_rate=next_rate,
             )
             await destroy_bridge(mac, device_type)
         else:

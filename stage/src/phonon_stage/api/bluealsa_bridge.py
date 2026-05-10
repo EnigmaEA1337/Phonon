@@ -507,9 +507,14 @@ async def create_bridge(
             f"--latency-msec={eff['period_ms']} "
             # Prevent WirePlumber from auto-routing this stream to the
             # default sink — its sole consumer is the null-sink we just
-            # created, mappings hang off the .monitor port.
-            f"--property=node.dont-reconnect=true "
-            f"--property=node.passive=true 2>/dev/null; "
+            # created, mappings hang off the .monitor port. We do NOT
+            # set node.passive — that marks the stream as a non-driver,
+            # and combined with the null-sink (also non-driver) leaves
+            # the graph with no active source of timing → bt_1337_in
+            # stays in state=R but rate=0 in pw-top, no samples actually
+            # flow through monitor_FL/FR. Removing passive lets the
+            # sink mapping (DG60) drive the chain end-to-end.
+            f"--property=node.dont-reconnect=true 2>/dev/null; "
             f"sleep 0.5; done"
         )
         proc = await asyncio.create_subprocess_shell(

@@ -100,6 +100,10 @@ async def _query_pmc_state() -> tuple[str, int | None]:
     """
     role = "unknown"
     offset_ns: int | None = None
+    # pmc treats its trailing 'GET <SET>' as a single quoted argument;
+    # passing 'GET' and 'PORT_DATA_SET' as separate argv slots makes
+    # pmc error with 'bad command: GET / bad command: PORT_DATA_SET'.
+    # Sudoers grants the literally-quoted form too.
     proc = await asyncio.create_subprocess_exec(
         "sudo",
         "-n",
@@ -107,8 +111,7 @@ async def _query_pmc_state() -> tuple[str, int | None]:
         "-u",
         "-b",
         "0",
-        "GET",
-        "PORT_DATA_SET",
+        "GET PORT_DATA_SET",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -139,8 +142,7 @@ async def _query_pmc_state() -> tuple[str, int | None]:
             "-u",
             "-b",
             "0",
-            "GET",
-            "CURRENT_DATA_SET",
+            "GET CURRENT_DATA_SET",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

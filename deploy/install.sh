@@ -361,8 +361,8 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-update
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-reset
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-list-bonds
-phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 GET PORT_DATA_SET
-phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 GET CURRENT_DATA_SET
+phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 "GET PORT_DATA_SET"
+phonon ALL=(ALL) NOPASSWD: /usr/sbin/pmc -u -b 0 "GET CURRENT_DATA_SET"
 # System-instance services controllable from the UI's System panel
 # (start/stop/restart only — the daemon doesn't need to enable/disable).
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *

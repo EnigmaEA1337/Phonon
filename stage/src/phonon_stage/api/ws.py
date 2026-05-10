@@ -42,11 +42,14 @@ async def _levels_loop() -> None:
     is the dominant CPU cost (~25-44% on the sender). 1 Hz is enough
     for visual feedback without saturating the graph; we'll switch to
     a single persistent parec stream later for smoother UX."""
+    from phonon_stage.api.aes67 import _active_streams
     from phonon_stage.api.bluealsa_bridge import _active_bridges
     from phonon_stage.api.levels import _read_peak
 
     while True:
-        if clients and _active_bridges:
+        # Run as long as ANY level source exists. On a sender Pi this
+        # is bluealsa bridges; on a receiver Pi it's AES67 recv streams.
+        if clients and (_active_bridges or _active_streams):
             levels: dict[str, float] = {}
             tasks: list[Any] = []
             keys: list[str] = []
@@ -65,13 +68,25 @@ async def _levels_loop() -> None:
                 # Capture bridge is now a null-sink (`bt_<name>_in`) fed
                 # by `arecord | pacat` — the readable PipeWire source is
                 # the null-sink's MONITOR port (`bt_<name>_in.monitor`).
-                # Reading from `bt_<name>_in` directly grabs the silent
-                # sink-side input port, which is why VUs flat-lined after
-                # 260fa8b reverted the alsa-source approach. Keep the
-                # bare-name fallback in the read in case a transitional
-                # bridge variant is still around.
                 source_name = f"bt_{name}_in.monitor"
                 keys.append(key)
+                tasks.append(_read_peak(source_name, duration_ms=20))
+
+            # AES67 receivers expose an Audio/Source named
+            # `aes67-recv-<stream_name>`. parec reads it directly — no
+            # monitor suffix because rtp-source IS a source. We skip
+            # send streams: their PipeWire node is Audio/Sink and the
+            # interesting level is the upstream feeder, which is
+            # already covered by the bluealsa-bridge case above (or by
+            # the local non-BT input sources, which we don't meter yet).
+            for sid, s in _active_streams.items():
+                if s.get("kind") != "recv":
+                    continue
+                stream_name = str(s.get("name", ""))
+                if not stream_name:
+                    continue
+                source_name = f"aes67-recv-{stream_name}"
+                keys.append(f"aes67_{sid}")
                 tasks.append(_read_peak(source_name, duration_ms=20))
 
             if tasks:

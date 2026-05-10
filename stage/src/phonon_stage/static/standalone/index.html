@@ -728,12 +728,17 @@ async function refreshAll() {
 }
 
 // ── Render: Audio Devices ────────────────────────────
-function _hwVolWidget(cardName, alsaCards) {
-  // Find a matching ALSA mixer card by short name. amixer's short name
-  // (e.g. 'DG60') matches d.name from /capabilities, which itself comes
-  // from /proc/asound/cards. Pick the first playback control with a real
-  // volume range — that's typically 'PCM' or 'Master'.
-  const card = (alsaCards || []).find(c => c.card_name === cardName);
+function _hwVolWidget(deviceId, deviceName, alsaCards) {
+  // Match the ALSA mixer card. /capabilities exposes both `id` (the
+  // ALSA short name, e.g. 'DG60') and `name` (the human description,
+  // 'Avantree DG60'). /audio/alsa/cards uses `card_name` (short) and
+  // `card_description` (long). Try in order of strictness so a name
+  // collision between two cards never fuses their HW vol indicators.
+  const card = (alsaCards || []).find(c =>
+    c.card_name === deviceId
+    || c.card_name === deviceName
+    || c.card_description === deviceName
+  );
   if (!card) return '';
   const ctrl = (card.controls || []).find(c => c.has_playback && c.volume_max > c.volume_min);
   if (!ctrl) return '';
@@ -748,7 +753,7 @@ function _hwVolWidget(cardName, alsaCards) {
     <span style="color:var(--text-fade);font-size:9px">HW vol</span>
     <span style="color:${color};font-family:var(--font-m);margin-left:4px">${ctrl.volume_pct}%${muteIcon}</span>
     <button class="btn" style="padding:1px 5px;font-size:9px;margin-left:6px"
-            onclick="openHwVolEditor('${encodeURIComponent(cardName)}','${encodeURIComponent(ctrl.name)}')"
+            onclick="openHwVolEditor('${encodeURIComponent(card.card_name)}','${encodeURIComponent(ctrl.name)}')"
             title="Set ALSA hardware volume directly (separate from PipeWire fader)">Edit</button>
   </div>`;
 }
@@ -764,7 +769,7 @@ function renderAudioDevices(devices, nodes, alsaCards) {
     return `<div class="card">
       <div class="card-title">${d.name} <span class="card-tag ${tag}">${label}</span></div>
       <div class="card-meta">ID: ${d.id} · Driver: ${d.driver} · Card ${d.card_index}</div>
-      ${_hwVolWidget(d.name, alsaCards)}
+      ${_hwVolWidget(d.id, d.name, alsaCards)}
     </div>`;
   });
 

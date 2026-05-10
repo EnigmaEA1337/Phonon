@@ -315,6 +315,15 @@ def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     ch_raw = fmt.get("channels", 0)
                     channels = ch_raw.get("default", 0) if isinstance(ch_raw, dict) else ch_raw
 
+            # ALSA backing: api.alsa.card.name is the human-friendly card
+            # name ('Avantree DG60'); we normalize to the short alsa name
+            # ('DG60') because amixer addresses cards by that. PipeWire
+            # exposes both — prefer api.alsa.card.name fallback to alsa.card.
+            alsa_card = (
+                props.get("alsa.card_name", "")
+                or props.get("alsa.card", "")
+                or props.get("api.alsa.card.name", "")
+            )
             nodes.append(
                 {
                     "id": obj.get("id", 0),
@@ -328,6 +337,7 @@ def parse_pw_dump_nodes(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "latency_ms": round(latency_ns / 1_000_000, 1) if latency_ns else 0.0,
                     "sample_rate": sample_rate,
                     "channels": channels,
+                    "alsa_card": alsa_card,
                 }
             )
     return nodes

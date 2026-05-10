@@ -21,6 +21,7 @@ class PwNodeResponse(BaseModel):
     latency_ms: float = 0.0
     sample_rate: int = 0
     channels: int = 0
+    alsa_card: str = ""
 
 
 class PwPortResponse(BaseModel):
@@ -56,6 +57,7 @@ async def list_nodes(request: Request) -> list[PwNodeResponse]:
             latency_ms=n.latency_ms,
             sample_rate=n.sample_rate,
             channels=n.channels,
+            alsa_card=n.alsa_card,
         )
         for n in nodes
     ]

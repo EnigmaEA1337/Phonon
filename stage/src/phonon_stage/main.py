@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from phonon_stage.api.aes67 import router as aes67_router
+from phonon_stage.api.alsa_mixer import router as alsa_mixer_router
 from phonon_stage.api.bluealsa_bridge import router as bluealsa_router
 from phonon_stage.api.bluetooth import router as bluetooth_router
 from phonon_stage.api.browse import router as browse_router
@@ -180,6 +181,7 @@ def create_app(
     app.include_router(browse_router)
     app.include_router(system_router)
     app.include_router(bluealsa_router)
+    app.include_router(alsa_mixer_router)
     app.include_router(levels_router)
     app.include_router(ws_router)
     app.include_router(aes67_router)

@@ -42,6 +42,7 @@ class RealPipeWireBackend:
                     latency_ms=float(n.get("latency_ms") or 0.0),
                     sample_rate=int(n.get("sample_rate") or 0),
                     channels=int(n.get("channels") or 0),
+                    alsa_card=str(n.get("alsa_card") or ""),
                 )
                 for n in raw_nodes
             ]

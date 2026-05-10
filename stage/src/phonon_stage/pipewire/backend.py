@@ -22,6 +22,10 @@ class PwNode:
     latency_ms: float = 0.0  # Buffer latency in milliseconds
     sample_rate: int = 0  # e.g. 48000
     channels: int = 0  # e.g. 2
+    # ALSA backing — populated for nodes whose factory is api.alsa.pcm.{sink,source}
+    # so the UI can join PipeWire-side stream volume with the underlying
+    # hardware mixer state. Empty for non-ALSA nodes (BT, network streams).
+    alsa_card: str = ""  # e.g. "DG60" (matches `aplay -l` card name)
 
 
 @dataclass(frozen=True)

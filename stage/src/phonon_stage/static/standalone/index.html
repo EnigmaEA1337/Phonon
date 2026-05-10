@@ -651,13 +651,14 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns, updateStatus] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns, updateStatus, alsaCards] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
     api('/aes67/streams'), api('/aes67/discovered'), api('/ptp/status'),
     api('/settings'), api('/settings/network-interfaces'),
     api('/pipewire/xruns'),
     api('/system/update/status'),
+    api('/audio/alsa/cards'),
   ]);
 
   if (health) {
@@ -684,8 +685,9 @@ async function refreshAll() {
   if (Array.isArray(nodes) && (nodes.length > 0 || prevNodes.length === 0)) {
     state.nodes = nodes;
     renderPatchNodes(nodes, ports || state.ports || []);
-    renderAudioDevices(caps?.audio_devices || [], nodes);
+    renderAudioDevices(caps?.audio_devices || [], nodes, alsaCards || []);
   }
+  if (Array.isArray(alsaCards)) state.alsaCards = alsaCards;
   if (Array.isArray(ports) && (ports.length > 0 || (state.ports || []).length === 0)) {
     state.ports = ports;
   }
@@ -726,17 +728,43 @@ async function refreshAll() {
 }
 
 // ── Render: Audio Devices ────────────────────────────
-function renderAudioDevices(devices, nodes) {
+function _hwVolWidget(cardName, alsaCards) {
+  // Find a matching ALSA mixer card by short name. amixer's short name
+  // (e.g. 'DG60') matches d.name from /capabilities, which itself comes
+  // from /proc/asound/cards. Pick the first playback control with a real
+  // volume range — that's typically 'PCM' or 'Master'.
+  const card = (alsaCards || []).find(c => c.card_name === cardName);
+  if (!card) return '';
+  const ctrl = (card.controls || []).find(c => c.has_playback && c.volume_max > c.volume_min);
+  if (!ctrl) return '';
+  // Color the indicator red when HW is < 10% — that's the silent-DAC
+  // failure mode we just hunted down for the DG60.
+  const color = ctrl.muted ? 'var(--red)'
+              : ctrl.volume_pct < 10 ? 'var(--red)'
+              : ctrl.volume_pct < 30 ? 'var(--yellow)'
+              : 'var(--text-mid)';
+  const muteIcon = ctrl.muted ? ' [MUTE]' : '';
+  return `<div class="card-meta" style="margin-top:3px">
+    <span style="color:var(--text-fade);font-size:9px">HW vol</span>
+    <span style="color:${color};font-family:var(--font-m);margin-left:4px">${ctrl.volume_pct}%${muteIcon}</span>
+    <button class="btn" style="padding:1px 5px;font-size:9px;margin-left:6px"
+            onclick="openHwVolEditor('${encodeURIComponent(cardName)}','${encodeURIComponent(ctrl.name)}')"
+            title="Set ALSA hardware volume directly (separate from PipeWire fader)">Edit</button>
+  </div>`;
+}
+
+function renderAudioDevices(devices, nodes, alsaCards) {
   const el = document.getElementById('audio-devices');
 
   // ALSA devices
-  const alsaCards = (devices || []).map(d => {
+  const alsaCardsRendered = (devices || []).map(d => {
     const type = d.playback && d.capture ? 'both' : d.playback ? 'sink' : 'source';
     const tag = type === 'both' ? 'tag-both' : type === 'sink' ? 'tag-sink' : 'tag-source';
     const label = type === 'both' ? 'IN/OUT' : type === 'sink' ? 'OUTPUT' : 'INPUT';
     return `<div class="card">
       <div class="card-title">${d.name} <span class="card-tag ${tag}">${label}</span></div>
       <div class="card-meta">ID: ${d.id} · Driver: ${d.driver} · Card ${d.card_index}</div>
+      ${_hwVolWidget(d.name, alsaCards)}
     </div>`;
   });
 
@@ -766,7 +794,7 @@ function renderAudioDevices(devices, nodes) {
     </div>`;
   });
 
-  const all = [...alsaCards, ...btCards];
+  const all = [...alsaCardsRendered, ...btCards];
   if (!all.length) { el.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No devices detected</div>'; return; }
   el.innerHTML = all.join('');
 }
@@ -2741,6 +2769,92 @@ async function resetBridgeSettings() {
     refreshBtHealth();
   } else {
     alert('Failed to reset bridge settings');
+  }
+}
+
+// ── ALSA hardware volume editor ──────────────────────────────────────
+// Surfaces the per-card mixer volume that lives BELOW PipeWire — the one
+// that goes silently to 0% on DG60 after some BT/USB cycles even though
+// the PipeWire stream volume reads 50%+. Slider sends `amixer sset` via
+// /audio/alsa/cards/<card>/controls/<ctrl> on each input event so the
+// effect is immediate.
+async function openHwVolEditor(card, control) {
+  card = decodeURIComponent(card);
+  control = decodeURIComponent(control);
+  // Refresh card state so the slider starts at the truth, not at our
+  // last cached snapshot.
+  const cardData = await api(`/audio/alsa/cards/${encodeURIComponent(card)}`);
+  if (!cardData) { alert('Failed to load ALSA card state'); return; }
+  const ctrl = (cardData.controls || []).find(c => c.name === control);
+  if (!ctrl) { alert(`Control ${control} disappeared`); return; }
+
+  let overlay = document.getElementById('hw-vol-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'hw-vol-overlay';
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:380px;width:90vw">
+      <div class="modal-head">
+        <h2>HW vol — ${cardData.card_description || cardData.card_name} · ${ctrl.name}</h2>
+        <button class="modal-close" onclick="closeHwVolEditor()">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:10px;color:var(--text-fade);margin-bottom:6px">
+          ALSA hardware mixer — independent of the PipeWire fader.
+          Range ${ctrl.volume_min}..${ctrl.volume_max} (${(ctrl.volume_max - ctrl.volume_min + 1)} steps).
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <input type="range" min="0" max="100" value="${ctrl.volume_pct}" id="hw-vol-slider"
+                 style="flex:1" oninput="document.getElementById('hw-vol-val').textContent=this.value+'%';">
+          <span id="hw-vol-val" style="font-family:var(--font-m);font-size:14px;color:var(--cyan);min-width:40px;text-align:right">${ctrl.volume_pct}%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:11px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="hw-mute-toggle" ${ctrl.muted ? 'checked' : ''}>
+            Mute (hardware)
+          </label>
+          <span style="flex:1"></span>
+          <span style="font-size:9px;color:var(--text-fade)">currently ${ctrl.volume_db.toFixed(1)} dB</span>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" onclick="closeHwVolEditor()">Cancel</button>
+          <button class="btn btn-primary" onclick="applyHwVol('${encodeURIComponent(card)}','${encodeURIComponent(control)}')">Apply</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function closeHwVolEditor() {
+  const overlay = document.getElementById('hw-vol-overlay');
+  if (overlay) overlay.remove();
+}
+
+async function applyHwVol(card, control) {
+  card = decodeURIComponent(card);
+  control = decodeURIComponent(control);
+  const slider = document.getElementById('hw-vol-slider');
+  const muteEl = document.getElementById('hw-mute-toggle');
+  if (!slider || !muteEl) return;
+  const body = {
+    volume_pct: Number(slider.value),
+    muted: muteEl.checked,
+  };
+  const r = await api(
+    `/audio/alsa/cards/${encodeURIComponent(card)}/controls/${encodeURIComponent(control)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (r) {
+    closeHwVolEditor();
+    // Force a refresh so the indicator on the card updates immediately.
+    refreshAll();
+  } else {
+    alert('Failed to apply hardware volume');
   }
 }
 

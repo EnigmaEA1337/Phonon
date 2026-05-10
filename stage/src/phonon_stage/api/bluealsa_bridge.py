@@ -398,16 +398,32 @@ async def create_bridge(
                 pid_alive=pid_alive,
             )
 
-    # Sweep any leftover pactl module with this exact sink/source name —
-    # protects against a stale entry from a previous daemon run that
-    # left the module loaded but lost its in-memory tracking.
-    sink_or_source = "source_name" if device_type == "capture" else "sink_name"
+    # Sweep any leftover pactl module with this exact sink name. Protects
+    # against:
+    #   * a stale entry from a previous daemon run that left the module
+    #     loaded but lost its in-memory tracking
+    #   * a destroy_bridge whose `pactl unload-module` failed silently
+    #     (e.g. the module was busy because a stream still held it open),
+    #     leaving a zombie that shows up as a duplicate "BT input" device
+    #     in the UI when the next bridge creates a new module with the
+    #     same sink_name.
+    #
+    # BOTH variants we ship today use sink_name= as the key (the capture
+    # null-sink AND the playback alsa-sink — only the legacy transitional
+    # alsa-source used source_name=, and we now sweep that for free since
+    # the filter spans null-sink/alsa-sink/alsa-source).
     name_token = f"bt_{safe_name}_in" if device_type == "capture" else f"bt_{safe_name}"
     existing_mods = await _run("pactl list modules short")
     for line in existing_mods.splitlines():
+        is_bt_module = (
+            "module-null-sink" in line
+            or "module-alsa-sink" in line
+            or "module-alsa-source" in line
+        )
         # Match the exact name=token to avoid 'bt_1337' wiping 'bt_1337-2_in'.
-        if ("module-alsa-source" in line or "module-alsa-sink" in line) and (
-            f"{sink_or_source}={name_token}" in line
+        # Both sink_name= (current) and source_name= (legacy) are checked.
+        if is_bt_module and (
+            f"sink_name={name_token}" in line or f"source_name={name_token}" in line
         ):
             old_mid = line.split()[0]
             await _run(f"pactl unload-module {old_mid}")

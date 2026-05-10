@@ -2552,6 +2552,8 @@ async function refreshBtHealth() {
     const ch = b.channels ? `${b.channels}ch` : '';
     const lat = b.codec_latency_ms ? `~${b.codec_latency_ms + (b.bridge_buffer_ms||0)}ms lat` : '';
     const typeColor = b.type === 'capture' ? 'var(--green)' : 'var(--magenta)';
+    const macAttr = encodeURIComponent(b.mac || '');
+    const typeAttr = encodeURIComponent(b.type || '');
     return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-1);border:1px solid var(--border);border-radius:4px;margin-bottom:3px;font-size:10px;font-family:var(--font-m)">
       <span style="color:${typeColor};text-transform:uppercase;letter-spacing:0.5px;font-size:9px;font-weight:600;min-width:46px">${b.type === 'capture' ? 'IN' : 'OUT'}</span>
       <span style="color:var(--text)">${b.name || b.mac}</span>
@@ -2564,11 +2566,183 @@ async function refreshBtHealth() {
       <span title="Total xruns since pipewire start (delta vs last 3s shown when ↑)" style="color:${xrunColor};font-weight:600;min-width:74px;text-align:right">
         ${b.xruns_total} xrun${delta > 0 ? ` <span style="color:var(--red)">↑${delta}</span>` : ''}
       </span>
+      <button class="btn" style="padding:2px 6px;font-size:11px;line-height:1" title="Bridge settings" onclick="openBridgeSettings('${macAttr}','${typeAttr}')">⚙</button>
     </div>`;
   }).join('');
 }
 setInterval(refreshBtHealth, 3000);
 refreshBtHealth();
+
+// ── Bridge per-channel settings modal ─────────────────────────────────
+// One modal shared across all bridges. Re-rendered each time it opens so
+// we always show fresh negotiated/effective values. While open we poll the
+// runtime endpoint every 1.5 s for live xrun count.
+let _bridgeSettingsPoll = null;
+let _bridgeSettingsKey = null;     // "MAC_dtype" — null when modal closed
+let _bridgeSettingsLocal = {};     // staged override the user is composing
+
+function _bsPills(name, options, current, label, fmtLabel) {
+  const pills = options.map(o => {
+    const v = o.value;
+    const sel = (v === current);
+    return `<button type="button" class="btn" data-bs-field="${name}" data-bs-val="${v === null ? '' : v}"
+            style="padding:3px 8px;font-size:10px;${sel ? 'border-color:var(--cyan);color:var(--cyan)' : ''}"
+            onclick="_bsSet('${name}', ${v === null ? 'null' : (typeof v === 'number' ? v : `'${v}'`)})">${fmtLabel(o)}</button>`;
+  }).join('');
+  return `<div style="margin-bottom:10px">
+    <div style="font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${label}</div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">${pills}</div>
+  </div>`;
+}
+
+function _bsSet(field, value) {
+  if (value === null) delete _bridgeSettingsLocal[field];
+  else _bridgeSettingsLocal[field] = value;
+  _bsRenderForm();
+}
+
+function _bsRenderForm() {
+  // Re-renders just the form section so pill highlighting tracks state.
+  const formEl = document.getElementById('bs-form');
+  if (!formEl || !_bridgeSettingsKey) return;
+  const data = formEl._snapshot || {};
+  const ov = _bridgeSettingsLocal;
+  const eff = data.effective || {};
+  const nego = data.negotiated || {};
+
+  const rateOpts = [
+    { value: null, label: `Auto (${nego.rate || '—'})` },
+    { value: 44100, label: '44.1 kHz' },
+    { value: 48000, label: '48 kHz' },
+  ];
+  const periodOpts = [10, 25, 50, 100, 200].map(v => ({ value: v, label: `${v} ms` }));
+  periodOpts.unshift({ value: null, label: 'Auto (50 ms)' });
+  const channelOpts = [
+    { value: null, label: `Auto (${nego.channels || '—'})` },
+    { value: 1, label: 'Mono' },
+    { value: 2, label: 'Stereo' },
+  ];
+  const formatOpts = [
+    { value: null, label: 'Auto (s16le)' },
+    { value: 's16le', label: 's16le' },
+    { value: 's24_3le', label: 's24_3le' },
+    { value: 's32le', label: 's32le' },
+  ];
+  const codecOpts = [
+    { value: null, label: 'Auto (negotiated)' },
+    ...((nego.available_codecs || []).map(c => ({ value: c, label: c }))),
+  ];
+
+  formEl.innerHTML = `
+    ${_bsPills('rate', rateOpts, ov.rate ?? null, 'Sample rate', o => o.label)}
+    ${_bsPills('period_ms', periodOpts, ov.period_ms ?? null, 'Period (latency)', o => o.label)}
+    ${_bsPills('channels', channelOpts, ov.channels ?? null, 'Channels', o => o.label)}
+    ${_bsPills('format', formatOpts, ov.format ?? null, 'Format', o => o.label)}
+    ${_bsPills('codec_preference', codecOpts, ov.codec_preference ?? null, 'BT codec', o => o.label)}
+    <div style="margin-top:12px;padding:8px;background:var(--bg-2);border-radius:4px;font-size:10px;color:var(--text-dim)">
+      <div><span style="color:var(--text-fade)">Effective rate:</span> <span style="color:var(--cyan);font-family:var(--font-m)">${eff.rate || '—'} Hz · ${eff.channels || '—'}ch · ${eff.format || '—'} · period ${eff.period_ms || '—'}ms</span></div>
+      <div><span style="color:var(--text-fade)">Codec selected:</span> <span style="color:var(--cyan);font-family:var(--font-m)">${eff.codec || nego.codec || '—'}</span></div>
+    </div>`;
+}
+
+async function _bsRefreshRuntime() {
+  if (!_bridgeSettingsKey) return;
+  const [mac, dtype] = _bridgeSettingsKey.split('|');
+  const r = await api(`/bluealsa/bridges/${encodeURIComponent(mac)}/${dtype}/settings`);
+  if (!r) return;
+  const el = document.getElementById('bs-runtime');
+  if (!el) return;
+  const rt = r.runtime || {};
+  const aliveColor = rt.alive ? 'var(--green)' : 'var(--red)';
+  el.innerHTML = `<span style="color:${aliveColor}">● ${rt.alive ? 'alive' : 'dead'}</span>
+    <span style="color:var(--text-fade);margin-left:8px">module #${rt.module_id || '—'}</span>
+    <span style="color:${rt.xruns_total > 0 ? 'var(--yellow)' : 'var(--text-dim)'};margin-left:8px;font-family:var(--font-m)">${rt.xruns_total} xruns</span>`;
+}
+
+async function openBridgeSettings(mac, dtype) {
+  mac = decodeURIComponent(mac);
+  dtype = decodeURIComponent(dtype);
+  _bridgeSettingsKey = `${mac}|${dtype}`;
+  const r = await api(`/bluealsa/bridges/${encodeURIComponent(mac)}/${dtype}/settings`);
+  if (!r) { alert('Failed to load bridge settings'); return; }
+  _bridgeSettingsLocal = { ...(r.override || {}) };
+
+  let overlay = document.getElementById('bridge-settings-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'bridge-settings-overlay';
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px;width:90vw">
+      <div class="modal-head">
+        <h2>Bridge — ${dtype === 'capture' ? 'IN' : 'OUT'} · ${r.mac}</h2>
+        <button class="modal-close" onclick="closeBridgeSettings()">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:12px;padding:8px;background:var(--bg-0);border:1px solid var(--border);border-radius:4px;font-size:10px">
+          <div style="color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Negotiated (read-only)</div>
+          <div style="font-family:var(--font-m);color:var(--text-mid)">${r.negotiated.rate || '—'} Hz · ${r.negotiated.channels || '—'}ch · codec ${r.negotiated.codec || '—'}</div>
+          <div style="font-size:9px;color:var(--text-fade);margin-top:2px">Available codecs: ${(r.negotiated.available_codecs || []).join(', ') || '(query failed)'}</div>
+        </div>
+        <div id="bs-form"></div>
+        <div style="margin-top:10px;padding:6px 8px;background:var(--bg-0);border:1px solid var(--border);border-radius:4px;font-size:10px" id="bs-runtime"></div>
+        <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" onclick="resetBridgeSettings()" title="Clear all overrides — go back to negotiated values">Reset to auto</button>
+          <button class="btn" onclick="closeBridgeSettings()">Cancel</button>
+          <button class="btn btn-primary" onclick="applyBridgeSettings()">Apply</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const form = document.getElementById('bs-form');
+  form._snapshot = r;
+  _bsRenderForm();
+  _bsRefreshRuntime();
+  if (_bridgeSettingsPoll) clearInterval(_bridgeSettingsPoll);
+  _bridgeSettingsPoll = setInterval(_bsRefreshRuntime, 1500);
+}
+
+function closeBridgeSettings() {
+  const overlay = document.getElementById('bridge-settings-overlay');
+  if (overlay) overlay.remove();
+  if (_bridgeSettingsPoll) { clearInterval(_bridgeSettingsPoll); _bridgeSettingsPoll = null; }
+  _bridgeSettingsKey = null;
+  _bridgeSettingsLocal = {};
+}
+
+async function applyBridgeSettings() {
+  if (!_bridgeSettingsKey) return;
+  const [mac, dtype] = _bridgeSettingsKey.split('|');
+  const body = { ..._bridgeSettingsLocal };
+  // Force missing keys to null so the backend understands "use auto" for
+  // the fields we're not overriding.
+  for (const k of ['rate', 'period_ms', 'channels', 'format', 'codec_preference']) {
+    if (!(k in body)) body[k] = null;
+  }
+  const r = await api(`/bluealsa/bridges/${encodeURIComponent(mac)}/${dtype}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r) {
+    closeBridgeSettings();
+    refreshBtHealth();
+  } else {
+    alert('Failed to apply bridge settings');
+  }
+}
+
+async function resetBridgeSettings() {
+  if (!_bridgeSettingsKey) return;
+  const [mac, dtype] = _bridgeSettingsKey.split('|');
+  const r = await api(`/bluealsa/bridges/${encodeURIComponent(mac)}/${dtype}/settings`, { method: 'DELETE' });
+  if (r) {
+    closeBridgeSettings();
+    refreshBtHealth();
+  } else {
+    alert('Failed to reset bridge settings');
+  }
+}
 
 // ── Modals ───────────────────────────────────────────
 async function showModal(type) {

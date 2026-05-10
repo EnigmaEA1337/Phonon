@@ -109,10 +109,16 @@ def create_app(
         except Exception:
             logger.warning("stage.mapping_restore_failed", exc_info=True)
 
-        # Clean up stale bluealsa bridges from previous run
+        # Clean up stale bluealsa bridges from previous run + load per-bridge
+        # user overrides (rate / period / channels / format / codec) so the
+        # next auto-sync re-creates bridges with the configured params.
         try:
-            from phonon_stage.api.bluealsa_bridge import cleanup_stale_bridges
+            from phonon_stage.api.bluealsa_bridge import (
+                cleanup_stale_bridges,
+                init_settings_store,
+            )
 
+            init_settings_store()
             await cleanup_stale_bridges()
         except Exception:
             logger.warning("stage.bluealsa_cleanup_failed", exc_info=True)

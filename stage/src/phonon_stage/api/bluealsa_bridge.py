@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
+import re
 import signal
+from pathlib import Path
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter(prefix="/bluealsa", tags=["bluealsa"])
 
@@ -20,6 +25,70 @@ logger = structlog.get_logger()
 
 # Track active bridges: MAC -> { module_id, bridge_pid, type, name }
 _active_bridges: dict[str, dict[str, object]] = {}
+
+# -- Bridge per-channel settings store ---------------------------------------
+# Persists user overrides for rate / period / channels / format / codec
+# preference per (mac, dtype). Defaults are computed from the BT-negotiated
+# values; the store only holds *deltas* the user explicitly set, so a Reset
+# is just a removal.
+
+_BRIDGE_SETTINGS_PATH = Path("/var/lib/phonon/bridge_settings.json")
+_settings_cache: dict[str, dict[str, Any]] = {}
+
+# Allowed values — keep narrow so the UI radio buttons map cleanly to the
+# backend without us having to validate arbitrary strings every PUT.
+_ALLOWED_RATES = (44100, 48000)
+_ALLOWED_PERIOD_MS = (10, 25, 50, 100, 200)
+_ALLOWED_CHANNELS = (1, 2)
+_ALLOWED_FORMATS = ("s16le", "s24_3le", "s32le")
+
+
+def _settings_key(mac: str, dtype: str) -> str:
+    return f"{mac.upper()}_{dtype}"
+
+
+def _load_settings_from_disk() -> dict[str, dict[str, Any]]:
+    if not _BRIDGE_SETTINGS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(_BRIDGE_SETTINGS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        logger.warning("bluealsa.settings_load_failed", path=str(_BRIDGE_SETTINGS_PATH))
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: dict(v) for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _save_settings_to_disk(data: dict[str, dict[str, Any]]) -> None:
+    _BRIDGE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _BRIDGE_SETTINGS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+    with contextlib.suppress(OSError):
+        tmp.chmod(0o600)
+    tmp.replace(_BRIDGE_SETTINGS_PATH)
+
+
+def init_settings_store() -> None:
+    """Load overrides from disk into the in-memory cache. Call once on startup."""
+    global _settings_cache
+    _settings_cache = _load_settings_from_disk()
+    logger.info("bluealsa.settings_loaded", count=len(_settings_cache))
+
+
+def get_bridge_override(mac: str, dtype: str) -> dict[str, Any]:
+    """Return the override dict for one (mac, dtype). Empty dict = no override."""
+    return dict(_settings_cache.get(_settings_key(mac, dtype), {}))
+
+
+def set_bridge_override(mac: str, dtype: str, override: dict[str, Any]) -> None:
+    """Persist override. Pass an empty dict to clear."""
+    key = _settings_key(mac, dtype)
+    if override:
+        _settings_cache[key] = dict(override)
+    else:
+        _settings_cache.pop(key, None)
+    _save_settings_to_disk(_settings_cache)
 
 
 async def cleanup_stale_bridges() -> None:
@@ -128,6 +197,109 @@ async def _list_bluealsa_pcms() -> list[dict[str, str]]:
     return list(seen.values())
 
 
+# -- bluealsa-cli codec helpers ----------------------------------------------
+# We talk to bluealsa via its CLI (bluealsa-cli), which exposes the dbus
+# control surface. Each PCM has a path like
+#   /org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsink/source
+# `a2dpsink` (BT role) appears for capture (phone → us); `a2dpsource` for
+# playback (us → speaker). The trailing component (`source`/`sink`) is the
+# direction from bluealsa's POV. We resolve the path from MAC + dtype, then
+# parse `bluealsa-cli info <path>` for `Selected codec` and `Available codecs`.
+
+
+async def _bluealsa_pcm_path(mac: str, dtype: str) -> str:
+    """Resolve the bluealsa dbus path for one (mac, dtype). Empty on failure."""
+    raw = await _run("bluealsa-cli list-pcms 2>&1")
+    target_mac = mac.replace(":", "_").upper()
+    # capture (phone→us) = bluealsa role a2dp-sink, mode=source
+    # playback (us→speaker) = bluealsa role a2dp-source, mode=sink
+    role_token = "a2dpsink" if dtype == "capture" else "a2dpsource"
+    mode_suffix = "/source" if dtype == "capture" else "/sink"
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("/org/bluealsa"):
+            continue
+        if target_mac in line.upper() and role_token in line and line.endswith(mode_suffix):
+            return line
+    return ""
+
+
+async def get_codec_info(mac: str, dtype: str) -> dict[str, Any]:
+    """Return {selected, available[]} for the BT codec. Empty on failure."""
+    path = await _bluealsa_pcm_path(mac, dtype)
+    if not path:
+        return {"selected": "", "available": []}
+    raw = await _run(f"bluealsa-cli info '{path}' 2>&1")
+    selected = ""
+    available: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        m = re.match(r"^Selected codec:\s*(\S+)", line)
+        if m:
+            selected = m.group(1)
+            continue
+        m = re.match(r"^Available codecs:\s*(.+)$", line)
+        if m:
+            # Tokens look like "SBC[*] AAC" — strip the [*] selection marker.
+            for tok in m.group(1).split():
+                clean = tok.split("[", 1)[0].strip()
+                if clean:
+                    available.append(clean)
+    return {"selected": selected, "available": available}
+
+
+async def set_codec(mac: str, dtype: str, codec: str) -> bool:
+    """Force a specific codec for the (mac, dtype) PCM. Returns True on success."""
+    path = await _bluealsa_pcm_path(mac, dtype)
+    if not path:
+        return False
+    out = await _run(f"bluealsa-cli codec '{path}' '{codec}' 2>&1")
+    # bluealsa-cli is mostly silent on success; non-empty output usually = error.
+    if "error" in out.lower() or "fail" in out.lower():
+        logger.warning("bluealsa.set_codec_failed", mac=mac, codec=codec, output=out)
+        return False
+    logger.info("bluealsa.codec_set", mac=mac, dtype=dtype, codec=codec)
+    return True
+
+
+def _resolve_effective_params(
+    override: dict[str, Any],
+    negotiated_rate: int,
+    default_buffer_ms: int,
+) -> dict[str, Any]:
+    """Combine override + negotiated values into the params we'll pass to pactl."""
+    rate_override = override.get("rate")
+    if isinstance(rate_override, int) and rate_override in _ALLOWED_RATES:
+        rate = rate_override
+    else:
+        rate = negotiated_rate if negotiated_rate > 0 else 48000
+
+    period_override = override.get("period_ms")
+    if isinstance(period_override, int) and period_override in _ALLOWED_PERIOD_MS:
+        period_ms = period_override
+    else:
+        period_ms = default_buffer_ms
+
+    channels_override = override.get("channels")
+    if isinstance(channels_override, int) and channels_override in _ALLOWED_CHANNELS:
+        channels = channels_override
+    else:
+        channels = 2
+
+    format_override = override.get("format")
+    if isinstance(format_override, str) and format_override in _ALLOWED_FORMATS:
+        audio_format = format_override
+    else:
+        audio_format = "s16le"
+
+    return {
+        "rate": rate,
+        "period_ms": period_ms,
+        "channels": channels,
+        "format": audio_format,
+    }
+
+
 async def create_bridge(
     mac: str, name: str, device_type: str, buffer_ms: int = 50, rate: int = 0
 ) -> dict[str, object]:
@@ -179,21 +351,43 @@ async def create_bridge(
 
     bluealsa_pcm = f"bluealsa:DEV={mac},PROFILE=a2dp"
 
+    override = get_bridge_override(mac, device_type)
+
+    # Apply codec preference BEFORE the bridge is created — bluealsa
+    # renegotiates the BT codec, which changes the negotiated rate / format.
+    # We only call set_codec when the user picked something other than auto
+    # AND it differs from the currently selected codec, to avoid pointless
+    # BT renegotiation on every sync tick.
+    codec_pref = str(override.get("codec_preference", "")).strip()
+    if codec_pref and codec_pref.lower() != "auto":
+        info = await get_codec_info(mac, device_type)
+        if info.get("selected", "") != codec_pref:
+            ok = await set_codec(mac, device_type, codec_pref)
+            if ok:
+                # Give bluealsa a moment to renegotiate before we read the new rate
+                await asyncio.sleep(0.5)
+                # Re-read negotiated rate from bluealsa-aplay (the user-supplied
+                # `rate` arg is the rate at sync-time, possibly stale post-renego).
+                fresh_pcms = await _list_bluealsa_pcms()
+                for p in fresh_pcms:
+                    if p.get("mac", "").upper() == mac.upper() and p.get("type") == device_type:
+                        with contextlib.suppress(ValueError, TypeError):
+                            rate = int(p.get("rate", rate) or rate)
+                        break
+
+    eff = _resolve_effective_params(override, rate, buffer_ms)
+
     if device_type == "playback":
-        # Phonon → BT speaker. The A2DP-negotiated rate matters: JBL
-        # Xtreme 3 / Pulse 3 = 44.1 kHz, UE Boom = 48 kHz. Wrong rate
-        # forces bluealsa to resample in software and on a Pi 3 the
-        # CPU spike crackles. module-alsa-sink replaces both the
-        # null-sink AND the parec|aplay shell pipeline — PipeWire owns
-        # the read-from-monitor + write-to-bluealsa loop natively.
-        play_rate = rate if rate > 0 else 48000
-        period = max(64, int(play_rate * buffer_ms / 1000))
+        # Phonon → BT speaker. module-alsa-sink owns the read-from-monitor +
+        # write-to-bluealsa loop natively, replacing the previous null-sink +
+        # parec|aplay shell pipeline.
+        period = max(64, int(eff["rate"] * eff["period_ms"] / 1000))
         module_id = await _run(
             "pactl load-module module-alsa-sink "
             f"sink_name=bt_{safe_name} "
             f'sink_properties=device.description="{safe_name}-BT" '
             f'device="{bluealsa_pcm}" '
-            f"rate={play_rate} channels=2 format=s16le "
+            f"rate={eff['rate']} channels={eff['channels']} format={eff['format']} "
             f"fragment_size={period}"
         )
         if not module_id or not module_id.strip().isdigit():
@@ -202,25 +396,26 @@ async def create_bridge(
             "module_id": int(module_id.strip()),
             "type": "playback",
             "name": safe_name,
-            "rate": play_rate,
-            "buffer_ms": buffer_ms,
+            "rate": eff["rate"],
+            "buffer_ms": eff["period_ms"],
+            "channels": eff["channels"],
+            "format": eff["format"],
         }
-        logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback")
+        logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="playback", **eff)
 
     elif device_type == "capture":
-        # BT phone → Phonon. Pin to 48 kHz so PipeWire graph (and the
-        # AES67 send module reading from this source) stays rate-pure.
-        # bluealsa's internal arecord-driven 44.1 → 48 resample is well-
-        # tested. module-alsa-source emits a regular Audio/Source node
-        # whose ports plug straight into mappings.
-        cap_rate = 48000
-        period = max(64, int(cap_rate * buffer_ms / 1000))
+        # BT phone → Phonon. Use the (possibly user-overridden) effective rate.
+        # Pinning bluealsa to a non-negotiated rate forces its internal SRC to
+        # run on every period; combined with module-alsa-source's rigid
+        # period-based polling on a Pi 3 the CPU spike produces underruns.
+        # PipeWire's spa-resample handles rate→graph conversion downstream.
+        period = max(64, int(eff["rate"] * eff["period_ms"] / 1000))
         module_id = await _run(
             "pactl load-module module-alsa-source "
             f"source_name=bt_{safe_name}_in "
             f'source_properties=device.description="{safe_name}-BT-In" '
             f'device="{bluealsa_pcm}" '
-            f"rate={cap_rate} channels=2 format=s16le "
+            f"rate={eff['rate']} channels={eff['channels']} format={eff['format']} "
             f"fragment_size={period}"
         )
         if not module_id or not module_id.strip().isdigit():
@@ -229,10 +424,12 @@ async def create_bridge(
             "module_id": int(module_id.strip()),
             "type": "capture",
             "name": safe_name,
-            "rate": cap_rate,
-            "buffer_ms": buffer_ms,
+            "rate": eff["rate"],
+            "buffer_ms": eff["period_ms"],
+            "channels": eff["channels"],
+            "format": eff["format"],
         }
-        logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="capture")
+        logger.info("bluealsa.bridge_created", mac=mac, name=safe_name, btype="capture", **eff)
 
     return {"status": "created", "mac": mac, "name": safe_name, "type": device_type}
 
@@ -392,3 +589,146 @@ async def bridge_health() -> dict[str, object]:
         )
 
     return {"bridges": bridges_health, "count": len(bridges_health)}
+
+
+# -- Per-bridge settings endpoints -------------------------------------------
+
+
+class BridgeOverrideRequest(BaseModel):
+    """User-set overrides. Any field None / missing means 'use auto'."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rate: int | None = Field(default=None, description="44100 or 48000; null = negotiated")
+    period_ms: int | None = Field(default=None, description="10/25/50/100/200; null = 50")
+    channels: int | None = Field(default=None, description="1 or 2; null = 2")
+    format: str | None = Field(default=None, description="s16le/s24_3le/s32le; null = s16le")
+    codec_preference: str | None = Field(
+        default=None,
+        description="SBC/AAC/aptX/...; null or 'auto' = let bluealsa negotiate",
+    )
+
+
+def _validate_override_or_400(override: dict[str, Any]) -> None:
+    """Reject obviously bad values up front so the UI gets a clean 400."""
+    rate = override.get("rate")
+    if rate is not None and rate not in _ALLOWED_RATES:
+        raise HTTPException(status_code=400, detail=f"rate must be one of {_ALLOWED_RATES}")
+    period = override.get("period_ms")
+    if period is not None and period not in _ALLOWED_PERIOD_MS:
+        raise HTTPException(
+            status_code=400, detail=f"period_ms must be one of {_ALLOWED_PERIOD_MS}"
+        )
+    channels = override.get("channels")
+    if channels is not None and channels not in _ALLOWED_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"channels must be one of {_ALLOWED_CHANNELS}")
+    fmt = override.get("format")
+    if fmt is not None and fmt not in _ALLOWED_FORMATS:
+        raise HTTPException(status_code=400, detail=f"format must be one of {_ALLOWED_FORMATS}")
+    # codec_preference is open-ended (depends on bluealsa build) — we only
+    # validate it's a non-empty string. Bluealsa-cli will reject unknown
+    # codecs at apply time and we surface the warning in logs.
+    codec = override.get("codec_preference")
+    if codec is not None and (not isinstance(codec, str) or not codec.strip()):
+        raise HTTPException(status_code=400, detail="codec_preference must be a non-empty string")
+
+
+async def _settings_snapshot(mac: str, dtype: str) -> dict[str, Any]:
+    """Build the GET response: negotiated + override + effective + runtime."""
+    pcms = await _list_bluealsa_pcms()
+    pcm = next(
+        (p for p in pcms if p.get("mac", "").upper() == mac.upper() and p.get("type") == dtype),
+        {},
+    )
+    try:
+        nego_rate = int(pcm.get("rate", 0) or 0)
+    except (TypeError, ValueError):
+        nego_rate = 0
+    try:
+        nego_channels = int(pcm.get("channels", 0) or 0)
+    except (TypeError, ValueError):
+        nego_channels = 0
+
+    codec_info = await get_codec_info(mac, dtype)
+    override = get_bridge_override(mac, dtype)
+    eff = _resolve_effective_params(override, nego_rate, default_buffer_ms=50)
+
+    key = f"{mac}_{dtype}"
+    br = _active_bridges.get(key, {})
+    module_id = br.get("module_id")
+    alive = False
+    if module_id is not None:
+        loaded = await _run("pactl list modules short")
+        alive = any(line.startswith(f"{module_id}\t") for line in loaded.splitlines())
+
+    # Live xrun count for the corresponding PipeWire node
+    xruns = 0
+    if br:
+        from phonon_stage.pipewire.cli import pw_top_xruns
+
+        sink_name = f"bt_{br.get('name', '')}" + ("_in" if dtype == "capture" else "")
+        with contextlib.suppress(Exception):
+            for entry in (await pw_top_xruns()).values():
+                if str(entry.get("name", "")) == sink_name:
+                    xruns = int(entry.get("err", 0))
+                    break
+
+    return {
+        "mac": mac.upper(),
+        "type": dtype,
+        "negotiated": {
+            "rate": nego_rate,
+            "channels": nego_channels,
+            "codec": codec_info.get("selected", "") or pcm.get("codec", ""),
+            "available_codecs": codec_info.get("available", []),
+        },
+        "override": override,
+        "effective": {
+            "rate": eff["rate"],
+            "period_ms": eff["period_ms"],
+            "channels": eff["channels"],
+            "format": eff["format"],
+            "codec": codec_info.get("selected", "") or pcm.get("codec", ""),
+        },
+        "runtime": {
+            "module_id": int(module_id) if module_id is not None else 0,
+            "alive": alive,
+            "xruns_total": xruns,
+        },
+    }
+
+
+def _normalize_dtype(dtype: str) -> str:
+    if dtype not in ("capture", "playback"):
+        raise HTTPException(status_code=400, detail="type must be 'capture' or 'playback'")
+    return dtype
+
+
+@router.get("/bridges/{mac}/{dtype}/settings")
+async def get_bridge_settings(mac: str, dtype: str) -> dict[str, Any]:
+    """Read current settings (negotiated + override + effective + runtime) for one bridge."""
+    return await _settings_snapshot(mac, _normalize_dtype(dtype))
+
+
+@router.put("/bridges/{mac}/{dtype}/settings")
+async def put_bridge_settings(mac: str, dtype: str, body: BridgeOverrideRequest) -> dict[str, Any]:
+    """Persist user overrides and recreate the bridge so changes take effect immediately."""
+    dtype = _normalize_dtype(dtype)
+    override = {k: v for k, v in body.model_dump().items() if v is not None}
+    _validate_override_or_400(override)
+    set_bridge_override(mac, dtype, override)
+    # Force a sync so the bridge gets recreated with new params. We destroy the
+    # current one first so create_bridge doesn't short-circuit on already_exists.
+    await destroy_bridge(mac, dtype)
+    await sync_bridges_impl()
+    return await _settings_snapshot(mac, dtype)
+
+
+@router.delete("/bridges/{mac}/{dtype}/settings")
+async def delete_bridge_settings(mac: str, dtype: str) -> dict[str, Any]:
+    """Clear overrides for a bridge — next sync uses negotiated values."""
+    dtype = _normalize_dtype(dtype)
+    set_bridge_override(mac, dtype, {})
+    await destroy_bridge(mac, dtype)
+    await sync_bridges_impl()
+    return await _settings_snapshot(mac, dtype)

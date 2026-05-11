@@ -165,29 +165,47 @@ class MixerService:
                 )
 
     async def _cleanup_orphan_chains(self) -> None:
-        """Delete every phonon-owned filter-chain conf left behind by
-        a previous daemon session. We don't know in advance whether
-        the persisted state will want the same chains back — the
-        first reconcile will re-create whatever's needed. Doing this
-        unconditionally is cleaner than trying to be clever about it
-        and risk a stale conf surviving across restarts."""
+        """Delete only the filter-chain confs that the persisted state
+        no longer wants — anything the next reconcile will re-create
+        is left alone, so we don't reload filter-chain.service unless
+        we actually have to.
+
+        Critical: on this stage's setup `systemctl --user restart
+        filter-chain.service` cascades into a pipewire-pulse re-init
+        that wipes every pactl-loaded module (phonon_master null-sink,
+        airplay_in, AES67 send sinks...). Reloading needlessly here
+        was nuking our own audio graph at every boot. So: compute
+        the wanted set first, delete the diff, reload only if there
+        IS a diff."""
         try:
-            chains = await self._pw.list_filter_chain_confs()
+            on_disk = await self._pw.list_filter_chain_confs()
         except Exception:
             logger.info("mixer.orphan_chain_list_failed", exc_info=False)
             return
-        if not chains:
+        # Build the body we'd generate for each wanted chain so the
+        # first _reconcile's diff sees the on-disk state as already
+        # in-sync — no spurious rewrite + reload.
+        wanted_bodies: dict[str, str] = {}
+        for o in self._store.state.outputs:
+            if o.insert is not None and o.insert.enabled and o.receives_master:
+                wanted_bodies[chain_name_for(o)] = render_filter_chain_conf(
+                    o, o.insert, MASTER_SINK_NAME
+                )
+        stale = [c for c in on_disk if c not in wanted_bodies]
+        if not stale:
+            self._owned_chains = dict(wanted_bodies)
             return
-        for chain in chains:
+        for chain in stale:
             try:
                 await self._pw.delete_filter_chain_conf(chain)
             except Exception:
                 logger.warning("mixer.orphan_chain_delete_failed", chain=chain, exc_info=True)
         try:
             await self._pw.reload_filter_chain()
-            logger.info("mixer.orphan_chains_cleared", count=len(chains))
+            logger.info("mixer.orphan_chains_cleared", count=len(stale))
         except Exception:
             logger.warning("mixer.orphan_chain_reload_failed", exc_info=True)
+        self._owned_chains = dict(wanted_bodies)
 
     async def _ensure_master_null_sink(self) -> None:
         """phonon_master is the single shared bus null-sink. Created
@@ -762,11 +780,23 @@ class MixerService:
             return
         master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
         if master_node is None:
-            # Master sink doesn't exist yet — possible on a fresh
-            # daemon before init() ran. We bail out gracefully; the
-            # next reconcile (after init) will succeed.
-            logger.info("mixer.reconcile_skip_no_master")
-            return
+            # Master null-sink got destroyed somehow (PW restart,
+            # filter-chain.service reload that cascaded into pactl,
+            # operator unloaded the module by accident...). Recreate
+            # it inline rather than bail — self-healing is cheaper
+            # than waiting for the next daemon restart.
+            logger.warning("mixer.reconcile_master_missing_recreating")
+            try:
+                await self._ensure_master_null_sink()
+                nodes = await self._pw.list_nodes()
+                ports = await self._pw.list_ports()
+            except Exception:
+                logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
+                return
+            master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
+            if master_node is None:
+                logger.warning("mixer.reconcile_skip_no_master")
+                return
 
         # 3. Determine solo state up front. A "solo group" is any
         #    set of strips with solo=True and mute=False — muting a

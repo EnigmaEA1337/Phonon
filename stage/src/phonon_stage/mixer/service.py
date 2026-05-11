@@ -345,13 +345,19 @@ class MixerService:
         """Targeted unload + reload of a single output's master loopback.
         Other outputs/links are untouched.
 
-        Click-masking: unloading a pactl module-loopback drains its
-        buffer instantly, producing an audible click on the
-        destination sink (witnessed live as "petit bruit strident").
-        We pre-mute the sink, wait one tick for the last buffer cycle
-        to flush, swap the loopback, wait for the new one to fill,
-        then restore the sink's volume. Net effect: a ~80 ms silence
-        dip on this output during a delay change, but no click."""
+        Click-masking strategy: unloading a pactl module-loopback
+        drains its sink-input buffer instantly, producing an audible
+        click/strident burst on the destination sink. To suppress it
+        we (a) hard-mute the sink via wpctl set-mute (direct PW IPC,
+        applies inside one quantum unlike pactl volume which has to
+        traverse the PA-compat layer), (b) let the in-flight audio
+        in the ALSA buffer flush (~120 ms — covers USB Audio at the
+        default quantum + the JBL's own BT receive buffer settle),
+        (c) swap the loopback, (d) let the new one prime its
+        internal buffer to the target latency, (e) un-mute. Net
+        result: a silent dip of ~200 ms on this output during a
+        delay change instead of a click. Acceptable: delay-change
+        is an engineering action, not a live mix gesture."""
         try:
             modules = await self._pw.list_loopback_modules()
         except Exception:
@@ -364,24 +370,34 @@ class MixerService:
             if master_src in args and sink_match in args
         ]
 
-        # Pre-mute the destination sink so the impending unload's
-        # buffer-drain click doesn't make it to the speakers.
+        # Find the destination sink's PW node id so we can call
+        # set_node_mute (wpctl-based, instant). pactl volume changes
+        # via PA-compat have inertia we can't predict.
+        sink_node_id: int | None = None
+        try:
+            nodes = await self._pw.list_nodes()
+            sn = next((n for n in nodes if n.name == output.sink_node_name), None)
+            if sn is not None:
+                sink_node_id = sn.id
+        except Exception:
+            pass
+
         muted_for_swap = False
-        if to_unload:
+        if to_unload and sink_node_id is not None:
             try:
-                await self._pw.set_node_channel_volumes(
-                    output.sink_node_name, [0.0, 0.0]
-                )
+                await self._pw.set_node_mute(sink_node_id, True)
                 muted_for_swap = True
-                # Give the last audio buffer ~30 ms to flush through
-                # ALSA before the loopback disappears. Empirically
-                # enough on USB Audio (DG60) at 48 kHz with the
-                # default quantum.
-                await asyncio.sleep(0.030)
+                # Pre-swap flush window. The destination ALSA sink
+                # may already have ~80-100 ms of audio buffered
+                # downstream of the PW mute point; we wait it out
+                # so the in-flight audio drains BEFORE the loopback
+                # is yanked, otherwise the buffer-drain transient
+                # reaches the speakers as a click.
+                await asyncio.sleep(0.120)
             except Exception:
-                # Best-effort: if the pre-mute fails (sink missing,
-                # pactl unreachable) we proceed anyway. User hears
-                # the click rather than the operation failing.
+                # Best-effort: if mute fails (sink missing or PW
+                # transient) proceed anyway — operator hears the
+                # click but the delay change still applies.
                 pass
 
         for mid in to_unload:
@@ -407,22 +423,17 @@ class MixerService:
             if new_mid is not None:
                 self._owned_loopbacks.append(new_mid)
 
-        # Let the new loopback prime its buffer before un-muting so
-        # the audio comes back cleanly, not mid-frame.
-        if muted_for_swap:
-            await asyncio.sleep(0.030)
-            lin = self._db_to_linear(output.gain_db)
+        # Wait for the new loopback to prime its buffer to the target
+        # latency before un-muting — otherwise the un-mute lands on
+        # an empty/partial sink-input buffer and we'd hear a brief
+        # burst as the new latency_msec settles.
+        if muted_for_swap and sink_node_id is not None:
+            await asyncio.sleep(0.080)
             try:
-                await self._pw.set_node_channel_volumes(
-                    output.sink_node_name,
-                    [
-                        0.0 if output.mute_left else lin,
-                        0.0 if output.mute_right else lin,
-                    ],
-                )
+                await self._pw.set_node_mute(sink_node_id, False)
             except Exception:
                 logger.warning(
-                    "mixer.swap_volume_restore_failed",
+                    "mixer.swap_unmute_failed",
                     output_id=output.id,
                     exc_info=True,
                 )

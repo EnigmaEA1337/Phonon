@@ -1,12 +1,17 @@
 """WebSocket endpoint for real-time push data (VU levels, mode, alerts)."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+if TYPE_CHECKING:
+    from phonon_stage.mixer.service import MixerService
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -17,6 +22,23 @@ clients: set[WebSocket] = set()
 # Background task references (prevent GC)
 _bg_tasks: list[asyncio.Task[None]] = []
 _tasks_started = False
+
+# Mixer service reference — set by main.py at startup so the levels
+# loop can enumerate the master bus + mixer outputs without coupling
+# this module to FastAPI's app.state. Late-bound on purpose: ws.py
+# can load before MixerService is instantiated.
+_mixer_service: MixerService | None = None
+
+
+def set_mixer_service(svc: MixerService) -> None:
+    """Wire the mixer service so the levels loop can meter the master
+    and each output. main.py calls this once at startup."""
+    global _mixer_service
+    _mixer_service = svc
+
+
+def _mixer_service_ref() -> MixerService | None:
+    return _mixer_service
 
 
 async def broadcast(msg_type: str, data: Any) -> None:
@@ -113,6 +135,29 @@ async def _levels_loop() -> None:
             for sink_name in (_AIRPLAY_SINK,):
                 keys.append(f"node:{sink_name}")
                 tasks.append(_read_peak(f"{sink_name}.monitor", duration_ms=20))
+
+            # Mix console: meter the master bus + every output. Each
+            # exposes a .monitor port we can parec without disturbing
+            # the playback path. Keyed by node name so the per-fader
+            # VU on the Mix tab finds them directly.
+            try:
+                from phonon_stage.mixer.service import MASTER_SINK_NAME
+
+                _mixer_svc = _mixer_service_ref()
+                # Master bus — exists once the mixer is initialised.
+                keys.append(f"node:{MASTER_SINK_NAME}")
+                tasks.append(_read_peak(f"{MASTER_SINK_NAME}.monitor", duration_ms=20))
+                if _mixer_svc is not None:
+                    for o in _mixer_svc.outputs:
+                        keys.append(f"node:{o.sink_node_name}")
+                        tasks.append(
+                            _read_peak(f"{o.sink_node_name}.monitor", duration_ms=20)
+                        )
+            except Exception:
+                # The mixer service is optional from this module's POV;
+                # if anything fails we just skip these meters, sources
+                # and bridges keep working.
+                pass
 
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)

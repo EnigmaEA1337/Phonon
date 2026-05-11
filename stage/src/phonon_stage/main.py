@@ -142,6 +142,17 @@ def create_app(
         except Exception:
             logger.warning("stage.mixer_init_failed", exc_info=True)
 
+        # Wire the mixer into the WS levels loop so it can meter the
+        # master bus + every output on every tick. Cheap to set even
+        # if init() above failed — the loop's `for o in svc.outputs`
+        # is a no-op on an empty mixer.
+        try:
+            from phonon_stage.api.ws import set_mixer_service as _ws_set_mixer
+
+            _ws_set_mixer(mixer_service)
+        except Exception:
+            logger.warning("stage.mixer_ws_wire_failed", exc_info=True)
+
         # Clean up stale bluealsa bridges from previous run + load per-bridge
         # user overrides (rate / period / channels / format / codec) so the
         # next auto-sync re-creates bridges with the configured params.

@@ -1020,15 +1020,27 @@ async function refreshAll() {
 // ── Render: Audio Devices ────────────────────────────
 function _hwVolWidget(deviceId, deviceName, alsaCards) {
   // Match the ALSA mixer card. /capabilities exposes both `id` (the
-  // ALSA short name, e.g. 'DG60') and `name` (the human description,
-  // 'Avantree DG60'). /audio/alsa/cards uses `card_name` (short) and
-  // `card_description` (long). Try in order of strictness so a name
-  // collision between two cards never fuses their HW vol indicators.
-  const card = (alsaCards || []).find(c =>
-    c.card_name === deviceId
-    || c.card_name === deviceName
-    || c.card_description === deviceName
-  );
+  // ALSA short name, e.g. 'DG60' or 'DG60_1') and `name` (the human
+  // description, 'Avantree DG60'). /audio/alsa/cards uses `card_name`
+  // (short) and `card_description` (long).
+  //
+  // Strict match by card_name first — that's unique even when two
+  // physical devices share a firmware-supplied description (two
+  // Avantree DG60 dongles both report description "Avantree DG60";
+  // the kernel disambiguates with "_1" / "_2" suffixes in the short
+  // name). We previously did a 3-clause OR in a single `.find()`,
+  // which short-circuited on the description match for the FIRST
+  // card with that description — both DG60 devices ended up bound
+  // to the first card, so the UI showed identical volumes for both
+  // and only one HW knob actually moved when the user slid the bar.
+  let card = (alsaCards || []).find(c => c.card_name === deviceId);
+  // Fallback by description ONLY when it's unambiguous (exactly one
+  // card matches). Two cards with the same description → require the
+  // strict short-name match; no widget rather than a wrong-card one.
+  if (!card) {
+    const byDesc = (alsaCards || []).filter(c => c.card_description === deviceName);
+    if (byDesc.length === 1) card = byDesc[0];
+  }
   if (!card) return '';
   const ctrl = (card.controls || []).find(c => c.has_playback && c.volume_max > c.volume_min);
   if (!ctrl) return '';

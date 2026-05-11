@@ -138,6 +138,25 @@ else
     echo "  No linux-lowlatency package on this distro — skipping"
 fi
 
+# ── Step 2ter: Install LADSPA + LSP plugins (x86_64 only) ────────────────
+# DSP plugin inserts (filter-chain → LADSPA → LSP comp_delay_stereo etc.)
+# are scoped to x86_64 Stages in v1 — see CLAUDE.md memory project_plugins_scope.
+# Pis stay plugin-free: Cortex-A53 doesn't have the CPU headroom alongside
+# null-sinks + loopbacks + bluealsa bridges. analyseplugin (LADSPA SDK)
+# is what the Stage shells out to for runtime introspection of plugin
+# control ports.
+
+if [ "${PLATFORM}" = "x86_64" ]; then
+    echo "  Installing LSP LADSPA plugins + analyseplugin (x86_64)..."
+    if apt-get install -y -qq lsp-plugins-ladspa ladspa-sdk; then
+        echo "  LADSPA plugins OK"
+    else
+        echo "  WARN: lsp-plugins-ladspa install failed — DSP inserts will be unavailable"
+    fi
+else
+    echo "  Skipping LSP plugins on ${PLATFORM} (Pi: plugin inserts disabled in v1)"
+fi
+
 # ── Step 3/7: Create phonon user ────────────────────────────────────────
 
 echo "[3/11] Creating phonon user..."

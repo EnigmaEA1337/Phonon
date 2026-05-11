@@ -18,6 +18,7 @@ from phonon_stage.api.bluealsa_bridge import router as bluealsa_router
 from phonon_stage.api.bluetooth import router as bluetooth_router
 from phonon_stage.api.browse import router as browse_router
 from phonon_stage.api.capabilities import router as capabilities_router
+from phonon_stage.api.dsp import router as dsp_router
 from phonon_stage.api.health import router as health_router
 from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
@@ -34,6 +35,7 @@ from phonon_stage.bluetooth.real import RealBluetoothBackend
 from phonon_stage.clock import Clock, SystemClock
 from phonon_stage.config import StageConfig, load_config
 from phonon_stage.discovery.real import RealDiscoveryBackend
+from phonon_stage.dsp.ladspa import LadspaIntrospector, RealLadspaIntrospector
 from phonon_stage.logging import configure_logging
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
@@ -57,6 +59,16 @@ logger = structlog.get_logger()
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _plugins_supported_on_host() -> bool:
+    """Stub of the platform gate: only x86_64 Stages run LSP plugins
+    in v1 (see CLAUDE.md memory project_plugins_scope). We check the
+    architecture rather than try to invoke analyseplugin — that's a
+    deployment problem (install.sh), not a runtime probe."""
+    import platform
+
+    return platform.machine() in {"x86_64", "amd64"}
+
+
 def create_app(
     config: StageConfig | None = None,
     audio_backend: AudioBackend | None = None,
@@ -66,6 +78,7 @@ def create_app(
     mapping_service: MappingService | None = None,
     clock: Clock | None = None,
     system_backend: SystemBackend | None = None,
+    ladspa_introspector: LadspaIntrospector | None = None,
 ) -> FastAPI:
     """Create the FastAPI application with dependency injection.
 
@@ -103,7 +116,14 @@ def create_app(
     # Mix console state lives next to mappings/plugins state — same
     # data dir, single backup tree.
     mixer_store = MixerStore(cfg.standalone_conf_path.parent / "mixer.conf.json")
-    mixer_service = MixerService(pw_backend=pw, store=mixer_store)
+    # LADSPA plugin introspector — wired only on hosts that can run
+    # filter-chain LSP plugins (x86_64 + analyseplugin installed).
+    # Pis stay with introspector=None, which makes set_output_insert
+    # skip default-seeding and the /dsp endpoints return 503.
+    intr: LadspaIntrospector | None = ladspa_introspector
+    if intr is None and _plugins_supported_on_host():
+        intr = RealLadspaIntrospector()
+    mixer_service = MixerService(pw_backend=pw, store=mixer_store, introspector=intr)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -118,6 +138,7 @@ def create_app(
         app.state.system_backend = sysbe
         app.state.plugin_registry = plugin_registry
         app.state.mixer_service = mixer_service
+        app.state.ladspa_introspector = intr
 
         await discovery.register(cfg.stage_id, cfg.bind_address, cfg.port)
 
@@ -233,6 +254,7 @@ def create_app(
     app.include_router(update_router)
     app.include_router(plugins_router)
     app.include_router(mixer_router)
+    app.include_router(dsp_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

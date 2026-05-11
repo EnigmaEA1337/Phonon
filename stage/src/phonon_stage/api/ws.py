@@ -150,9 +150,7 @@ async def _levels_loop() -> None:
                 if _mixer_svc is not None:
                     for o in _mixer_svc.outputs:
                         keys.append(f"node:{o.sink_node_name}")
-                        tasks.append(
-                            _read_peak(f"{o.sink_node_name}.monitor", duration_ms=20)
-                        )
+                        tasks.append(_read_peak(f"{o.sink_node_name}.monitor", duration_ms=20))
             except Exception:
                 # The mixer service is optional from this module's POV;
                 # if anything fails we just skip these meters, sources

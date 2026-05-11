@@ -70,9 +70,7 @@ class PipeWireBackend(Protocol):
     # accept PW node IDs; the node name is what PW exposes to PA as
     # the sink/source name). `channels` is a list of linear volumes,
     # one per output channel (typically [left, right]).
-    async def set_node_channel_volumes(
-        self, node_name: str, channels: list[float]
-    ) -> None: ...
+    async def set_node_channel_volumes(self, node_name: str, channels: list[float]) -> None: ...
 
     async def set_node_mute(self, node_id: int, muted: bool) -> None: ...
 
@@ -103,3 +101,35 @@ class PipeWireBackend(Protocol):
     # is the raw pactl form, e.g.
     # "source=phonon_master.monitor sink=alsa_output.dg60_1 latency_msec=90".
     async def list_loopback_modules(self) -> dict[int, str]: ...
+
+    # ── Filter-chain (DSP plugin insert) ──────────────────────────
+    #
+    # Filter-chains are PipeWire's mechanism for running LADSPA/LV2
+    # plugins inline between PW nodes. We use them as the master→output
+    # path replacement when an Output has a plugin insert: capture from
+    # `phonon_master` → through the plugin → playback into the output
+    # sink. The chain is described in a conf fragment loaded by the
+    # filter-chain.service systemd user unit. Adding/removing a chain
+    # rewrites the conf and reloads the service. Live control changes
+    # bypass the reload — they go through pw-cli set-param against the
+    # running node so the audio doesn't glitch on every fader move.
+    #
+    # `write_filter_chain_conf` creates (or overwrites) one conf file
+    # for the named chain. `delete_filter_chain_conf` removes it.
+    # `reload_filter_chain` restarts the filter-chain.service so PW
+    # picks up the change. `set_filter_node_control` updates one
+    # control on a live chain without reload.
+    async def write_filter_chain_conf(self, chain_name: str, conf_body: str) -> None: ...
+
+    async def delete_filter_chain_conf(self, chain_name: str) -> None: ...
+
+    # List the chain names whose conf files we already own on disk
+    # (i.e. created by a previous phonon-stage session). Lets the
+    # mixer prune orphans at init the same way it does for loopbacks.
+    async def list_filter_chain_confs(self) -> list[str]: ...
+
+    async def reload_filter_chain(self) -> None: ...
+
+    async def set_filter_node_control(
+        self, node_name: str, control_name: str, value: float
+    ) -> None: ...

@@ -16,6 +16,11 @@ from phonon_stage.bluetooth.fake import FakeBluetoothBackend
 from phonon_stage.clock import FakeClock
 from phonon_stage.config import StageConfig
 from phonon_stage.discovery.fake import FakeDiscoveryBackend
+from phonon_stage.dsp.ladspa import (
+    FakeLadspaIntrospector,
+    PluginControl,
+    PluginDescriptor,
+)
 from phonon_stage.main import create_app
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
@@ -176,6 +181,53 @@ def fake_system() -> FakeSystemBackend:
     return FakeSystemBackend()
 
 
+# LSP comp_delay_stereo descriptor — what `analyseplugin
+# lsp-plugins-ladspa http://lsp-plug.in/.../comp_delay_stereo` would
+# produce. Wired into the FakeLadspaIntrospector so API tests can
+# exercise /dsp/plugins/schema without the real LADSPA SDK.
+_LSP_DELAY_DESCRIPTOR = PluginDescriptor(
+    library="lsp-plugins-ladspa",
+    label="http://lsp-plug.in/plugins/ladspa/comp_delay_stereo",
+    name="LSP Compressor Delay Stereo",
+    maker="Vladimir Sadovnikov",
+    controls=(
+        PluginControl(name="Input L", direction=""),
+        PluginControl(name="Input R", direction=""),
+        PluginControl(name="Output L", direction=""),
+        PluginControl(name="Output R", direction=""),
+        PluginControl(name="Bypass", direction="input", toggled=True, default=0.0),
+        PluginControl(
+            name="Mode",
+            direction="input",
+            integer=True,
+            minimum=0.0,
+            maximum=2.0,
+            default=2.0,
+        ),
+        PluginControl(name="Ramping", direction="input", toggled=True, default=1.0),
+        PluginControl(
+            name="Time (ms)",
+            direction="input",
+            minimum=0.0,
+            maximum=1000.0,
+            default=5.0,
+        ),
+    ),
+)
+
+
+@pytest.fixture()
+def fake_ladspa_introspector() -> FakeLadspaIntrospector:
+    return FakeLadspaIntrospector(
+        {
+            (
+                _LSP_DELAY_DESCRIPTOR.library,
+                _LSP_DELAY_DESCRIPTOR.label,
+            ): _LSP_DELAY_DESCRIPTOR
+        }
+    )
+
+
 @pytest.fixture()
 async def client(
     stage_config: StageConfig,
@@ -186,6 +238,7 @@ async def client(
     mapping_service: MappingService,
     fake_clock: FakeClock,
     fake_system: FakeSystemBackend,
+    fake_ladspa_introspector: FakeLadspaIntrospector,
 ) -> AsyncIterator[AsyncClient]:
     app = create_app(
         config=stage_config,
@@ -196,6 +249,7 @@ async def client(
         mapping_service=mapping_service,
         clock=fake_clock,
         system_backend=fake_system,
+        ladspa_introspector=fake_ladspa_introspector,
     )
 
     @asynccontextmanager

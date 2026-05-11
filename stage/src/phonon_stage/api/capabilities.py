@@ -45,6 +45,11 @@ class CapabilitiesResponse(BaseModel):
     mode: str
     audio_devices: list[AudioDeviceResponse]
     bluetooth_controllers: list[BluetoothControllerResponse]
+    # True when this Stage can host DSP plugin inserts on outputs
+    # (LSP via LADSPA filter-chain). Currently gated on x86_64 +
+    # presence of a wired LadspaIntrospector — Pi 3B builds keep
+    # this false so the UI hides the FX surface entirely.
+    plugins_available: bool = False
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
@@ -58,6 +63,7 @@ async def capabilities(request: Request) -> CapabilitiesResponse:
     return CapabilitiesResponse(
         stage_id=state.config.stage_id,
         mode=current_mode(),
+        plugins_available=getattr(state, "ladspa_introspector", None) is not None,
         audio_devices=[
             AudioDeviceResponse(
                 card_index=d.card_index,

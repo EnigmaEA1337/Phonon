@@ -19,6 +19,18 @@ Three entity types form a small console-style mixer:
   routed via the master inherits the right delay for whichever
   output it's heading to.
 
+Plugin inserts (v1):
+* Each Output optionally carries one PluginInsert — a single LADSPA
+  plugin spliced into the master→output path via PipeWire's
+  module-filter-chain. When the insert is present and enabled the
+  service replaces the loopback with a filter-chain that pulls from
+  phonon_master, runs the plugin, and writes to the output sink.
+  Plugin controls (e.g. "Time (ms)" for LSP comp_delay_stereo) are
+  introspected at runtime from the LADSPA descriptor and exposed to
+  the UI for auto-rendering. Live parameter updates go through
+  pw-cli set-param, no filter-chain reload — that's the whole point
+  of the migration (zero-click delay change).
+
 Routing is additive:
   * `Source.to_master=True` AND `direct_outputs=[]` → flows via the
     master to every output that has receives_master=True.
@@ -53,6 +65,68 @@ MAX_DELAY_MS = 600.0
 # near these — we cap to keep the UI legible and the PW graph sane.
 MAX_SOURCES = 16
 MAX_OUTPUTS = 16
+
+
+# Plugin backend kinds we support in v1. PW 1.6.2 (Ubuntu Studio 26.04)
+# is built without LV2 — filter-chain only knows builtin + ladspa here.
+# Keeping the string form discoverable so the UI can render a kind
+# badge alongside the plugin name.
+PLUGIN_BACKENDS = ("ladspa",)
+
+
+@dataclass(frozen=True)
+class PluginInsert:
+    """A single plugin spliced into an Output's master→sink path.
+
+    Lives inside Output. When `enabled` is True the mixer service
+    replaces the output's module-loopback with a module-filter-chain
+    that runs this plugin between phonon_master.monitor and the
+    output's sink. Live control updates go through pw-cli set-param
+    against the filter-chain node so changes don't tear down the
+    chain (the whole reason this exists — module-loopback's
+    latency_msec can't be retuned live, plugin params can).
+
+    Fields:
+      backend:   "ladspa" (LV2 deferred; PW 1.6.2 here lacks LV2)
+      library:   .so name for LADSPA (filter-chain resolves via
+                 LADSPA_PATH; we pass the bare name e.g. "lsp-plugins-ladspa")
+      label:     LADSPA plugin label (the unique URL string for LSP
+                 plugins, e.g. "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo")
+      controls:  current values for the plugin's control ports, keyed
+                 by control name as it appears in the LADSPA
+                 descriptor (e.g. {"Time (ms)": 80.0, "Mode": 2,
+                 "Ramping": 1, "Bypass": 0}). Defaults are filled in
+                 by the service the first time the plugin is loaded.
+      enabled:   when False the output reverts to the plain loopback
+                 path (no plugin in line), but the controls dict is
+                 kept so toggling back on restores the previous state.
+    """
+
+    backend: str  # one of PLUGIN_BACKENDS
+    library: str  # e.g. "lsp-plugins-ladspa"
+    label: str  # LADSPA label / LV2 URI
+    controls: dict[str, float] = field(default_factory=dict)
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "library": self.library,
+            "label": self.label,
+            "controls": dict(self.controls),
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PluginInsert:
+        raw_controls = data.get("controls") or {}
+        return cls(
+            backend=str(data.get("backend", "ladspa")),
+            library=str(data.get("library", "")),
+            label=str(data.get("label", "")),
+            controls={str(k): float(v) for k, v in raw_controls.items()},
+            enabled=bool(data.get("enabled", True)),
+        )
 
 
 @dataclass(frozen=True)
@@ -98,6 +172,9 @@ class Output:
     solo: bool = False
     delay_ms: float = 0.0
     receives_master: bool = True
+    # Optional plugin insert in the master→output path. None means
+    # plain loopback. See PluginInsert docstring for the lifecycle.
+    insert: PluginInsert | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,10 +188,12 @@ class Output:
             "solo": self.solo,
             "delay_ms": self.delay_ms,
             "receives_master": self.receives_master,
+            "insert": self.insert.to_dict() if self.insert else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Output:
+        raw_insert = data.get("insert")
         return cls(
             id=str(data["id"]),
             sink_node_name=str(data["sink_node_name"]),
@@ -126,6 +205,7 @@ class Output:
             solo=bool(data.get("solo", False)),
             delay_ms=float(data.get("delay_ms", 0.0)),
             receives_master=bool(data.get("receives_master", True)),
+            insert=PluginInsert.from_dict(raw_insert) if raw_insert else None,
         )
 
 
@@ -231,9 +311,11 @@ __all__ = [
     "MAX_OUTPUTS",
     "MAX_SOURCES",
     "MIN_GAIN_DB",
+    "PLUGIN_BACKENDS",
     "MasterBus",
     "MixerState",
     "Output",
+    "PluginInsert",
     "Source",
     "replace",
     "validate_delay_ms",

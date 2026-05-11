@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
+
 import structlog
 
 from phonon_stage.pipewire import cli
@@ -10,8 +13,25 @@ from phonon_stage.pipewire.backend import PwLink, PwNode, PwPort
 logger = structlog.get_logger()
 
 
+# Default filter-chain conf drop-in dir under the phonon user's XDG
+# config. `pipewire -c filter-chain.conf` (run by filter-chain.service)
+# loads every .conf in this directory at startup.
+_DEFAULT_FILTER_CHAIN_DIR = Path.home() / ".config" / "pipewire" / "filter-chain.conf.d"
+
+# Systemd user unit that hosts the filter-chain pipewire instance.
+# Restarting it makes PW pick up new conf drop-ins and tear down
+# removed ones. Live control updates DON'T go through here.
+_FILTER_CHAIN_UNIT = "filter-chain.service"
+
+
 class RealPipeWireBackend:
     """Manage PipeWire audio graph via CLI tools (pw-dump, pw-link, wpctl)."""
+
+    def __init__(self, filter_chain_dir: Path | None = None) -> None:
+        # Resolved at construction so tests/install scripts can point
+        # us at a tmp dir without monkey-patching. Created lazily on
+        # first write.
+        self._fc_dir = filter_chain_dir or _DEFAULT_FILTER_CHAIN_DIR
 
     async def list_nodes(self) -> list[PwNode]:
         try:
@@ -130,9 +150,7 @@ class RealPipeWireBackend:
             except Exception:
                 logger.warning("pipewire.volume_set_failed", node_id=node_id, exc_info=True)
 
-    async def set_node_channel_volumes(
-        self, node_name: str, channels: list[float]
-    ) -> None:
+    async def set_node_channel_volumes(self, node_name: str, channels: list[float]) -> None:
         """Set per-channel volumes on a PW node by NAME. pactl's
         sink/source ID namespace doesn't match PW node IDs, so
         passing `node_id` returned 'No such entity' on every call —
@@ -312,3 +330,106 @@ class RealPipeWireBackend:
         mid = int(out)
         logger.info("pipewire.null_sink_loaded", module_id=mid, name=name)
         return mid
+
+    # ── Filter-chain (DSP plugin insert) ──────────────────────────
+
+    def _filter_chain_conf_path(self, chain_name: str) -> Path:
+        """Resolve the conf file path for a chain. The filename
+        becomes the chain's identity from a deployment standpoint —
+        same name means the previous chain gets overwritten on the
+        next write."""
+        # Sanitize aggressively: filter-chain conf files end up in
+        # the user's XDG config; we don't want path traversal even
+        # from a misconfigured caller.
+        safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in chain_name)
+        return self._fc_dir / f"phonon-{safe}.conf"
+
+    async def write_filter_chain_conf(self, chain_name: str, conf_body: str) -> None:
+        """Write or overwrite the conf file for a filter-chain. Does
+        NOT reload — the caller batches multiple writes then calls
+        `reload_filter_chain` once at the end."""
+        self._fc_dir.mkdir(parents=True, exist_ok=True)
+        path = self._filter_chain_conf_path(chain_name)
+        path.write_text(conf_body, encoding="utf-8")
+        logger.info("pipewire.filter_chain_conf_written", chain=chain_name, path=str(path))
+
+    async def delete_filter_chain_conf(self, chain_name: str) -> None:
+        path = self._filter_chain_conf_path(chain_name)
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+            logger.info("pipewire.filter_chain_conf_deleted", chain=chain_name, path=str(path))
+
+    async def list_filter_chain_confs(self) -> list[str]:
+        """Return the chain names of every phonon-owned conf file
+        currently on disk. The `phonon-` filename prefix scopes us
+        to files we wrote — any operator-managed conf in the same
+        dir is left alone."""
+        if not self._fc_dir.exists():
+            return []
+        names: list[str] = []
+        for path in self._fc_dir.glob("phonon-*.conf"):
+            stem = path.stem  # "phonon-<chain_name>"
+            if stem.startswith("phonon-"):
+                names.append(stem[len("phonon-") :])
+        return names
+
+    async def reload_filter_chain(self) -> None:
+        """Restart the filter-chain.service systemd user unit. This
+        glitches every running chain for ~200-300 ms — not for live
+        param tweaks. Used only when a chain is added or removed."""
+        try:
+            await cli.run_command("systemctl", "--user", "restart", _FILTER_CHAIN_UNIT)
+            logger.info("pipewire.filter_chain_reloaded", unit=_FILTER_CHAIN_UNIT)
+        except Exception:
+            logger.warning("pipewire.filter_chain_reload_failed", exc_info=True)
+
+    async def set_filter_node_control(
+        self, node_name: str, control_name: str, value: float
+    ) -> None:
+        """Live-update one filter-chain plugin control. Drives the
+        zero-click delay change use case: with LSP's Ramping=1 the
+        plugin interpolates `Time (ms)` over a few quanta instead of
+        snapping, so the value can be retuned mid-playback. The
+        equivalent change on a module-loopback's latency_msec would
+        require a full module unload/reload.
+
+        Resolves the node id from `list_nodes()` first because pw-cli
+        set-param accepts ids, not names. If the node isn't there
+        (chain unloaded, service still restarting), logs and bails."""
+        try:
+            nodes = await self.list_nodes()
+        except Exception:
+            logger.warning(
+                "pipewire.filter_control_lookup_failed",
+                node_name=node_name,
+                exc_info=True,
+            )
+            return
+        target = next((n for n in nodes if n.name == node_name), None)
+        if target is None:
+            logger.info(
+                "pipewire.filter_control_node_missing",
+                node_name=node_name,
+                control=control_name,
+            )
+            return
+        # pw-cli set-param Props expects spa-json. Quoting the control
+        # name preserves whitespace and special chars in LSP labels
+        # (e.g. "Time (ms)").
+        payload = '{ params = [ "' + control_name + '" ' + str(float(value)) + " ] }"
+        try:
+            await cli.run_command("pw-cli", "set-param", str(target.id), "Props", payload)
+            logger.info(
+                "pipewire.filter_control_set",
+                node_name=node_name,
+                node_id=target.id,
+                control=control_name,
+                value=value,
+            )
+        except Exception:
+            logger.warning(
+                "pipewire.filter_control_set_failed",
+                node_name=node_name,
+                control=control_name,
+                exc_info=True,
+            )

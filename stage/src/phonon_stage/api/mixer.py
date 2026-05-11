@@ -11,11 +11,12 @@ from phonon_stage.mixer.models import (
     MAX_DELAY_MS,
     MAX_GAIN_DB,
     MIN_GAIN_DB,
+    PLUGIN_BACKENDS,
 )
 from phonon_stage.mixer.service import MixerError, MixerService
 
 if TYPE_CHECKING:
-    from phonon_stage.mixer.models import MasterBus, Output, Source
+    from phonon_stage.mixer.models import MasterBus, Output, PluginInsert, Source
 
 
 router = APIRouter(prefix="/mixer", tags=["mixer"])
@@ -32,6 +33,15 @@ class MasterResponse(BaseModel):
     mute_right: bool
 
 
+class PluginInsertResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backend: str
+    library: str
+    label: str
+    controls: dict[str, float]
+    enabled: bool
+
+
 class OutputResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -44,6 +54,7 @@ class OutputResponse(BaseModel):
     solo: bool
     delay_ms: float
     receives_master: bool
+    insert: PluginInsertResponse | None = None
 
 
 class SourceResponse(BaseModel):
@@ -100,6 +111,27 @@ class OutputUpdate(BaseModel):
     receives_master: bool | None = None
 
 
+class InsertSet(BaseModel):
+    """Body for PATCH /mixer/outputs/{id}/insert. All three fields
+    `None` clears the insert; otherwise all three are required and
+    a fresh PluginInsert is attached with defaults seeded from the
+    LADSPA introspector."""
+
+    model_config = ConfigDict(extra="forbid")
+    backend: str | None = Field(default=None)
+    library: str | None = Field(default=None)
+    label: str | None = Field(default=None)
+
+
+class InsertControlUpdate(BaseModel):
+    """Body for PATCH /mixer/outputs/{id}/insert/controls/{name}. The
+    name is in the URL so multi-word LSP control names ("Time (ms)")
+    don't fight the JSON body schema."""
+
+    model_config = ConfigDict(extra="forbid")
+    value: float
+
+
 class SourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_node_name: str = Field(min_length=1)
@@ -134,6 +166,18 @@ def _to_master_resp(m: MasterBus) -> MasterResponse:
     )
 
 
+def _to_insert_resp(ins: PluginInsert | None) -> PluginInsertResponse | None:
+    if ins is None:
+        return None
+    return PluginInsertResponse(
+        backend=ins.backend,
+        library=ins.library,
+        label=ins.label,
+        controls=dict(ins.controls),
+        enabled=ins.enabled,
+    )
+
+
 def _to_output_resp(o: Output) -> OutputResponse:
     return OutputResponse(
         id=o.id,
@@ -146,6 +190,7 @@ def _to_output_resp(o: Output) -> OutputResponse:
         solo=o.solo,
         delay_ms=o.delay_ms,
         receives_master=o.receives_master,
+        insert=_to_insert_resp(o.insert),
     )
 
 
@@ -240,6 +285,61 @@ async def patch_output(request: Request, output_id: str, body: OutputUpdate) -> 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _to_output_resp(o)
+
+
+@router.patch("/outputs/{output_id}/insert", response_model=OutputResponse)
+async def patch_output_insert(request: Request, output_id: str, body: InsertSet) -> OutputResponse:
+    """Attach a plugin to an output's master→sink path, or clear it.
+    All-null body detaches. Defaults for controls are seeded from
+    the LADSPA introspector when the host has one wired."""
+    svc = _service(request)
+    if body.backend is not None and body.backend not in PLUGIN_BACKENDS:
+        raise HTTPException(
+            status_code=400, detail=f"backend must be one of {list(PLUGIN_BACKENDS)}"
+        )
+    # Half-set is a coding mistake on the UI side; reject to keep
+    # the surface unambiguous (clear = all null, set = all three).
+    set_fields = [body.backend is not None, body.label is not None]
+    if any(set_fields) and not all(set_fields):
+        raise HTTPException(
+            status_code=400,
+            detail="insert set requires backend AND label (library is optional)",
+        )
+    try:
+        out = await svc.set_output_insert(
+            output_id,
+            backend=body.backend,
+            library=body.library,
+            label=body.label,
+        )
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _to_output_resp(out)
+
+
+@router.patch(
+    "/outputs/{output_id}/insert/controls/{control_name:path}",
+    response_model=OutputResponse,
+)
+async def patch_output_insert_control(
+    request: Request,
+    output_id: str,
+    control_name: str,
+    body: InsertControlUpdate,
+) -> OutputResponse:
+    """Live-update one plugin control. Goes through pw-cli set-param
+    against the running filter-chain node — no service reload, no
+    audio glitch. control_name is URL-path-encoded so LSP names with
+    spaces and parens (e.g. `Time%20(ms)`) round-trip cleanly."""
+    svc = _service(request)
+    try:
+        out = await svc.update_output_insert_control(output_id, control_name, body.value)
+    except MixerError as exc:
+        # 404 for unknown output / control, 400 for bad shape.
+        msg = str(exc)
+        status = 404 if "unknown" in msg or "no plugin" in msg else 400
+        raise HTTPException(status_code=status, detail=msg) from exc
+    return _to_output_resp(out)
 
 
 @router.delete("/outputs/{output_id}", status_code=204)

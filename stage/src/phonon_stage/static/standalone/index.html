@@ -191,6 +191,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     [route]   22px
     [extra1]  28px  /* delay input (out) / direct chips (src) / empty (master) */
     [extra2]  20px  /* HW vol (out) / empty */
+    [fx]      22px  /* FX bar — plugin insert badge on outputs, empty elsewhere */
     [mrls]    20px  /* M R L S channel-mute / solo buttons */
     [fader]   160px
     [io-out]  16px
@@ -208,10 +209,77 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip > .row-route   { grid-row: route; }
 .strip > .row-extra1  { grid-row: extra1; }
 .strip > .row-extra2  { grid-row: extra2; }
+.strip > .row-fx      { grid-row: fx; }
 .strip > .row-mrls    { grid-row: mrls; }
 .strip > .row-fader   { grid-row: fader; }
 .strip > .row-io-out  { grid-row: io-out; }
 .strip > .row-scotch  { grid-row: scotch; }
+
+/* FX bar — full-width button on Output strips, blank placeholder on
+   Source/Master. LED at the left indicates plugin state:
+     • dim grey   — no plugin attached, "+ FX" affordance
+     • green      — plugin attached and enabled
+     • amber      — plugin attached but bypassed (enabled=false)
+   Click attaches/picks a plugin or focuses an existing one in the
+   DSP panel below the Mix Console. */
+.row-fx { display: flex; align-items: stretch; }
+.fx-btn { flex: 1; display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-m); font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.4px;
+  background: var(--bg-2); color: var(--text-mid);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 0 6px; cursor: pointer; min-width: 0; }
+.fx-btn:hover { background: var(--bg-3); color: var(--text-hi); }
+.fx-btn.active { background: rgba(52,211,153,0.10); border-color: var(--green); color: var(--green); }
+.fx-btn.bypassed { background: rgba(251,191,36,0.10); border-color: var(--yellow); color: var(--yellow); }
+.fx-btn .fx-led { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-fade); flex-shrink: 0; }
+.fx-btn.active .fx-led    { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.fx-btn.bypassed .fx-led  { background: var(--yellow); box-shadow: 0 0 4px var(--yellow); }
+.fx-btn .fx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.fx-btn.focused { outline: 1px solid var(--cyan); outline-offset: -2px; }
+/* On the Source / Master strips the fx row is intentionally empty
+   so every kind keeps the same row stack — no shift across columns. */
+.row-fx.empty { visibility: hidden; }
+
+/* DSP panel — single-plugin display, digital-console feel. Sits
+   between Monitoring and Mix Console; auto-renders every input
+   control port from the schema fetched from /dsp/plugins/schema. */
+.dsp-panel { display: grid; grid-template-columns: 200px 1fr; gap: 12px;
+  padding: 8px; background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: 4px; min-height: 120px; }
+.dsp-panel-meta { display: flex; flex-direction: column; gap: 4px; padding-right: 12px;
+  border-right: 1px solid var(--border); }
+.dsp-panel-meta .dsp-output-label { font-family: var(--font-h); font-size: 14px;
+  color: var(--magenta); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.dsp-panel-meta .dsp-plugin-name { font-family: var(--font-h); font-size: 12px;
+  color: var(--text-hi); font-weight: 600; }
+.dsp-panel-meta .dsp-plugin-maker { font-size: 9px; color: var(--text-fade); }
+.dsp-panel-meta .dsp-actions { display: flex; gap: 4px; margin-top: auto; }
+.dsp-panel-meta .dsp-actions .btn { font-size: 9px; padding: 3px 8px; }
+.dsp-panel-empty { color: var(--text-fade); font-size: 11px; padding: 20px;
+  display: flex; align-items: center; justify-content: center; font-style: italic; }
+
+.dsp-controls { display: flex; flex-wrap: wrap; gap: 10px; align-content: flex-start; }
+.dsp-control { display: flex; flex-direction: column; gap: 3px;
+  min-width: 90px; padding: 6px 8px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 3px; }
+.dsp-control .dsp-ctl-name { font-family: var(--font-m); font-size: 9px;
+  color: var(--text-mid); text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dsp-control .dsp-ctl-value { font-family: var(--font-m); font-size: 11px;
+  color: var(--cyan); font-weight: 700; }
+.dsp-control input[type=range] { width: 100%; }
+.dsp-control input[type=number] { width: 70px; background: var(--bg-1); color: var(--text-hi);
+  border: 1px solid var(--border); border-radius: 2px; padding: 1px 4px;
+  font-family: var(--font-m); font-size: 10px; }
+.dsp-control select { background: var(--bg-1); color: var(--text-hi);
+  border: 1px solid var(--border); border-radius: 2px; padding: 1px 4px;
+  font-family: var(--font-m); font-size: 10px; }
+.dsp-control button.toggle { font-family: var(--font-m); font-size: 9px; font-weight: 700;
+  background: var(--bg-1); color: var(--text-mid); border: 1px solid var(--border);
+  border-radius: 2px; padding: 2px 6px; cursor: pointer; }
+.dsp-control button.toggle.on { background: var(--green); color: #fff; border-color: var(--green); }
 
 /* MRLS button row — channel mutes + solo, Apple-style toggles.
    On the Master strip we hide the S button (no solo on the bus). */
@@ -544,6 +612,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
       <div class="section-body">
         <div id="sys-resources" style="display:flex;flex-direction:column;gap:3px"></div>
+      </div>
+    </div>
+
+    <!-- DSP panel — focused plugin's controls, auto-rendered from
+         the LADSPA schema. Sits between Monitoring and Mix Console
+         so the operator can see the mix and the active plugin at
+         once. Hidden when /capabilities.plugins_available is false
+         (Pi Stages) and when no output is FX-focused. -->
+    <div class="section" id="dsp-section" style="display:none">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        DSP
+        <span id="dsp-focused-label" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
+      </div>
+      <div class="section-body">
+        <div id="dsp-panel" class="dsp-panel"></div>
       </div>
     </div>
 
@@ -981,6 +1064,9 @@ function renderMixer() {
   renderMixSources();
   renderMixMaster();
   renderMixOutputs();
+  // DSP panel is async (may fetch schema on first focus) but we
+  // don't need to await it — it self-renders when ready.
+  renderDspPanel().catch(e => console.warn('dsp render failed', e));
 }
 
 // Friendly display for a PW node — prefers the node's `nick` if we
@@ -1040,6 +1126,265 @@ function mrlsRow(kind, id, state) {
   return `<div class="row-mrls">${buttons.join('')}</div>`;
 }
 
+// ── DSP plugin inserts (Outputs only, v1) ─────────────────────────
+//
+// State:
+//   dspState.available    — /capabilities.plugins_available; gates the
+//                           whole FX surface (FX rows + DSP panel) so
+//                           Pis don't show plugin UI at all.
+//   dspState.catalog      — /dsp/plugins entries; populates the picker
+//                           offered when the operator clicks "+ FX" on
+//                           a chain-less output.
+//   dspState.schemas      — cache of {`${library}${label}` → schema}
+//                           filled lazily on first focus; subsequent
+//                           focuses on the same plugin don't re-fetch.
+//   dspState.focusedId    — output id whose plugin is currently shown
+//                           in the panel. Null = panel hidden.
+const dspState = { available: false, catalog: [], schemas: {}, focusedId: null };
+
+async function fetchDspCapability() {
+  // Mirrors the /capabilities call already made elsewhere — we
+  // re-read just the flag so dspState.available is set even on
+  // pages that didn't render the Devices tab.
+  try {
+    const r = await fetch(API + '/capabilities');
+    if (!r.ok) return;
+    const d = await r.json();
+    dspState.available = !!d.plugins_available;
+    if (dspState.available) {
+      try {
+        const c = await fetch(API + '/dsp/plugins');
+        if (c.ok) dspState.catalog = await c.json();
+      } catch (e) { /* leave catalog empty — picker shows "no plugins" */ }
+    }
+  } catch (e) { /* same — UI hides FX surface */ }
+}
+
+async function fetchDspSchema(library, label) {
+  const key = library + '' + label;
+  if (dspState.schemas[key]) return dspState.schemas[key];
+  const url = API + '/dsp/plugins/schema?library=' + encodeURIComponent(library)
+              + '&label=' + encodeURIComponent(label);
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('schema fetch failed: ' + r.status);
+  const schema = await r.json();
+  dspState.schemas[key] = schema;
+  return schema;
+}
+
+// FX bar on an Output strip. LED + name; "+ FX" affordance when no
+// plugin is attached. Click handler depends on state: no plugin →
+// picker; plugin attached → focus in DSP panel.
+function fxRow(o) {
+  if (!dspState.available) {
+    // Keep grid alignment but hide the bar entirely so the Pi UI
+    // doesn't gain an inert chrome row.
+    return '<div class="row-fx empty"></div>';
+  }
+  const ins = o.insert;
+  const focused = dspState.focusedId === o.id;
+  if (!ins) {
+    return `<div class="row-fx">
+      <button class="fx-btn${focused ? ' focused' : ''}" onclick="openFxPicker('${o.id}')" title="Attach a plugin">
+        <span class="fx-led"></span><span class="fx-name">+ FX</span>
+      </button>
+    </div>`;
+  }
+  const stateCls = ins.enabled ? 'active' : 'bypassed';
+  const friendly = fxPluginFriendlyName(ins.library, ins.label);
+  return `<div class="row-fx">
+    <button class="fx-btn ${stateCls}${focused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}')" title="${escapeHtml(ins.label)}">
+      <span class="fx-led"></span><span class="fx-name">${escapeHtml(friendly)}</span>
+    </button>
+  </div>`;
+}
+
+function fxPluginFriendlyName(library, label) {
+  const entry = (dspState.catalog || []).find(e => e.library === library && e.label === label);
+  if (entry?.name) return entry.name;
+  // Fall back to the trailing path segment of the LSP-style URL label.
+  const m = label.match(/\/([^/]+)$/);
+  return m ? m[1] : label;
+}
+
+// Attach picker — single-plugin v1, so as soon as the user picks one
+// it's POSTed and the panel opens on it.
+async function openFxPicker(outputId) {
+  if (!dspState.catalog.length) {
+    alert('No plugins available in the catalog.');
+    return;
+  }
+  // For v1 with one catalog entry, attach the first one without UI.
+  // When v2 introduces multiple entries this becomes a real modal.
+  const choice = dspState.catalog[0];
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend: choice.backend, library: choice.library, label: choice.label }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    dspState.focusedId = outputId;
+    await fetchMixer();
+    await renderDspPanel();
+  } catch (e) {
+    alert('Failed to attach plugin: ' + e.message);
+  }
+}
+
+async function focusDspPanel(outputId) {
+  dspState.focusedId = outputId;
+  renderMixer();              // refresh FX bar focus highlights
+  await renderDspPanel();
+}
+
+async function clearDspFocus() {
+  dspState.focusedId = null;
+  renderMixer();
+  await renderDspPanel();
+}
+
+async function detachPluginInsert(outputId) {
+  if (!confirm('Detach this plugin? The output reverts to a plain loopback.')) return;
+  try {
+    await fetch(API + '/mixer/outputs/' + outputId + '/insert', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend: null, library: null, label: null }),
+    });
+    dspState.focusedId = null;
+    await fetchMixer();
+    await renderDspPanel();
+  } catch (e) {
+    alert('Failed to detach plugin: ' + e.message);
+  }
+}
+
+async function renderDspPanel() {
+  const section = document.getElementById('dsp-section');
+  const panel = document.getElementById('dsp-panel');
+  const focusedLabel = document.getElementById('dsp-focused-label');
+  if (!section || !panel) return;
+  if (!dspState.available || !dspState.focusedId) {
+    section.style.display = 'none';
+    return;
+  }
+  const out = (mixerState.outputs || []).find(o => o.id === dspState.focusedId);
+  if (!out || !out.insert) {
+    section.style.display = 'none';
+    dspState.focusedId = null;
+    return;
+  }
+  section.style.display = 'block';
+  if (focusedLabel) focusedLabel.textContent = '← ' + (out.label || out.sink_node_name);
+  // Fetch schema (cached) and render controls.
+  let schema;
+  try {
+    schema = await fetchDspSchema(out.insert.library, out.insert.label);
+  } catch (e) {
+    panel.innerHTML = `<div class="dsp-panel-empty">Schema unavailable: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  const inputControls = (schema.controls || []).filter(c => c.direction === 'input');
+  const meta = `<div class="dsp-panel-meta">
+    <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}</div>
+    <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(out.insert.library, out.insert.label))}</div>
+    <div class="dsp-plugin-maker">${escapeHtml(schema.maker || '')}</div>
+    <div style="flex:1"></div>
+    <div class="dsp-actions">
+      <button class="btn" onclick="clearDspFocus()" title="Close panel">Close</button>
+      <button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>
+    </div>
+  </div>`;
+  const controlsHtml = inputControls.map(c =>
+    renderDspControl(out.id, c, out.insert.controls[c.name])
+  ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
+  panel.innerHTML = meta + `<div class="dsp-controls">${controlsHtml}</div>`;
+}
+
+// Render one control's widget based on the LADSPA hints. No control
+// name is hardcoded — toggled→on/off, integer with a small enum range
+// → <select>, otherwise → range slider with numeric display.
+function renderDspControl(outputId, c, currentValue) {
+  const v = currentValue !== undefined ? currentValue : (c.default ?? 0);
+  if (c.toggled) {
+    const on = v > 0.5;
+    return `<div class="dsp-control">
+      <div class="dsp-ctl-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
+      <button class="toggle${on ? ' on' : ''}" onclick="dspToggleControl('${outputId}', '${encodeURIComponent(c.name)}', ${on ? 0 : 1})">${on ? 'ON' : 'OFF'}</button>
+    </div>`;
+  }
+  // Heuristic for "enum-ish" integer controls (e.g. LSP "Mode" 0-2).
+  if (c.integer && c.minimum !== null && c.maximum !== null && (c.maximum - c.minimum) <= 8) {
+    const opts = [];
+    for (let i = c.minimum; i <= c.maximum; i++) {
+      opts.push(`<option value="${i}"${i === Math.round(v) ? ' selected' : ''}>${i}</option>`);
+    }
+    return `<div class="dsp-control">
+      <div class="dsp-ctl-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
+      <select onchange="dspSetControl('${outputId}', '${encodeURIComponent(c.name)}', this.value)">
+        ${opts.join('')}
+      </select>
+    </div>`;
+  }
+  // Default: range slider + numeric readout. Range comes from LADSPA
+  // hints when present; otherwise sensible v±100 around current value.
+  const min = c.minimum ?? (v - 100);
+  const max = c.maximum ?? (v + 100);
+  const step = c.integer ? 1 : (max - min < 10 ? 0.01 : 0.5);
+  const fmt = c.integer ? String(Math.round(v)) : Number(v).toFixed(2);
+  return `<div class="dsp-control">
+    <div class="dsp-ctl-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
+    <div class="dsp-ctl-value" data-ctl-readout="${encodeURIComponent(c.name)}">${fmt}</div>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${v}"
+      oninput="dspDragControl('${outputId}', '${encodeURIComponent(c.name)}', this.value)"
+      onchange="dspSetControl('${outputId}', '${encodeURIComponent(c.name)}', this.value)">
+  </div>`;
+}
+
+// During a slider drag we just update the readout — the actual PATCH
+// fires on `change` (when the user releases) so we don't flood the
+// server with 60 PATCHes per second. The 'change' path is what
+// validates zero-click delay change live.
+function dspDragControl(outputId, encName, value) {
+  const name = decodeURIComponent(encName);
+  const panel = document.getElementById('dsp-panel');
+  if (!panel) return;
+  const readout = panel.querySelector(`[data-ctl-readout="${encName}"]`);
+  if (readout) {
+    const n = Number(value);
+    readout.textContent = Number.isInteger(n) ? String(n) : n.toFixed(2);
+  }
+}
+
+async function dspSetControl(outputId, encName, value) {
+  const name = decodeURIComponent(encName);
+  try {
+    const r = await fetch(
+      API + '/mixer/outputs/' + outputId + '/insert/controls/' + encodeURIComponent(name),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: Number(value) }),
+      }
+    );
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const out = await r.json();
+    // Patch the local mixerState in place so subsequent renders
+    // reflect the new value without a full /mixer refetch.
+    mixerState.outputs = (mixerState.outputs || []).map(
+      o => o.id === outputId ? out : o
+    );
+  } catch (e) {
+    console.warn('control set failed', name, e);
+  }
+}
+
+async function dspToggleControl(outputId, encName, newVal) {
+  await dspSetControl(outputId, encName, newVal);
+  await renderDspPanel();
+}
+
 function renderMixSources() {
   const el = document.getElementById('mix-sources');
   if (!el) return;
@@ -1067,6 +1412,7 @@ function renderMixSources() {
       </div>
       ${directChips}
       <div class="row-extra2"></div>
+      <div class="row-fx empty"></div>
       ${mrlsRow('mix-src', s.id, s)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
@@ -1098,6 +1444,7 @@ function renderMixMaster() {
     <div class="row-route mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="row-extra1"></div>
     <div class="row-extra2"></div>
+    <div class="row-fx empty"></div>
     ${mrlsRow('mix-master', '', m)}
     <div class="row-fader fader-area">
       ${MIX_VU_TICKS}
@@ -1147,6 +1494,7 @@ function renderMixOutputs() {
         <span class="delay-unit">ms</span>
       </div>
       <div class="row-extra2">${hw}</div>
+      ${fxRow(o)}
       ${mrlsRow('mix-out', o.id, o)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
@@ -1743,6 +2091,17 @@ async function refreshAll() {
     renderBtControllerSelect(state.btControllers);
     document.getElementById('status-ip').textContent = `IP: ${caps.stage_id}`;
     document.getElementById('status-mode').textContent = `Mode: ${caps.mode}`;
+    // DSP capability flag — also fetch the plugin catalog so the
+    // FX picker has something to offer the first time the operator
+    // clicks "+ FX" on an output.
+    const wasAvailable = dspState.available;
+    dspState.available = !!caps.plugins_available;
+    if (dspState.available && !wasAvailable && !dspState.catalog.length) {
+      try {
+        const c = await fetch(API + '/dsp/plugins');
+        if (c.ok) dspState.catalog = await c.json();
+      } catch (e) { /* empty catalog → picker shows nothing */ }
+    }
   }
 
   // Guard against transient empty payloads during a PW restart: if we had

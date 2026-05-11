@@ -36,6 +36,18 @@ class FakePipeWireBackend:
         self.unloaded_modules: list[int] = []
         self._next_link_id = 100
         self._next_module_id = 536_870_912  # pactl convention for pulse-compat modules
+        # Filter-chain state — keyed by chain name (matching the real
+        # backend's conf filename). Each entry is the raw conf body
+        # the service generated so tests can assert on its content.
+        self.filter_chain_confs: dict[str, str] = {}
+        # Live control values per chain node, keyed by (node_name,
+        # control_name). Mirrors what `pw-cli set-param Props` would
+        # leave inside the running filter-chain.
+        self.filter_chain_controls: dict[tuple[str, str], float] = {}
+        # How many times reload_filter_chain has been called. Lets
+        # tests check that the service doesn't reload on every
+        # control tweak (the whole point of the live-param path).
+        self.filter_chain_reload_count: int = 0
 
     async def list_nodes(self) -> list[PwNode]:
         return list(self.nodes)
@@ -71,9 +83,7 @@ class FakePipeWireBackend:
         if name is not None:
             self.channel_volumes[name] = [volume_linear, volume_linear]
 
-    async def set_node_channel_volumes(
-        self, node_name: str, channels: list[float]
-    ) -> None:
+    async def set_node_channel_volumes(self, node_name: str, channels: list[float]) -> None:
         """Mirror the real backend's name-based API. Tests keyed by
         node_name read this directly via `fake_pw.channel_volumes`."""
         self.channel_volumes[node_name] = list(channels)
@@ -170,3 +180,52 @@ class FakePipeWireBackend:
             self.nodes = [n for n in self.nodes if n.name != name]
             self.ports = [p for p in self.ports if p.node_id not in removed_node_ids]
         self.unloaded_modules.append(module_id)
+
+    # ── Filter-chain (DSP plugin insert) ──────────────────────────
+
+    async def write_filter_chain_conf(self, chain_name: str, conf_body: str) -> None:
+        self.filter_chain_confs[chain_name] = conf_body
+        # Simulate the chain showing up in the graph after a reload.
+        # We don't synthesize ports here — the mixer service doesn't
+        # need them (it doesn't link to the filter-chain node, the
+        # chain handles its own capture/playback). Tests that need
+        # the node visible can call `_simulate_filter_chain_node`.
+
+    async def delete_filter_chain_conf(self, chain_name: str) -> None:
+        self.filter_chain_confs.pop(chain_name, None)
+        # Drop any control values tied to this chain — keyed by node
+        # name though, not conf name, so this is a no-op unless the
+        # caller used matching names (which is what the service does).
+
+    async def list_filter_chain_confs(self) -> list[str]:
+        return list(self.filter_chain_confs.keys())
+
+    async def reload_filter_chain(self) -> None:
+        self.filter_chain_reload_count += 1
+        # After a reload, the synthesized nodes for each conf should
+        # exist in `self.nodes`. We add them lazily here so tests
+        # see the same shape they'd see on a real Stage post-reload.
+        for chain_name in self.filter_chain_confs:
+            if not any(n.name == chain_name for n in self.nodes):
+                node_id = max((n.id for n in self.nodes), default=0) + 1
+                self.nodes.append(
+                    PwNode(
+                        id=node_id,
+                        name=chain_name,
+                        media_class="Audio/Sink",
+                        nick=chain_name,
+                        state="running",
+                    )
+                )
+        # Conversely, drop synthesized nodes whose conf has gone.
+        chain_names = set(self.filter_chain_confs)
+        self.nodes = [
+            n
+            for n in self.nodes
+            if not (n.name.startswith("phonon_fx_") and n.name not in chain_names)
+        ]
+
+    async def set_filter_node_control(
+        self, node_name: str, control_name: str, value: float
+    ) -> None:
+        self.filter_chain_controls[(node_name, control_name)] = float(value)

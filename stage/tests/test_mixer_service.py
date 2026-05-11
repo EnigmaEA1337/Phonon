@@ -137,12 +137,8 @@ class TestInit:
         # entries in `loopbacks` so the cleanup pass can find them.
         await fake_pw.load_null_sink(MASTER_SINK_NAME, "Phonon-Master")
         # Pre-existing orphan loopbacks (simulating leftover state).
-        await fake_pw.load_loopback(
-            f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_1", 90
-        )
-        await fake_pw.load_loopback(
-            f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_2", 0
-        )
+        await fake_pw.load_loopback(f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_1", 90)
+        await fake_pw.load_loopback(f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_2", 0)
         assert len(fake_pw.loopbacks) == 2
 
         # And one Output persisted to disk so reconcile will try to
@@ -505,9 +501,7 @@ class TestSolo:
         s_a = await service.add_source(
             source_node_name="airplay_in", source_is_sink=True, label="AP"
         )
-        await service.add_source(
-            source_node_name="bt_phone_in", source_is_sink=True, label="BT"
-        )
+        await service.add_source(source_node_name="bt_phone_in", source_is_sink=True, label="BT")
         # Solo A, then mute A → both must continue routing (solo gone).
         await service.update_source(s_a.id, solo=True)
         assert len(fake_pw.links) == 2  # only A
@@ -518,12 +512,8 @@ class TestSolo:
     async def test_output_solo_suppresses_others(
         self, service: MixerService, fake_pw: FakePipeWireBackend
     ) -> None:
-        o_a = await service.add_output(
-            sink_node_name="alsa_output.dg60_1", label="A"
-        )
-        o_b = await service.add_output(
-            sink_node_name="alsa_output.dg60_2", label="B"
-        )
+        o_a = await service.add_output(sink_node_name="alsa_output.dg60_1", label="A")
+        o_b = await service.add_output(sink_node_name="alsa_output.dg60_2", label="B")
         # Both receive master → 2 loopbacks.
         assert len(fake_pw.loopbacks) == 2
 
@@ -538,12 +528,8 @@ class TestSolo:
         """Solo'ing two outputs means both stay live — solo is a group,
         not a singleton. Useful when auditioning a stereo pair while
         muting other zones."""
-        o_a = await service.add_output(
-            sink_node_name="alsa_output.dg60_1", label="A"
-        )
-        o_b = await service.add_output(
-            sink_node_name="alsa_output.dg60_2", label="B"
-        )
+        o_a = await service.add_output(sink_node_name="alsa_output.dg60_1", label="A")
+        o_b = await service.add_output(sink_node_name="alsa_output.dg60_2", label="B")
         await service.update_output(o_a.id, solo=True)
         await service.update_output(o_b.id, solo=True)
         # Both solos active → both loopbacks survive.
@@ -563,12 +549,8 @@ class TestReconcileFastPath:
     async def test_gain_change_does_not_destroy_links(
         self, service: MixerService, fake_pw: FakePipeWireBackend
     ) -> None:
-        await service.add_output(
-            sink_node_name="alsa_output.dg60_1", label="A", delay_ms=50.0
-        )
-        await service.add_source(
-            source_node_name="airplay_in", source_is_sink=True, label="AP"
-        )
+        await service.add_output(sink_node_name="alsa_output.dg60_1", label="A", delay_ms=50.0)
+        await service.add_source(source_node_name="airplay_in", source_is_sink=True, label="AP")
         loopbacks_before = set(fake_pw.loopbacks.keys())
         links_before = {lk.id for lk in fake_pw.links}
 
@@ -609,12 +591,10 @@ class TestReconcileFastPath:
             sink_node_name="alsa_output.dg60_2", label="B", delay_ms=0.0
         )
         b_loopback_id = next(
-            mid for mid, (_, sink, _) in fake_pw.loopbacks.items()
-            if sink == "alsa_output.dg60_2"
+            mid for mid, (_, sink, _) in fake_pw.loopbacks.items() if sink == "alsa_output.dg60_2"
         )
         a_loopback_id = next(
-            mid for mid, (_, sink, _) in fake_pw.loopbacks.items()
-            if sink == "alsa_output.dg60_1"
+            mid for mid, (_, sink, _) in fake_pw.loopbacks.items() if sink == "alsa_output.dg60_1"
         )
 
         await service.update_output(o_a.id, delay_ms=200.0)

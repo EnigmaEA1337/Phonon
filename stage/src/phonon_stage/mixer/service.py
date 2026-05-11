@@ -36,10 +36,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from phonon_stage.mixer.filter_chain import chain_name_for, render_filter_chain_conf
 from phonon_stage.mixer.models import (
     MasterBus,
     MixerState,
     Output,
+    PluginInsert,
     Source,
     replace,
     validate_delay_ms,
@@ -47,6 +49,7 @@ from phonon_stage.mixer.models import (
 )
 
 if TYPE_CHECKING:
+    from phonon_stage.dsp.ladspa import LadspaIntrospector
     from phonon_stage.mixer.store import MixerStore
     from phonon_stage.pipewire.backend import PipeWireBackend, PwNode, PwPort
 
@@ -66,12 +69,24 @@ class MixerError(Exception):
 
 
 class MixerService:
-    def __init__(self, pw_backend: PipeWireBackend, store: MixerStore) -> None:
+    def __init__(
+        self,
+        pw_backend: PipeWireBackend,
+        store: MixerStore,
+        introspector: LadspaIntrospector | None = None,
+    ) -> None:
         self._pw = pw_backend
         self._store = store
+        self._introspector = introspector
         # PW objects we own. Tracked so reconcile() can tear them down.
         self._owned_loopbacks: list[int] = []
         self._owned_links: list[int] = []
+        # Filter-chain confs we wrote on the previous reconcile, mapped
+        # chain_name → conf_body. Diffing against the next reconcile's
+        # "wanted" set is what lets us skip reload_filter_chain unless
+        # there's an actual change — restarting filter-chain.service
+        # glitches every running chain so we avoid it on no-op moves.
+        self._owned_chains: dict[str, str] = {}
 
     # ── State accessors ─────────────────────────────────────────
 
@@ -122,6 +137,7 @@ class MixerService:
         self._store.load()
         await self._ensure_master_null_sink()
         await self._cleanup_orphan_loopbacks()
+        await self._cleanup_orphan_chains()
         await self._reconcile()
 
     async def _cleanup_orphan_loopbacks(self) -> None:
@@ -147,6 +163,31 @@ class MixerService:
                     module_id=mid,
                     exc_info=True,
                 )
+
+    async def _cleanup_orphan_chains(self) -> None:
+        """Delete every phonon-owned filter-chain conf left behind by
+        a previous daemon session. We don't know in advance whether
+        the persisted state will want the same chains back — the
+        first reconcile will re-create whatever's needed. Doing this
+        unconditionally is cleaner than trying to be clever about it
+        and risk a stale conf surviving across restarts."""
+        try:
+            chains = await self._pw.list_filter_chain_confs()
+        except Exception:
+            logger.info("mixer.orphan_chain_list_failed", exc_info=False)
+            return
+        if not chains:
+            return
+        for chain in chains:
+            try:
+                await self._pw.delete_filter_chain_conf(chain)
+            except Exception:
+                logger.warning("mixer.orphan_chain_delete_failed", chain=chain, exc_info=True)
+        try:
+            await self._pw.reload_filter_chain()
+            logger.info("mixer.orphan_chains_cleared", count=len(chains))
+        except Exception:
+            logger.warning("mixer.orphan_chain_reload_failed", exc_info=True)
 
     async def _ensure_master_null_sink(self) -> None:
         """phonon_master is the single shared bus null-sink. Created
@@ -314,6 +355,123 @@ class MixerService:
             await self._apply_strip_volume_output(new)
         return new
 
+    async def set_output_insert(
+        self,
+        output_id: str,
+        backend: str | None,
+        library: str | None,
+        label: str | None,
+    ) -> Output:
+        """Attach (or detach) a plugin to an output's master path.
+
+        Pass `backend=None` (or `label=None`) to clear the insert; the
+        output reverts to a plain loopback. Pass a fresh
+        (backend, library, label) triple to attach a plugin — the
+        service introspects the plugin to seed sensible defaults
+        (whatever the LADSPA descriptor declares as `default`) so the
+        user gets a working plugin from the first reconcile without
+        having to fill every control by hand.
+
+        Triggers a full _reconcile so the chain conf is generated
+        and filter-chain.service reloaded.
+        """
+        cur = self._output(output_id)
+        if backend is None or label is None:
+            new = replace(cur, insert=None)
+        else:
+            defaults = await self._introspect_defaults(backend, library or "", label)
+            # Preserve any prior controls the user had set for this
+            # exact plugin — if they're swapping plugins, defaults
+            # replace; if they're re-enabling the same plugin after a
+            # detach, prior values would already have been wiped at
+            # detach time (insert=None drops controls).
+            new = replace(
+                cur,
+                insert=PluginInsert(
+                    backend=backend,
+                    library=library or "",
+                    label=label,
+                    controls=defaults,
+                    enabled=True,
+                ),
+            )
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
+    async def _introspect_defaults(
+        self, backend: str, library: str, label: str
+    ) -> dict[str, float]:
+        """Ask the LadspaIntrospector for the plugin's default values.
+        Returns {} if no introspector was wired (Pi Stages) or if the
+        plugin is unknown — the chain still loads, just with whatever
+        the LADSPA library's own internal defaults are."""
+        if self._introspector is None or backend != "ladspa":
+            return {}
+        try:
+            desc = await self._introspector.describe(library, label)
+        except Exception:
+            logger.warning(
+                "mixer.introspect_failed",
+                library=library,
+                label=label,
+                exc_info=True,
+            )
+            return {}
+        defaults: dict[str, float] = {}
+        for c in desc.controls:
+            if c.direction != "input" or c.default is None:
+                continue
+            defaults[c.name] = float(c.default)
+        return defaults
+
+    async def update_output_insert_control(
+        self, output_id: str, control_name: str, value: float
+    ) -> Output:
+        """Live-update one plugin control value. The whole point of
+        the filter-chain migration: this path does NOT reload the
+        filter-chain service and does NOT reconcile — just pw-cli
+        set-param against the running node. With LSP's Ramping=1 on
+        comp_delay_stereo, retuning Time (ms) is click-free.
+
+        Raises MixerError if the output has no insert or if the
+        control isn't currently in the insert's dict (we won't
+        silently invent a new control name)."""
+        cur = self._output(output_id)
+        if cur.insert is None:
+            msg = f"output {output_id} has no plugin insert"
+            raise MixerError(msg)
+        if control_name not in cur.insert.controls:
+            msg = (
+                f"unknown control {control_name!r} on output {output_id}'s "
+                f"insert {cur.insert.label!r}"
+            )
+            raise MixerError(msg)
+        new_controls = dict(cur.insert.controls)
+        new_controls[control_name] = float(value)
+        new_insert = replace(cur.insert, controls=new_controls)
+        new = replace(cur, insert=new_insert)
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        # Keep the in-memory chain-body cache in sync with the new
+        # control value — otherwise the next non-control reconcile
+        # would see a "wanted vs owned" diff just because of this
+        # control move and reload the service for nothing.
+        chain = chain_name_for(new)
+        if chain in self._owned_chains and new.insert is not None:
+            self._owned_chains[chain] = render_filter_chain_conf(new, new.insert, MASTER_SINK_NAME)
+        try:
+            await self._pw.set_filter_node_control(chain, control_name, value)
+        except Exception:
+            logger.warning(
+                "mixer.insert_control_set_failed",
+                output_id=output_id,
+                control=control_name,
+                exc_info=True,
+            )
+        return new
+
     async def _apply_strip_volume_output(self, output: Output) -> None:
         """Set per-channel volume on a single output sink — no topology
         change. Used for gain_db / mute_left / mute_right moves where
@@ -365,9 +523,7 @@ class MixerService:
         master_src = f"source={MASTER_SINK_NAME}.monitor"
         sink_match = f"sink={output.sink_node_name}"
         to_unload = [
-            mid
-            for mid, args in modules.items()
-            if master_src in args and sink_match in args
+            mid for mid, args in modules.items() if master_src in args and sink_match in args
         ]
 
         # Find the destination sink's PW node id so we can call
@@ -636,9 +792,16 @@ class MixerService:
         except Exception:
             logger.warning("mixer.master_apply_failed", exc_info=True)
 
-        # 5. For each output: per-channel volume on the sink, then
-        #    the master→output loopback (skipped on mute / solo
-        #    suppression / receives_master=False).
+        # 5. For each output: per-channel volume on the sink, then the
+        #    master→output bridge. The bridge is either a plain pactl
+        #    module-loopback (legacy path, latency_msec carries delay
+        #    but can't be retuned live) OR a PipeWire filter-chain
+        #    (when the output has an enabled PluginInsert — replaces
+        #    the loopback entirely so the plugin sits inline). The
+        #    chain owns its own buffering; output.delay_ms is ignored
+        #    while a chain is in place, the user manages delay via
+        #    the plugin's controls instead.
+        wanted_chains: dict[str, str] = {}
         for o in self._store.state.outputs:
             sink_node = next((n for n in nodes if n.name == o.sink_node_name), None)
             if sink_node is None:
@@ -659,6 +822,19 @@ class MixerService:
                 )
             except Exception:
                 logger.warning("mixer.output_volume_failed", output_id=o.id, exc_info=True)
+            # Decide on the master→output bridge. Filter-chains stay
+            # loaded across mute/solo gates — they're heavy to reload
+            # (restarts filter-chain.service, glitches every chain on
+            # the host) so we don't drop them just because the output
+            # is temporarily silenced; the audio is silenced by the
+            # sink's own mute. Loopbacks, by contrast, are cheap to
+            # tear down so we still skip them under those gates to
+            # save the user a mute → audio path.
+            if o.receives_master and o.insert is not None and o.insert.enabled:
+                wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
+                    o, o.insert, MASTER_SINK_NAME
+                )
+                continue  # chain replaces the loopback; nothing else to do
             # Solo gating on the output side: when any output is
             # solo'd (and not muted), only the solo group keeps its
             # master loopback and its receive of direct sends. The
@@ -674,6 +850,14 @@ class MixerService:
                 )
                 if mid is not None:
                     self._owned_loopbacks.append(mid)
+
+        # 5b. Apply the chain diff. Reload filter-chain.service only
+        # if the wanted set differs from what we wrote last reconcile
+        # — keeps reconcile cheap for the common case of fader moves
+        # on chain-less outputs.
+        if wanted_chains != self._owned_chains:
+            await self._apply_filter_chain_diff(wanted_chains)
+            self._owned_chains = wanted_chains
 
         # 6. For each source: per-channel volume + outbound links.
         for s in self._store.state.sources:
@@ -734,6 +918,38 @@ class MixerService:
             links=len(self._owned_links),
             loopbacks=len(self._owned_loopbacks),
         )
+
+    async def _apply_filter_chain_diff(self, wanted: dict[str, str]) -> None:
+        """Reconcile the on-disk filter-chain confs against `wanted`.
+        Writes new/changed confs, deletes stale ones, then reloads
+        filter-chain.service exactly once. Only invoked when the
+        wanted set actually differs from the previous reconcile.
+
+        Errors on individual writes/deletes are logged and skipped —
+        a single bad conf shouldn't stop the rest of the reconcile.
+        """
+        stale = set(self._owned_chains) - set(wanted)
+        for chain in stale:
+            try:
+                await self._pw.delete_filter_chain_conf(chain)
+            except Exception:
+                logger.warning("mixer.filter_chain_delete_failed", chain=chain, exc_info=True)
+        for chain, body in wanted.items():
+            if self._owned_chains.get(chain) == body:
+                continue  # unchanged — skip the write
+            try:
+                await self._pw.write_filter_chain_conf(chain, body)
+            except Exception:
+                logger.warning("mixer.filter_chain_write_failed", chain=chain, exc_info=True)
+        try:
+            await self._pw.reload_filter_chain()
+            logger.info(
+                "mixer.filter_chain_reconciled",
+                wanted=len(wanted),
+                deleted=len(stale),
+            )
+        except Exception:
+            logger.warning("mixer.filter_chain_reload_failed", exc_info=True)
 
     async def _link_pairs(self, src_ports: list[int], dst_ports: list[int]) -> None:
         """Zip-pair two pre-ordered port lists and create the links.

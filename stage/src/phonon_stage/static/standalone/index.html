@@ -391,6 +391,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
+    <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
@@ -566,6 +567,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
+  <!-- ─── Tab: Plugins ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="plugins">
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Source Plugins
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">AirPlay · Spotify Connect · MPD · ...</span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchPlugins()" title="Refresh status">Refresh</button>
+      </div>
+      <div class="section-body" id="plugins-list">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Tab: Settings ─── -->
   <div class="tab-pane edit-only" data-tab-pane="settings">
     <div class="section">
@@ -602,6 +618,169 @@ function switchTab(name) {
   // Mappings panel SVG positions are wrong if its container was hidden
   // when we drew them. Force a redraw whenever a tab becomes visible.
   setTimeout(drawPatchLinks, 0);
+  // Plugins tab fetches lazily on first open so we don't query
+  // /plugins on every refresh tick when the user isn't looking.
+  if (name === 'plugins') fetchPlugins();
+}
+
+// ── Source plugins (AirPlay / Spotify / MPD / ...) ──
+async function fetchPlugins() {
+  const host = document.getElementById('plugins-list');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/plugins');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const list = await r.json();
+    renderPlugins(list);
+  } catch (e) {
+    host.innerHTML = '<div style="color:var(--red);font-size:11px">Failed to load: ' + e.message + '</div>';
+  }
+}
+
+function renderPlugins(list) {
+  const host = document.getElementById('plugins-list');
+  if (!list || list.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No plugins available</div>';
+    return;
+  }
+  host.innerHTML = list.map(p => {
+    const enabledBadge = p.enabled
+      ? '<span style="background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600">ENABLED</span>'
+      : '<span style="background:var(--bg-2);color:var(--text-dim);padding:1px 6px;border-radius:3px;font-size:9px">DISABLED</span>';
+    const runningBadge = p.running
+      ? '<span style="background:var(--green);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600">RUNNING</span>'
+      : '<span style="background:var(--bg-2);color:var(--text-dim);padding:1px 6px;border-radius:3px;font-size:9px">STOPPED</span>';
+    const pwNodes = p.pw_node_names && p.pw_node_names.length
+      ? '<div style="font-size:10px;color:var(--text-dim);margin-top:4px">PW nodes: ' + p.pw_node_names.map(n => '<code>' + escapeHtml(n) + '</code>').join(', ') + '</div>'
+      : '';
+    const errLine = p.last_error
+      ? '<div style="font-size:10px;color:var(--yellow);margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:auto;background:var(--bg-0);padding:4px;border-radius:3px">' + escapeHtml(p.last_error.slice(0, 600)) + '</div>'
+      : '';
+    return `
+      <div style="background:var(--bg-1);border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <strong style="font-size:13px">${escapeHtml(p.title)}</strong>
+          <code style="font-size:10px;color:var(--text-dim)">${escapeHtml(p.name)}</code>
+          <span style="flex:1"></span>
+          ${enabledBadge}
+          ${runningBadge}
+        </div>
+        <div style="font-size:11px;color:var(--text-mid);margin-bottom:6px">${escapeHtml(p.description)}</div>
+        ${pwNodes}
+        ${errLine}
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          ${p.enabled
+            ? `<button class="btn" onclick="pluginAction('${p.name}','disable')">Disable</button>`
+            : `<button class="btn btn-primary" onclick="pluginAction('${p.name}','enable')">Enable</button>`}
+          ${p.running
+            ? `<button class="btn" onclick="pluginAction('${p.name}','stop')">Stop</button>`
+            : `<button class="btn" onclick="pluginAction('${p.name}','start')">Start</button>`}
+          <button class="btn" onclick="pluginAction('${p.name}','restart')">Restart</button>
+          <button class="btn" onclick="openPluginSettings('${p.name}')">Settings</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function pluginAction(name, action) {
+  try {
+    const r = await fetch(API + '/plugins/' + encodeURIComponent(name) + '/' + action, { method: 'POST' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      alert(action + ' failed: ' + (body.detail || r.status));
+      return;
+    }
+    await fetchPlugins();
+  } catch (e) {
+    alert(action + ' failed: ' + e.message);
+  }
+}
+
+async function openPluginSettings(name) {
+  let r;
+  try {
+    r = await fetch(API + '/plugins/' + encodeURIComponent(name) + '/settings');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    alert('Failed to load settings: ' + e.message);
+    return;
+  }
+  const settings = await r.json();
+  // For v1 we hardcode the AirPlay form. When we add Spotify/MPD,
+  // either dispatch on name or derive the form from the OpenAPI
+  // schema — punt until the second plugin exists.
+  if (name !== 'airplay-v1') {
+    alert('Settings UI for "' + name + '" not implemented yet');
+    return;
+  }
+  let overlay = document.getElementById('plugin-settings-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'plugin-settings-overlay';
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal" style="max-width:480px">
+    <div class="modal-head"><h2>AirPlay (Classic) — Settings</h2></div>
+    <div class="modal-body">
+      <label style="display:block;margin-bottom:10px">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Receiver name (shown in iPhone AirPlay picker)</div>
+        <input type="text" id="ap-name" maxlength="63" value="${escapeHtml(settings.name || '')}"
+          style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+      </label>
+      <label style="display:block;margin-bottom:10px">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Password (optional — empty = open)</div>
+        <input type="text" id="ap-password" maxlength="64" value="${escapeHtml(settings.password || '')}"
+          style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+      </label>
+      <label style="display:block;margin-bottom:10px">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Volume mode</div>
+        <select id="ap-volume-mode" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+          <option value="software" ${settings.volume_mode === 'software' ? 'selected' : ''}>software</option>
+          <option value="hardware" ${settings.volume_mode === 'hardware' ? 'selected' : ''}>hardware</option>
+        </select>
+      </label>
+      <label style="display:block;margin-bottom:10px">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Interpolation (soxr = better quality, ~2% more CPU)</div>
+        <select id="ap-interpolation" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+          <option value="soxr" ${settings.interpolation === 'soxr' ? 'selected' : ''}>soxr</option>
+          <option value="basic" ${settings.interpolation === 'basic' ? 'selected' : ''}>basic</option>
+        </select>
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" onclick="document.getElementById('plugin-settings-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="savePluginSettings('airplay-v1')">Save & restart</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function savePluginSettings(name) {
+  const body = {
+    name: document.getElementById('ap-name').value,
+    password: document.getElementById('ap-password').value,
+    volume_mode: document.getElementById('ap-volume-mode').value,
+    interpolation: document.getElementById('ap-interpolation').value,
+  };
+  try {
+    const r = await fetch(API + '/plugins/' + encodeURIComponent(name) + '/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert('Save failed: ' + (err.detail || r.status));
+      return;
+    }
+    document.getElementById('plugin-settings-overlay').remove();
+    await fetchPlugins();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // ── Mode LIVE/EDIT (synced across all browsers via server) ──

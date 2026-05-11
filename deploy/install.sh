@@ -92,7 +92,8 @@ if ! apt-get install -y -qq \
     pipewire-pulse \
     wireplumber \
     pulseaudio-utils \
-    linuxptp ; then
+    linuxptp \
+    shairport-sync ; then
     echo "  ERROR: apt-get install failed — fix the network or repo issue and rerun" >&2
     exit 1
 fi
@@ -352,6 +353,15 @@ apt-get install -y -qq python3-dbus python3-gi bluez-alsa-utils 2>/dev/null || t
 # Disable bluealsa-aplay (Phonon manages routing itself)
 systemctl disable bluealsa-aplay 2>/dev/null || true
 systemctl stop bluealsa-aplay 2>/dev/null || true
+
+# Disable the system-wide shairport-sync unit shipped by the package.
+# Phonon's AirPlay v1 plugin controls a user-instance unit instead
+# (runs under the phonon UID so it shares the pipewire-pulse session
+# we use for routing). Leaving the system unit enabled would race for
+# the same network ports and announce a second AirPlay receiver on
+# the network — confusing and wasteful.
+systemctl disable shairport-sync 2>/dev/null || true
+systemctl stop shairport-sync 2>/dev/null || true
 
 # BlueALSA D-Bus policy
 cat > /etc/dbus-1/system.d/bluealsa.conf <<'DBUSEOF'
@@ -786,6 +796,35 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 USVC
+
+# ── Plugin user-services ─────────────────────────────────────────────
+# Each source plugin ships a user-instance unit so phonon-stage can
+# enable/start/restart it via `systemctl --user` without any sudo
+# escalation. The plugin's settings (rendered config file) lives in
+# ${DATA_DIR}/plugins/<plugin-name>/ — phonon-stage creates the file
+# at first enable, the unit references it by absolute path.
+
+# AirPlay v1 — shairport-sync 3.x
+# `Wants=` (not `Requires=`) on pipewire-pulse: shairport-sync will
+# keep trying to connect to the PA socket if it's not ready, that's
+# fine and more robust than a hard requirement that would put the
+# unit into 'failed' state during a pipewire restart.
+mkdir -p "${DATA_DIR}/plugins/airplay-v1"
+cat > "${DATA_DIR}/.config/systemd/user/shairport-sync.service" <<APV1SVC
+[Unit]
+Description=AirPlay 1 receiver (Phonon plugin)
+After=pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/shairport-sync -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+APV1SVC
 
 # WirePlumber config (disable bluez5, use bluealsa instead)
 mkdir -p "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d"

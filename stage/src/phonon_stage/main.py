@@ -22,6 +22,7 @@ from phonon_stage.api.health import router as health_router
 from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
 from phonon_stage.api.pipewire import router as pipewire_router
+from phonon_stage.api.plugins import router as plugins_router
 from phonon_stage.api.ptp import router as ptp_router
 from phonon_stage.api.settings import router as settings_router
 from phonon_stage.api.system import router as system_router
@@ -36,6 +37,8 @@ from phonon_stage.logging import configure_logging
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
 from phonon_stage.pipewire.real import RealPipeWireBackend
+from phonon_stage.plugins.registry import PluginRegistry
+from phonon_stage.plugins.system import RealSystemBackend, SystemBackend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -59,6 +62,7 @@ def create_app(
     pw_backend: PipeWireBackend | None = None,
     mapping_service: MappingService | None = None,
     clock: Clock | None = None,
+    system_backend: SystemBackend | None = None,
 ) -> FastAPI:
     """Create the FastAPI application with dependency injection.
 
@@ -70,6 +74,8 @@ def create_app(
         pw_backend: PipeWire graph manager. None = real PipeWire backend.
         mapping_service: Audio mapping orchestrator. None = create with real backends.
         clock: Clock implementation. None = system clock.
+        system_backend: systemd + filesystem driver used by source plugins.
+            None = real systemctl --user + atomic file writes.
 
     Returns:
         Configured FastAPI application.
@@ -82,6 +88,15 @@ def create_app(
     pw = pw_backend or RealPipeWireBackend()
     store = MappingStore(cfg.standalone_conf_path)
     svc = mapping_service or MappingService(pw_backend=pw, store=store, clock=clk)
+    sysbe = system_backend or RealSystemBackend()
+    # Each plugin's settings / runtime scratch lives under
+    # <standalone-conf-dir>/plugins/<plugin-name>/ — same data root as
+    # the rest of the Stage's persisted state, so backup tooling sees
+    # one tree.
+    plugin_data_root = cfg.standalone_conf_path.parent / "plugins"
+    plugin_registry = PluginRegistry(
+        system=sysbe, pw_backend=pw, plugin_data_root=plugin_data_root
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -93,6 +108,8 @@ def create_app(
         app.state.discovery_backend = discovery
         app.state.pw_backend = pw
         app.state.mapping_service = svc
+        app.state.system_backend = sysbe
+        app.state.plugin_registry = plugin_registry
 
         await discovery.register(cfg.stage_id, cfg.bind_address, cfg.port)
 
@@ -188,6 +205,7 @@ def create_app(
     app.include_router(ptp_router)
     app.include_router(settings_router)
     app.include_router(update_router)
+    app.include_router(plugins_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

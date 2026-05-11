@@ -21,6 +21,7 @@ from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
 from phonon_stage.pipewire.backend import PwNode, PwPort
 from phonon_stage.pipewire.fake import FakePipeWireBackend
+from phonon_stage.plugins.system import FakeSystemBackend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -171,6 +172,11 @@ def mapping_service(
 
 
 @pytest.fixture()
+def fake_system() -> FakeSystemBackend:
+    return FakeSystemBackend()
+
+
+@pytest.fixture()
 async def client(
     stage_config: StageConfig,
     fake_audio: FakeAudioBackend,
@@ -179,6 +185,7 @@ async def client(
     fake_pw: FakePipeWireBackend,
     mapping_service: MappingService,
     fake_clock: FakeClock,
+    fake_system: FakeSystemBackend,
 ) -> AsyncIterator[AsyncClient]:
     app = create_app(
         config=stage_config,
@@ -188,6 +195,7 @@ async def client(
         pw_backend=fake_pw,
         mapping_service=mapping_service,
         clock=fake_clock,
+        system_backend=fake_system,
     )
 
     @asynccontextmanager

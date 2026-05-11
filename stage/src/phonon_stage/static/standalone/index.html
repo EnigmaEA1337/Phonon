@@ -248,9 +248,24 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* DSP panel — single-plugin display, digital-console feel. Sits
    between Monitoring and Mix Console; auto-renders every input
    control port from the schema fetched from /dsp/plugins/schema. */
-.dsp-panel { display: grid; grid-template-columns: 200px 1fr; gap: 12px;
-  padding: 8px; background: var(--bg-1); border: 1px solid var(--border);
-  border-radius: 4px; min-height: 120px; }
+/* Plugin layout — VU pair on each side, meta + controls in the
+   middle. This is the canonical shape for every future DSP plugin:
+   the operator always sees IN level on the left, OUT level on the
+   right, plugin-specific controls between them. */
+.dsp-panel { display: grid; grid-template-columns: auto 200px 1fr auto;
+  gap: 12px; padding: 8px; background: var(--bg-1);
+  border: 1px solid var(--border); border-radius: 4px; min-height: 140px; }
+
+/* Vertical IN/OUT meter pair. Reuses the existing .vu-bar component
+   the WS levels loop animates — no extra plumbing needed. */
+.dsp-vu-side { display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 0 2px; min-width: 28px; }
+.dsp-vu-side .dsp-vu-label { font-family: var(--font-m); font-size: 8px;
+  color: var(--text-fade); font-weight: 700; letter-spacing: 0.5px; }
+.dsp-vu-side .dsp-vu-label.in  { color: var(--green); }
+.dsp-vu-side .dsp-vu-label.out { color: var(--magenta); }
+.dsp-vu-side .dsp-vu-pair { display: flex; gap: 2px; height: 120px;
+  align-items: stretch; }
 .dsp-panel-meta { display: flex; flex-direction: column; gap: 4px; padding-right: 12px;
   border-right: 1px solid var(--border); }
 .dsp-panel-meta .dsp-output-label { font-family: var(--font-h); font-size: 14px;
@@ -1309,6 +1324,12 @@ async function renderDspPanel() {
     return;
   }
   const inputControls = (schema.controls || []).filter(c => c.direction === 'input');
+  // IN VU = the audio feeding the chain (phonon_master). OUT VU =
+  // the audio leaving the chain (the output's sink). Both are
+  // already in the WS levels loop's poll set — the bars animate as
+  // soon as we put them in the DOM with the right data-vu-source.
+  const inSide = dspVuSide('IN', 'in', 'phonon_master');
+  const outSide = dspVuSide('OUT', 'out', out.sink_node_name);
   const meta = `<div class="dsp-panel-meta">
     <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}</div>
     <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(out.insert.library, out.insert.label))}</div>
@@ -1322,7 +1343,22 @@ async function renderDspPanel() {
   const controlsHtml = inputControls.map(c =>
     renderDspControl(out.id, c, out.insert.controls[c.name])
   ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
-  panel.innerHTML = meta + `<div class="dsp-controls">${controlsHtml}</div>`;
+  panel.innerHTML = inSide + meta + `<div class="dsp-controls">${controlsHtml}</div>` + outSide;
+}
+
+// Render one IN or OUT meter block — label + L/R vertical bars.
+// `vuSource` is the PW node name the WS levels loop is sending peak
+// data for under `node:<name>`. The bars' segments are the existing
+// MIX_VU_SEGS component; same paint loop animates them.
+function dspVuSide(labelText, kind, vuSource) {
+  const safeSource = escapeHtml(vuSource || '');
+  return `<div class="dsp-vu-side">
+    <div class="dsp-vu-label ${kind}">${labelText}</div>
+    <div class="dsp-vu-pair">
+      <div class="vu-bar" data-ch="L" data-vu-source="${safeSource}">${MIX_VU_SEGS}</div>
+      <div class="vu-bar" data-ch="R" data-vu-source="${safeSource}">${MIX_VU_SEGS}</div>
+    </div>
+  </div>`;
 }
 
 // Render one control's widget based on the LADSPA hints. No control

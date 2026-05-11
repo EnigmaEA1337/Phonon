@@ -65,12 +65,13 @@ class PipeWireBackend(Protocol):
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None: ...
 
     # Per-channel volume — needed for L/R independent muting in the
-    # mix console. `channels` is a list of linear volumes, one per
-    # output channel (typically [left, right]). Length 1 ≡ mono ≡
-    # same as `set_node_volume`. Implementations target pactl's
-    # multi-value set-sink-volume / set-source-volume syntax.
+    # mix console. `node_name` is the PW node name (NOT the numeric
+    # id — pactl maintains its own ID namespace and doesn't reliably
+    # accept PW node IDs; the node name is what PW exposes to PA as
+    # the sink/source name). `channels` is a list of linear volumes,
+    # one per output channel (typically [left, right]).
     async def set_node_channel_volumes(
-        self, node_id: int, channels: list[float]
+        self, node_name: str, channels: list[float]
     ) -> None: ...
 
     async def set_node_mute(self, node_id: int, muted: bool) -> None: ...

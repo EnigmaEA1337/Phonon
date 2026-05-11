@@ -438,7 +438,7 @@ class TestPerChannelMutes:
         )
         await service.update_source(s.id, mute_left=True)
         ap_node = next(n for n in fake_pw.nodes if n.name == "airplay_in")
-        vols = fake_pw.channel_volumes[ap_node.id]
+        vols = fake_pw.channel_volumes[ap_node.name]
         # Left channel silenced, right at unity (gain_db=0 → linear 1.0).
         assert vols[0] == 0.0
         assert abs(vols[1] - 1.0) < 1e-6
@@ -448,7 +448,7 @@ class TestPerChannelMutes:
     ) -> None:
         await service.update_master(gain_db=-6.0, mute_right=True)
         master_node = next(n for n in fake_pw.nodes if n.name == MASTER_SINK_NAME)
-        vols = fake_pw.channel_volumes[master_node.id]
+        vols = fake_pw.channel_volumes[master_node.name]
         # Left at -6 dB linear ≈ 0.501, right at zero.
         assert abs(vols[0] - 0.501) < 0.01
         assert vols[1] == 0.0
@@ -468,7 +468,7 @@ class TestPerChannelMutes:
         )
         await service.update_output(o.id, mute_left=True, mute_right=True)
         sink_node = next(n for n in fake_pw.nodes if n.name == "alsa_output.dg60_1")
-        assert fake_pw.channel_volumes[sink_node.id] == [0.0, 0.0]
+        assert fake_pw.channel_volumes[sink_node.name] == [0.0, 0.0]
         # Loopback is still created because mute (global) is False.
         assert len(fake_pw.loopbacks) == 1
 

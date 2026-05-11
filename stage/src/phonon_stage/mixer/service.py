@@ -211,7 +211,7 @@ class MixerService:
         lin = self._db_to_linear(self.master.gain_db)
         try:
             await self._pw.set_node_channel_volumes(
-                master_node.id,
+                master_node.name,
                 [
                     0.0 if self.master.mute_left else lin,
                     0.0 if self.master.mute_right else lin,
@@ -327,7 +327,7 @@ class MixerService:
         lin = self._db_to_linear(output.gain_db)
         try:
             await self._pw.set_node_channel_volumes(
-                sink_node.id,
+                sink_node.name,
                 [
                     0.0 if output.mute_left else lin,
                     0.0 if output.mute_right else lin,
@@ -504,7 +504,7 @@ class MixerService:
         lin = self._db_to_linear(source.gain_db)
         try:
             await self._pw.set_node_channel_volumes(
-                src_node.id,
+                src_node.name,
                 [
                     0.0 if source.mute_left else lin,
                     0.0 if source.mute_right else lin,
@@ -568,7 +568,7 @@ class MixerService:
         master_lin = self._db_to_linear(self.master.gain_db)
         try:
             await self._pw.set_node_channel_volumes(
-                master_node.id,
+                master_node.name,
                 [
                     0.0 if self.master.mute_left else master_lin,
                     0.0 if self.master.mute_right else master_lin,
@@ -593,7 +593,7 @@ class MixerService:
             o_lin = self._db_to_linear(o.gain_db)
             try:
                 await self._pw.set_node_channel_volumes(
-                    sink_node.id,
+                    sink_node.name,
                     [
                         0.0 if o.mute_left else o_lin,
                         0.0 if o.mute_right else o_lin,
@@ -630,7 +630,7 @@ class MixerService:
             s_lin = self._db_to_linear(s.gain_db)
             try:
                 await self._pw.set_node_channel_volumes(
-                    src_node.id,
+                    src_node.name,
                     [
                         0.0 if s.mute_left else s_lin,
                         0.0 if s.mute_right else s_lin,

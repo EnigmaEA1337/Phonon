@@ -131,12 +131,13 @@ class RealPipeWireBackend:
                 logger.warning("pipewire.volume_set_failed", node_id=node_id, exc_info=True)
 
     async def set_node_channel_volumes(
-        self, node_id: int, channels: list[float]
+        self, node_name: str, channels: list[float]
     ) -> None:
-        """Set per-channel volumes on a PW node. Uses pactl's multi-
-        argument set-sink-volume / set-source-volume because wpctl
-        doesn't expose per-channel control. Falls back gracefully if
-        the node isn't a PA-visible sink/source."""
+        """Set per-channel volumes on a PW node by NAME. pactl's
+        sink/source ID namespace doesn't match PW node IDs, so
+        passing `node_id` returned 'No such entity' on every call —
+        confirmed live on the 3070. PW exposes each node to PA with
+        the same name, so the name is the unambiguous handle."""
         if not channels:
             return
         pcts = [f"{int(max(0.0, min(2.0, v)) * 100)}%" for v in channels]
@@ -144,10 +145,10 @@ class RealPipeWireBackend:
         # all alsa_output.* sinks). If that fails it's likely a real
         # source — retry as source.
         try:
-            await cli.run_command("pactl", "set-sink-volume", str(node_id), *pcts)
+            await cli.run_command("pactl", "set-sink-volume", node_name, *pcts)
             logger.info(
                 "pipewire.channel_volume_set",
-                node_id=node_id,
+                node_name=node_name,
                 channels=pcts,
                 kind="sink",
             )
@@ -155,17 +156,17 @@ class RealPipeWireBackend:
         except Exception:
             pass
         try:
-            await cli.run_command("pactl", "set-source-volume", str(node_id), *pcts)
+            await cli.run_command("pactl", "set-source-volume", node_name, *pcts)
             logger.info(
                 "pipewire.channel_volume_set",
-                node_id=node_id,
+                node_name=node_name,
                 channels=pcts,
                 kind="source",
             )
         except Exception:
             logger.warning(
                 "pipewire.channel_volume_failed",
-                node_id=node_id,
+                node_name=node_name,
                 channels=pcts,
                 exc_info=True,
             )

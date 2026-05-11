@@ -17,9 +17,11 @@ class FakePipeWireBackend:
         self.ports = list(ports or [])
         self.links: list[PwLink] = []
         self.volumes: dict[int, float] = {}
-        # Per-channel volumes used by the mixer for L/R mutes.
-        # Keyed by node id, value is [left, right] (or any length).
-        self.channel_volumes: dict[int, list[float]] = {}
+        # Per-channel volumes used by the mixer for L/R mutes. Keyed
+        # by NODE NAME (not id) — mirrors the real backend which uses
+        # pactl with the sink name because PA's ID namespace doesn't
+        # match PW's. Value is [left, right] (or any length).
+        self.channel_volumes: dict[str, list[float]] = {}
         self.mutes: dict[int, bool] = {}
         self.latency_offsets: dict[int, int] = {}
         # In-memory tracking of loaded modules. Key = synthetic module id,
@@ -62,18 +64,25 @@ class FakePipeWireBackend:
 
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
         self.volumes[node_id] = volume_linear
-        # Mirror to channel_volumes as a 2-channel (mono-equivalent)
-        # set so the mixer tests can read either field uniformly.
-        self.channel_volumes[node_id] = [volume_linear, volume_linear]
+        # Also record by-name (resolved from the nodes list) so the
+        # mixer tests that introspect channel_volumes by name find
+        # it regardless of which write path the service took.
+        name = next((n.name for n in self.nodes if n.id == node_id), None)
+        if name is not None:
+            self.channel_volumes[name] = [volume_linear, volume_linear]
 
     async def set_node_channel_volumes(
-        self, node_id: int, channels: list[float]
+        self, node_name: str, channels: list[float]
     ) -> None:
-        self.channel_volumes[node_id] = list(channels)
-        # Also write the average to `volumes` so legacy single-value
-        # consumers (set_node_volume readers) still get something.
-        if channels:
-            self.volumes[node_id] = sum(channels) / len(channels)
+        """Mirror the real backend's name-based API. Tests keyed by
+        node_name read this directly via `fake_pw.channel_volumes`."""
+        self.channel_volumes[node_name] = list(channels)
+        # Maintain the legacy by-id `volumes` dict as well so any
+        # existing reader looking up the average via node id still
+        # gets a reasonable value.
+        node = next((n for n in self.nodes if n.name == node_name), None)
+        if node is not None and channels:
+            self.volumes[node.id] = sum(channels) / len(channels)
 
     async def set_node_mute(self, node_id: int, muted: bool) -> None:
         self.mutes[node_id] = muted

@@ -37,19 +37,23 @@ async def broadcast(msg_type: str, data: Any) -> None:
 async def _levels_loop() -> None:
     """Background task: read VU levels and push to clients every 1 s.
 
-    Each tick spawns one short-lived parec per active capture bridge.
-    On a Pi 3 the parec startup + WirePlumber re-routing it triggers
-    is the dominant CPU cost (~25-44% on the sender). 1 Hz is enough
-    for visual feedback without saturating the graph; we'll switch to
-    a single persistent parec stream later for smoother UX."""
+    Each tick spawns one short-lived parec per active source. On a Pi 3
+    the parec startup + WirePlumber re-routing it triggers is the
+    dominant CPU cost (~25-44% on the sender). 1 Hz is enough for
+    visual feedback without saturating the graph; we'll switch to a
+    single persistent parec stream later for smoother UX.
+
+    The loop runs whenever a UI client is connected — gating on
+    `_active_bridges or _active_streams` is too narrow because it
+    misses source-plugin null-sinks (AirPlay etc.) which carry their
+    own audio independently of the BT/AES67 paths.
+    """
     from phonon_stage.api.aes67 import _active_streams
     from phonon_stage.api.bluealsa_bridge import _active_bridges
     from phonon_stage.api.levels import _read_peak
 
     while True:
-        # Run as long as ANY level source exists. On a sender Pi this
-        # is bluealsa bridges; on a receiver Pi it's AES67 recv streams.
-        if clients and (_active_bridges or _active_streams):
+        if clients:
             levels: dict[str, float] = {}
             tasks: list[Any] = []
             keys: list[str] = []

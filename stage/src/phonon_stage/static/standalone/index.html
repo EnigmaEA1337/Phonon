@@ -177,14 +177,71 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip-io.input  { color: var(--green); border-bottom: 1px dashed rgba(52,211,153,0.25); }
 .strip-io.output { color: var(--magenta); border-top: 1px dashed rgba(232,121,249,0.25); margin-top: 2px; }
 .strip-io.master { color: var(--cyan); }
-/* Pre-fader head — fixed HEIGHT (not min-height) so faders align
-   horizontally across every strip kind regardless of what's above.
-   Anything that doesn't fit gets clipped (overflow:hidden) rather
-   than push the fader down. Sized for the tallest combo: action bar
-   (~18) + IO-in (16) + routing (~22) + delay (~28) + HW (~18). */
-.strip-head { display: flex; flex-direction: column; gap: 4px; width: 100%;
-  justify-content: flex-end; align-items: stretch;
-  height: 140px; box-sizing: border-box; overflow: hidden; }
+
+/* ── Mix strips: strict grid layout for perfect alignment ─────
+   Every strip (Source/Master/Output) uses the same row template
+   so every row sits at the same Y across columns. Missing content
+   in some strip kinds just leaves the row empty rather than
+   compressing the layout. */
+.strip.mix-src, .strip.mix-master, .strip.mix-out {
+  display: grid;
+  grid-template-rows:
+    [action]  20px
+    [io-in]   16px
+    [route]   22px
+    [extra1]  28px  /* delay input (out) / direct chips (src) / empty (master) */
+    [extra2]  20px  /* HW vol (out) / empty */
+    [mrls]    20px  /* M R L S channel-mute / solo buttons */
+    [fader]   160px
+    [io-out]  16px
+    [scotch]  24px;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  align-items: stretch;
+  justify-items: stretch;
+  padding: 6px;
+}
+/* Each row's content gets its own grid-row anchor; the renderer
+   stamps the class on each child div. */
+.strip > .row-action  { grid-row: action; }
+.strip > .row-io-in   { grid-row: io-in; }
+.strip > .row-route   { grid-row: route; }
+.strip > .row-extra1  { grid-row: extra1; }
+.strip > .row-extra2  { grid-row: extra2; }
+.strip > .row-mrls    { grid-row: mrls; }
+.strip > .row-fader   { grid-row: fader; }
+.strip > .row-io-out  { grid-row: io-out; }
+.strip > .row-scotch  { grid-row: scotch; }
+
+/* MRLS button row — channel mutes + solo, Apple-style toggles.
+   On the Master strip we hide the S button (no solo on the bus). */
+.row-mrls { display: flex; gap: 3px; justify-content: center; align-items: center; }
+.row-mrls button { flex: 1; height: 18px; font-size: 9px; font-weight: 700;
+  font-family: var(--font-m); background: var(--bg-2); color: var(--text-mid);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer; padding: 0; }
+.row-mrls button:hover { background: var(--bg-3); }
+.row-mrls button.active { background: var(--red); color: #fff; border-color: var(--red); }
+.row-mrls button.solo.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
+
+/* dB ticks alongside the VU bars — same scale as the existing
+   mappings strips so meter readings translate 1:1 between the
+   legacy view and the new console. */
+.vu-ticks { display: flex; flex-direction: column; justify-content: space-between;
+  height: 100%; font-family: var(--font-m); font-size: 6px; color: var(--text-fade);
+  text-align: right; padding: 2px 0; line-height: 1; min-width: 14px; }
+/* Fader handle scale — small tick marks on the rail for 0/-3/-6/-12 dB.
+   Pseudo-element overlays so we don't have to add DOM nodes. */
+.fader-col::before { content: ''; position: absolute; left: 50%; width: 2px;
+  transform: translateX(-50%); top: 4px; bottom: 4px; pointer-events: none;
+  background-image:
+    linear-gradient(to bottom, var(--text-fade) 0, var(--text-fade) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--text-fade) 0, var(--text-fade) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--text-fade) 0, var(--text-fade) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--text-fade) 0, var(--text-fade) 1px, transparent 1px);
+  background-position: 0 0%, 0 25%, 0 50%, 0 75%;
+  background-size: 6px 1px;
+  background-repeat: no-repeat;
+}
 /* Click-to-edit "scotch tape" label — slightly off-axis, cream
    background with hand-drawn-feeling stroke. Visible at all times
    so the operator can read it at a glance from across the room. */
@@ -208,7 +265,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .mix-col { display: flex; flex-direction: column; gap: 8px; min-width: 120px; }
 .mix-col-master { padding: 0 12px; border-left: 1px dashed var(--border); border-right: 1px dashed var(--border); }
 .mix-col-head { font-family: var(--font-m); font-size: 10px; font-weight: 700;
-  letter-spacing: 1px; padding: 4px 0; display: flex; align-items: center; }
+  letter-spacing: 1px; padding: 4px 0; display: flex; align-items: center;
+  height: 32px; box-sizing: border-box; }
 .mix-col-body { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Strip variants — colour-coded edge to disambiguate at a glance. */
 .strip.mix-src { border-top: 3px solid var(--green); }
@@ -991,41 +1049,61 @@ function sourceDestinationSummary(s, outputsById) {
   return parts.length ? '→ ' + parts.join(' + ') : '→ (no route)';
 }
 
+// dB tick column shown left of the VU bars. Same scale as the
+// legacy mappings strips so meter readings translate 1:1.
+const MIX_VU_TICKS = `<div class="vu-ticks">
+  <span>0</span><span>-6</span><span>-12</span><span>-20</span><span>-40</span><span>-60</span>
+</div>`;
+
+// 4-button channel-mute / solo row (M / R / L / S). Master gets
+// the 3-button variant (no Solo). M is wired to the existing
+// mute-everything endpoint; R/L/S land in a follow-up commit
+// (need backend per-channel volume / solo bookkeeping).
+function mrlsRow(kind, id, muted, hasSolo) {
+  const buttons = [
+    `<button class="${muted ? 'active' : ''}" onclick="mixToggleMute('${kind}','${id}')" title="Mute">M</button>`,
+    `<button onclick="mixChannelMute('${kind}','${id}','R')" title="Mute right channel (coming soon)">R</button>`,
+    `<button onclick="mixChannelMute('${kind}','${id}','L')" title="Mute left channel (coming soon)">L</button>`,
+  ];
+  if (hasSolo) buttons.push(`<button class="solo" onclick="mixToggleSolo('${kind}','${id}')" title="Solo (coming soon)">S</button>`);
+  return `<div class="row-mrls">${buttons.join('')}</div>`;
+}
+
 function renderMixSources() {
   const el = document.getElementById('mix-sources');
   if (!el) return;
   const outputsById = Object.fromEntries((mixerState.outputs || []).map(o => [o.id, o]));
   el.innerHTML = (mixerState.sources || []).map(s => {
     const directChips = s.direct_outputs.length
-      ? `<div class="mix-direct-chips">${s.direct_outputs.map(id => {
+      ? `<div class="row-extra1 mix-direct-chips">${s.direct_outputs.map(id => {
           const o = outputsById[id];
           return `<span class="mix-direct-chip" title="${escapeHtml(o?.label || id)}">${escapeHtml(o?.label || id).slice(0, 8)}</span>`;
         }).join('')}</div>`
-      : '';
+      : '<div class="row-extra1"></div>';
     const ledColor = s.mute ? 'var(--red)' : 'var(--green)';
     const inputName = prettyPwName(s.source_node_name);
     const outputName = sourceDestinationSummary(s, outputsById);
     return `<div class="strip mix-src" data-mix-source-id="${s.id}">
-      <div class="strip-head">
-        <div style="display:flex;align-items:center;gap:3px;width:100%">
-          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-          <button class="btn-mute${s.mute ? ' active' : ''}" onclick="mixSourceToggleMute('${s.id}')" style="width:18px;height:14px;font-size:7px">M</button>
-          <span style="flex:1"></span>
-          <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
-        </div>
-        <div class="strip-io input" title="${escapeHtml(s.source_node_name)}">▶ ${escapeHtml(inputName)}</div>
-        <div class="mix-route-bar">
-          <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
-          <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
-        </div>
-        ${directChips}
+      <div class="row-action" style="display:flex;align-items:center;gap:3px">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <span style="flex:1"></span>
+        <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div class="fader-area">
+      <div class="row-io-in strip-io input" title="${escapeHtml(s.source_node_name)}">▶ ${escapeHtml(inputName)}</div>
+      <div class="row-route mix-route-bar">
+        <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
+        <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
+      </div>
+      ${directChips}
+      <div class="row-extra2"></div>
+      ${mrlsRow('mix-src', s.id, s.mute, true)}
+      <div class="row-fader fader-area">
+        ${MIX_VU_TICKS}
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
         ${faderCol('mix-src', s.id, s.gain_db)}
       </div>
-      <div class="strip-io output" title="${escapeHtml(outputName)}">${escapeHtml(outputName)}</div>
+      <div class="row-io-out strip-io output" title="${escapeHtml(outputName)}">${escapeHtml(outputName)}</div>
       ${scotchLabel('mix-src', s.id, s.label)}
     </div>`;
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No sources — click + Add</div>';
@@ -1042,21 +1120,22 @@ function renderMixMaster() {
   const sourcesIn = (mixerState.sources || []).filter(s => s.to_master && !s.mute).length;
   const outputsOut = (mixerState.outputs || []).filter(o => o.receives_master && !o.mute).length;
   el.innerHTML = `<div class="strip mix-master">
-    <div class="strip-head">
-      <div style="display:flex;align-items:center;gap:3px;width:100%">
-        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-        <button class="btn-mute${m.mute ? ' active' : ''}" onclick="mixMasterToggleMute()" style="width:18px;height:14px;font-size:7px">M</button>
-      </div>
-      <div class="strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
-      <div class="mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
+    <div class="row-action" style="display:flex;align-items:center;gap:3px">
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
     </div>
-    <div class="fader-area">
+    <div class="row-io-in strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
+    <div class="row-route mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
+    <div class="row-extra1"></div>
+    <div class="row-extra2"></div>
+    ${mrlsRow('mix-master', '', m.mute, false)}
+    <div class="row-fader fader-area">
+      ${MIX_VU_TICKS}
       <div class="vu-bar" data-ch="L" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
       <div class="vu-bar" data-ch="R" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
       ${faderCol('mix-master', '', m.gain_db)}
     </div>
-    <div class="strip-io output master" title="Outputs receiving from the master bus">→ ${outputsOut} output${outputsOut > 1 ? 's' : ''}</div>
-    <div class="strip-scotch" title="Master bus — fixed name">MASTER</div>
+    <div class="row-io-out strip-io output master" title="Outputs receiving from the master bus">→ ${outputsOut} output${outputsOut > 1 ? 's' : ''}</div>
+    <div class="row-scotch strip-scotch" title="Master bus — fixed name">MASTER</div>
   </div>`;
 }
 
@@ -1080,32 +1159,31 @@ function renderMixOutputs() {
     const inputName = inputParts.length ? '← ' + inputParts.join(' + ') : '← (no feed)';
     const sinkPretty = prettyPwName(o.sink_node_name);
     return `<div class="strip mix-out" data-mix-output-id="${o.id}">
-      <div class="strip-head">
-        <div style="display:flex;align-items:center;gap:3px;width:100%">
-          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-          <button class="btn-mute${o.mute ? ' active' : ''}" onclick="mixOutputToggleMute('${o.id}')" style="width:18px;height:14px;font-size:7px">M</button>
-          <span style="flex:1"></span>
-          <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
-        </div>
-        <div class="strip-io input" title="${escapeHtml(inputName)}">${escapeHtml(inputName)}</div>
-        <div class="mix-route-bar">
-          <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
-        </div>
-        <div class="delay-input-wrap" title="Delay 0-600 ms — phasing/codec compensation applied here once for all sources going via master">
-          <input type="number" class="delay-input" min="0" max="600" step="0.5"
-                 value="${(o.delay_ms ?? 0).toFixed(1)}"
-                 oninput="mixOutputUpdateDelay('${o.id}', this.value)"
-                 onkeydown="event.stopPropagation()">
-          <span class="delay-unit">ms</span>
-        </div>
-        ${hw}
+      <div class="row-action" style="display:flex;align-items:center;gap:3px">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <span style="flex:1"></span>
+        <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div class="fader-area">
+      <div class="row-io-in strip-io input" title="${escapeHtml(inputName)}">${escapeHtml(inputName)}</div>
+      <div class="row-route mix-route-bar">
+        <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
+      </div>
+      <div class="row-extra1 delay-input-wrap" title="Delay 0-600 ms — phasing/codec compensation applied here once for all sources going via master">
+        <input type="number" class="delay-input" min="0" max="600" step="0.5"
+               value="${(o.delay_ms ?? 0).toFixed(1)}"
+               oninput="mixOutputUpdateDelay('${o.id}', this.value)"
+               onkeydown="event.stopPropagation()">
+        <span class="delay-unit">ms</span>
+      </div>
+      <div class="row-extra2">${hw}</div>
+      ${mrlsRow('mix-out', o.id, o.mute, true)}
+      <div class="row-fader fader-area">
+        ${MIX_VU_TICKS}
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
         ${faderCol('mix-out', o.id, o.gain_db)}
       </div>
-      <div class="strip-io output" title="${escapeHtml(o.sink_node_name)}">▶ ${escapeHtml(sinkPretty)}</div>
+      <div class="row-io-out strip-io output" title="${escapeHtml(o.sink_node_name)}">▶ ${escapeHtml(sinkPretty)}</div>
       ${scotchLabel('mix-out', o.id, o.label)}
     </div>`;
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No outputs — click + Add</div>';
@@ -1139,8 +1217,28 @@ function mixHwVolForSink(sinkName, alsaCards) {
 function scotchLabel(kind, id, label) {
   const display = (label && label.trim()) ? escapeHtml(label) : '— click to label —';
   const cls = (label && label.trim()) ? 'strip-scotch' : 'strip-scotch empty';
-  return `<div class="${cls}" title="Click to rename"
+  return `<div class="row-scotch ${cls}" title="Click to rename"
     onclick="mixScotchEdit(this, '${kind}', '${id}')">${display}</div>`;
+}
+
+// Unified mute toggle — works for all 3 strip kinds. The MRLS row
+// uses this for its M button so the same code path drives mute on
+// Source/Master/Output without three separate onclick handlers.
+async function mixToggleMute(kind, id) {
+  if (kind === 'mix-master') return mixMasterToggleMute();
+  if (kind === 'mix-src')    return mixSourceToggleMute(id);
+  if (kind === 'mix-out')    return mixOutputToggleMute(id);
+}
+
+// Placeholder handlers for R/L/S buttons — UI is ready but the
+// backend doesn't track per-channel mute / solo yet. Stub today,
+// implement in a follow-up that adds {mute_left, mute_right, solo}
+// to the model + per-channel pactl volume in the reconcile loop.
+async function mixChannelMute(_kind, _id, _channel) {
+  alert('Per-channel mute (R/L) coming in the next iteration — model + reconcile wiring needed first.');
+}
+async function mixToggleSolo(_kind, _id) {
+  alert('Solo coming in the next iteration — needs cross-strip muting logic in the service.');
 }
 
 function mixScotchEdit(el, kind, id) {

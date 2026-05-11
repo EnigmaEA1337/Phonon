@@ -163,11 +163,6 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .patch-icon.local { color: #34d399; }
 /* AirPlay = Apple-style blue, distinct from BT's lighter cyan. */
 .patch-icon.airplay { color: #5e8eff; }
-/* Inline VU sparkline inside a patch source item — 12 thin segments
-   that light up green→amber→red as the source's level rises. Driven
-   by the WebSocket `levels` feed keyed by `node:<name>`. */
-.patch-vu { display: flex; gap: 1px; height: 4px; margin-top: 4px; opacity: 0.85; }
-.patch-vu i { flex: 1; background: #0a141c; border-radius: 1px; min-width: 2px; display: block; }
 .patch-item-row { display: flex; align-items: center; gap: 8px; }
 .patch-item { padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px;
   cursor: pointer; font-size: 11px; transition: border-color 0.15s, background 0.15s; }
@@ -1134,19 +1129,12 @@ function renderPatchNodes(nodes, ports) {
   const sinks = nodes.filter(n => (n.media_class.includes('Sink') || n.media_class.includes('Duplex')) && !isBtInput(n));
 
   const srcEl = document.getElementById('patch-sources');
-  // Inline horizontal VU sparkline next to a source if the levels feed
-  // includes a `node:<name>` key. 12 segments is enough to read at a
-  // glance while staying compact in the patch list.
-  const patchVu = (name) => `<div class="patch-vu" data-vu-node="${name}">${
-    Array.from({length: 12}, () => '<i></i>').join('')
-  }</div>`;
   srcEl.innerHTML = sources.length ? sources.map(n =>
     `<div class="patch-item${state.selectedSource?.id === n.id ? ' selected' : ''}"
       data-source-id="${n.id}"
       onclick="selectSource(${n.id})" title="${n.media_class}">
       <div class="patch-item-row">${nodeKindIcon(n)}<span>${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span></span></div>
       ${nodeInfoBadge(n)}
-      ${patchVu(n.name)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sources</div>';
 
@@ -1413,8 +1401,8 @@ function renderMappings(mappings) {
         <div style="display:flex;flex-direction:column;justify-content:space-between;height:100%;font-family:var(--font-m);font-size:5px;color:var(--text-fade);text-align:right;padding:2px 0">
           <span>0</span><span>-6</span><span>-12</span><span>-20</span><span>-40</span><span>-60</span>
         </div>
-        <div class="vu-bar" data-ch="L">${vuSegs}</div>
-        <div class="vu-bar" data-ch="R">${vuSegs}</div>
+        <div class="vu-bar" data-ch="L" data-vu-source="${srcNode?.name || m.source_node_name || ''}">${vuSegs}</div>
+        <div class="vu-bar" data-ch="R" data-vu-source="${srcNode?.name || m.source_node_name || ''}">${vuSegs}</div>
         <div class="fader-col" data-mapping="${m.id}" data-param="gain">
           <div class="fader-rail"></div>
           <div class="fader-fill" style="top:${faderY}%"></div>
@@ -2648,9 +2636,46 @@ connectWS();
 // Peak hold state per bar
 const peakHolds = new WeakMap();
 
+// Resolve the metered level for a given mapping source name. We try
+// the per-source key first (`node:<name>` for plugin null-sinks like
+// airplay_in, or the bluealsa bridge's auto-generated key like
+// `<mac>:capture`), then fall back to anything that looks like the
+// same bridge id. Returns 0 when nothing matches — a fader for a
+// source that isn't metered yet (e.g. AES67 send) shows no level
+// rather than borrowing one from a different source.
+function levelForSource(sourceName) {
+  if (!sourceName) return 0;
+  // Plugin null-sinks publish under `node:<sink-name>`.
+  const direct = vuLevels['node:' + sourceName];
+  if (typeof direct === 'number') return direct;
+  // Bluealsa bridges use the bridge name as part of their key. The
+  // null-sink follows the convention `bt_<bridge-name>_in`, so we strip
+  // that to recover the bridge name and look it up among levels keys.
+  const m = sourceName.match(/^bt_(.+)_in$/);
+  if (m) {
+    const bridge = m[1];
+    for (const k of Object.keys(vuLevels)) {
+      if (k.includes(bridge)) return vuLevels[k];
+    }
+  }
+  // AES67 receive sources are named `aes67-recv-<stream>` and the
+  // server keys them as `aes67_<stream-id>`. No clean reverse lookup
+  // without the stream id, so just match by prefix — good enough for
+  // a single AES67 mapping; if multiple, the first wins. Fix later
+  // when AES67 mappings get explicit stream-id metadata in the UI.
+  if (sourceName.startsWith('aes67-recv-')) {
+    for (const k of Object.keys(vuLevels)) {
+      if (k.startsWith('aes67_')) return vuLevels[k];
+    }
+  }
+  return 0;
+}
+
 function animateVU() {
   try {
-    // Get max level from all bridges
+    // Global max — kept as a safety fallback for VU bars that don't
+    // (yet) carry a data-vu-source attribute. New code paths set the
+    // attribute explicitly so each fader shows its OWN source's level.
     let maxLevel = 0;
     for (const val of Object.values(vuLevels)) {
       if (val > maxLevel) maxLevel = val;
@@ -2677,14 +2702,23 @@ function animateVU() {
       const total = segs.length;
       if (!total) return;
 
+      // Per-fader level: each bar carries data-vu-source = the mapping's
+      // source node name. We look up the level for THAT source so
+      // every fader shows its own input, not the global max (which
+      // made every fader light up whenever any source was hot —
+      // useless for diagnosing which path is actually carrying audio).
+      const srcName = bar.dataset.vuSource;
+      let level = srcName ? levelForSource(srcName) : maxLevel;
+      if (level > 0.01) level = Math.min(1.0, level + (Math.random() - 0.5) * 0.03);
+
       // Peak hold
       let peak = peakHolds.get(bar) || { val: 0, decay: 0 };
-      if (maxLevel > peak.val) { peak.val = maxLevel; peak.decay = 8; }
+      if (level > peak.val) { peak.val = level; peak.decay = 8; }
       else if (peak.decay > 0) { peak.decay--; }
       else { peak.val = Math.max(0, peak.val - 0.03); }
       peakHolds.set(bar, peak);
 
-      const lit = Math.floor(maxLevel * total);
+      const lit = Math.floor(level * total);
       const peakSeg = Math.floor(peak.val * total);
 
       for (let i = 0; i < total; i++) {
@@ -2703,25 +2737,6 @@ function animateVU() {
       }
     });
 
-    // Per-source inline VUs in the patch bay. Each `.patch-vu` carries
-    // `data-vu-node="<pw node name>"` and the server pushes the level
-    // under key `node:<name>`. No peak-hold here — these are
-    // glanceable, not for mixing.
-    document.querySelectorAll('.patch-vu').forEach(bar => {
-      const nodeName = bar.dataset.vuNode;
-      const lvl = vuLevels['node:' + nodeName];
-      if (lvl === undefined) return;
-      const segs = bar.children;
-      const total = segs.length;
-      const lit = Math.floor(lvl * total);
-      for (let i = 0; i < total; i++) {
-        if (i < lit) {
-          segs[i].style.background = segColor(i / total);
-        } else {
-          segs[i].style.background = '#0a141c';
-        }
-      }
-    });
   } catch(e) { /* ignore */ }
 }
 setInterval(animateVU, 100);

@@ -21,7 +21,7 @@ class Mapping:
     gain_db: float = 0.0
     pan: float = 0.0
     mute: bool = False
-    delay_ms: float = 0.0  # Latency offset for output sync (0-50ms)
+    delay_ms: float = 0.0  # Latency offset for output sync (0-600 ms)
     created_at: str = ""  # ISO 8601
     # Node names captured at create-time. PipeWire IDs change across
     # restarts; names don't, so a re-resolve by name lets us restore

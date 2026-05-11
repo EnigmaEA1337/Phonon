@@ -1112,8 +1112,8 @@ function renderMappings(mappings) {
   // tight range so slider granularity is ~0.1 dB / px instead of the
   // previous ~0.7 dB / px. For full silence use the M (mute) button.
   const dbToY = (db) => faderDbToY(db);
-  // Knob angle: map 0-50ms to 0-270 degrees
-  const delayToAngle = (ms) => Math.min(ms / 50, 1) * 270;
+  // Knob angle: map 0-600 ms to 0-270 degrees of dial sweep.
+  const delayToAngle = (ms) => Math.min(ms / 600, 1) * 270;
 
   el.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 0">' +
     mappings.map(m => {
@@ -1287,17 +1287,22 @@ function setupFaderDrag(faderEl) {
 }
 
 function setupKnobDrag(knobEl) {
-  // DAW-style knob:
-  //   * drag vertical : 0.1 ms / px (range 0-50 = 500 px → précis)
-  //   * shift+drag    : 0.02 ms / px (fine, 2500 px pour la course)
-  //   * scroll wheel  : 0.5 ms / cran  (shift+wheel = 0.1 ms / cran)
-  //   * double-click  : reset à 0 ms
-  //   * range et step quantifié à 0.1 ms
+  // DAW-style knob — delay range 0-600 ms (covers ~200 m of room
+  // alignment, way more than the original 50 ms ceiling that was
+  // useless beyond same-pièce stereo). Sensitivities rescaled so the
+  // gestures stay usable across the bigger range:
+  //   * drag         : 1.5 ms / px → 400 px to sweep 0-600 (normal)
+  //   * shift+drag   : 0.3 ms / px → 5× finer (fine)
+  //   * scroll wheel : 5 ms / tick (1 ms with shift)
+  //   * double-click : reset to 0 ms
+  //   * step quantified at 0.5 ms (no point in sub-ms over this range)
   const mid = knobEl.dataset.mapping;
-  const MIN = 0, MAX = 50;
+  const MIN = 0, MAX = 600;
   let dragging = false, startY = 0, startVal = 0, shiftHeld = false;
 
-  const clamp = (v) => Math.round(Math.max(MIN, Math.min(MAX, v)) * 10) / 10;
+  // Quantize to 0.5 ms — finer than human ear can resolve over a
+  // gain mix, removes accidental jitter from drag/scroll input.
+  const clamp = (v) => Math.round(Math.max(MIN, Math.min(MAX, v)) * 2) / 2;
   const apply = (val) => {
     val = clamp(val);
     knobEl.dataset.value = val.toFixed(1);
@@ -1316,7 +1321,7 @@ function setupKnobDrag(knobEl) {
   const onMove = (e) => {
     if (!dragging) return;
     const y = e.touches ? e.touches[0].clientY : e.clientY;
-    const sensitivity = (e.shiftKey || shiftHeld) ? 0.02 : 0.1;
+    const sensitivity = (e.shiftKey || shiftHeld) ? 0.3 : 1.5;
     const delta = (startY - y) * sensitivity;
     apply(startVal + delta);
     e.preventDefault();
@@ -1324,7 +1329,7 @@ function setupKnobDrag(knobEl) {
   const onUp = () => { dragging = false; };
   const onWheel = (e) => {
     e.preventDefault();
-    const step = e.shiftKey ? 0.1 : 0.5;
+    const step = e.shiftKey ? 1.0 : 5.0;
     const cur = parseFloat(knobEl.dataset.value) || 0;
     apply(cur + (e.deltaY < 0 ? step : -step));
   };
@@ -1341,7 +1346,7 @@ function setupKnobDrag(knobEl) {
   window.addEventListener('touchmove', onMove, {passive: false});
   window.addEventListener('mouseup', onUp);
   window.addEventListener('touchend', onUp);
-  knobEl.title = 'Delay (ms) — drag, scroll, shift+drag for fine, double-click to reset';
+  knobEl.title = 'Delay 0-600 ms — drag (1.5 ms/px), shift+drag (0.3 ms/px), scroll (5 ms/tick), double-click resets';
 }
 
 let gainTimeout = {};

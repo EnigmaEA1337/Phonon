@@ -161,6 +161,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .patch-icon.aes67 { color: #fb923c; }
 .patch-icon.bluetooth { color: #60a5fa; }
 .patch-icon.local { color: #34d399; }
+/* AirPlay = Apple-style blue, distinct from BT's lighter cyan. */
+.patch-icon.airplay { color: #5e8eff; }
+/* Inline VU sparkline inside a patch source item — 12 thin segments
+   that light up green→amber→red as the source's level rises. Driven
+   by the WebSocket `levels` feed keyed by `node:<name>`. */
+.patch-vu { display: flex; gap: 1px; height: 4px; margin-top: 4px; opacity: 0.85; }
+.patch-vu i { flex: 1; background: #0a141c; border-radius: 1px; min-width: 2px; display: block; }
 .patch-item-row { display: flex; align-items: center; gap: 8px; }
 .patch-item { padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px;
   cursor: pointer; font-size: 11px; transition: border-color 0.15s, background 0.15s; }
@@ -1096,9 +1103,16 @@ function renderAudioDevices(devices, nodes, alsaCards) {
 const ICON_AES67 = `<svg class="patch-icon aes67" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><circle cx="4" cy="6" r="1.5"/><circle cx="20" cy="6" r="1.5"/><circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="18" r="1.5"/><line x1="5.3" y1="7" x2="10.5" y2="11"/><line x1="18.7" y1="7" x2="13.5" y2="11"/><line x1="5.3" y1="17" x2="10.5" y2="13"/><line x1="18.7" y1="17" x2="13.5" y2="13"/></svg>`;
 const ICON_BT = `<svg class="patch-icon bluetooth" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`;
 const ICON_LOCAL = `<svg class="patch-icon local" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><rect x="9" y="9" width="6" height="6" rx="0.5" fill="currentColor" fill-opacity="0.25"/><line x1="3" y1="9" x2="6" y2="9"/><line x1="3" y1="12" x2="6" y2="12"/><line x1="3" y1="15" x2="6" y2="15"/><line x1="18" y1="9" x2="21" y2="9"/><line x1="18" y1="12" x2="21" y2="12"/><line x1="18" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="6"/><line x1="12" y1="3" x2="12" y2="6"/><line x1="15" y1="3" x2="15" y2="6"/><line x1="9" y1="18" x2="9" y2="21"/><line x1="12" y1="18" x2="12" y2="21"/><line x1="15" y1="18" x2="15" y2="21"/></svg>`;
+// Classic AirPlay glyph: TV screen with up-pointing triangle. Stroked
+// so it picks up currentColor like the others.
+const ICON_AIRPLAY = `<svg class="patch-icon airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-1"/><polygon points="12 14 17 20 7 20 12 14" fill="currentColor"/></svg>`;
 
 function nodeKindIcon(n) {
   const name = n.name || '';
+  // Plugin-owned null-sinks come first so they win over the generic
+  // alsa_ prefix matcher: e.g. spotify_in, mpd_in will fall through
+  // the same way and get a per-plugin icon when we add them.
+  if (name === 'airplay_in') return ICON_AIRPLAY;
   if (name.startsWith('aes67-')) return ICON_AES67;
   if (name.startsWith('bt_') || (n.nick && n.nick.includes('-BT'))) return ICON_BT;
   if (name.startsWith('alsa_')) return ICON_LOCAL;
@@ -1120,12 +1134,19 @@ function renderPatchNodes(nodes, ports) {
   const sinks = nodes.filter(n => (n.media_class.includes('Sink') || n.media_class.includes('Duplex')) && !isBtInput(n));
 
   const srcEl = document.getElementById('patch-sources');
+  // Inline horizontal VU sparkline next to a source if the levels feed
+  // includes a `node:<name>` key. 12 segments is enough to read at a
+  // glance while staying compact in the patch list.
+  const patchVu = (name) => `<div class="patch-vu" data-vu-node="${name}">${
+    Array.from({length: 12}, () => '<i></i>').join('')
+  }</div>`;
   srcEl.innerHTML = sources.length ? sources.map(n =>
     `<div class="patch-item${state.selectedSource?.id === n.id ? ' selected' : ''}"
       data-source-id="${n.id}"
       onclick="selectSource(${n.id})" title="${n.media_class}">
       <div class="patch-item-row">${nodeKindIcon(n)}<span>${n.nick || n.name} <span style="color:var(--text-fade);font-size:9px">#${n.id}</span></span></div>
       ${nodeInfoBadge(n)}
+      ${patchVu(n.name)}
     </div>`
   ).join('') : '<div style="color:var(--text-fade);font-size:10px">No sources</div>';
 
@@ -2678,6 +2699,26 @@ function animateVU() {
         } else {
           segs[i].style.background = '#0a141c';
           segs[i].style.boxShadow = 'none';
+        }
+      }
+    });
+
+    // Per-source inline VUs in the patch bay. Each `.patch-vu` carries
+    // `data-vu-node="<pw node name>"` and the server pushes the level
+    // under key `node:<name>`. No peak-hold here — these are
+    // glanceable, not for mixing.
+    document.querySelectorAll('.patch-vu').forEach(bar => {
+      const nodeName = bar.dataset.vuNode;
+      const lvl = vuLevels['node:' + nodeName];
+      if (lvl === undefined) return;
+      const segs = bar.children;
+      const total = segs.length;
+      const lit = Math.floor(lvl * total);
+      for (let i = 0; i < total; i++) {
+        if (i < lit) {
+          segs[i].style.background = segColor(i / total);
+        } else {
+          segs[i].style.background = '#0a141c';
         }
       }
     });

@@ -89,6 +89,19 @@ async def _levels_loop() -> None:
                 keys.append(f"aes67_{sid}")
                 tasks.append(_read_peak(source_name, duration_ms=20))
 
+            # Source plugins (AirPlay, …): each owns a null-sink whose
+            # .monitor port exposes the audio coming from its upstream
+            # daemon. Meter it just like the BT bridge monitors so the
+            # UI can show a per-source VU in the patch bay. We key
+            # entries by `node:<sink-name>` so the JS can join them by
+            # node name (more stable than the synthetic per-bridge key
+            # used above, which is opaque to the patch-bay rendering).
+            from phonon_stage.plugins.airplay_v1 import NULL_SINK_NAME as _AIRPLAY_SINK
+
+            for sink_name in (_AIRPLAY_SINK,):
+                keys.append(f"node:{sink_name}")
+                tasks.append(_read_peak(f"{sink_name}.monitor", duration_ms=20))
+
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for k, result in zip(keys, results, strict=False):

@@ -410,6 +410,61 @@ class RealPipeWireBackend:
         except Exception:
             logger.warning("pipewire.filter_chain_reload_failed", exc_info=True)
 
+    async def read_filter_node_controls(self, node_name: str) -> dict[str, float]:
+        """Pull the live control values off a filter-chain node via
+        `pw-cli enum-params <id> Props`. Output is SPA-pod text;
+        the params we want sit inside a Struct as alternating
+        String/Float pairs:
+
+            Struct
+                String "Mode"
+                Float 0.0
+                String "Time (ms)"
+                Float 5.0
+                ...
+
+        We parse line-by-line — strict patterns, anything else
+        ignored. Empty dict on resolution / exec failure (callers
+        treat empty as "unknown" and degrade gracefully)."""
+        import re
+
+        try:
+            nodes = await self.list_nodes()
+        except Exception:
+            return {}
+        target = next((n for n in nodes if n.name == node_name), None)
+        if target is None:
+            return {}
+        try:
+            out = await cli.run_command("pw-cli", "enum-params", str(target.id), "Props")
+        except Exception:
+            logger.info(
+                "pipewire.read_filter_node_controls_failed",
+                node_name=node_name,
+                exc_info=False,
+            )
+            return {}
+        result: dict[str, float] = {}
+        pending: str | None = None
+        # Per-line lex. Names can contain spaces / parens (LSP labels).
+        name_re = re.compile(r'^\s*String\s+"([^"]+)"')
+        # Both Float and Int values come back here — Mode is integer
+        # on this plugin but other plugins use float-encoded ints.
+        num_re = re.compile(r"^\s*(?:Float|Int)\s+(-?\d+(?:\.\d+)?)")
+        for line in out.splitlines():
+            m = name_re.match(line)
+            if m:
+                pending = m.group(1)
+                continue
+            m = num_re.match(line)
+            if m and pending is not None:
+                try:
+                    result[pending] = float(m.group(1))
+                except ValueError:
+                    pass
+                pending = None
+        return result
+
     async def set_filter_node_control(
         self, node_name: str, control_name: str, value: float
     ) -> None:

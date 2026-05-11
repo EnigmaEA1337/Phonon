@@ -1134,9 +1134,13 @@ function renderMixer() {
   renderMixSources();
   renderMixMaster();
   renderMixOutputs();
-  // DSP panel is async (may fetch schema on first focus) but we
-  // don't need to await it — it self-renders when ready.
-  renderDspPanel().catch(e => console.warn('dsp render failed', e));
+  // Intentionally NOT re-rendering the DSP panel here. The panel
+  // updates in place: knob drags repaint their own SVG, toggles
+  // flip their button class on the spot, Mode changes call
+  // updateDspActiveGroups, monitoring values arrive via poll. A
+  // full innerHTML rebuild here would tear down any in-flight drag
+  // mid-gesture. The explicit render is only triggered by attach /
+  // detach / focus / unfocus transitions.
 }
 
 // Friendly display for a PW node — prefers the node's `nick` if we
@@ -1297,6 +1301,7 @@ async function openFxPicker(outputId) {
     dspState.focusedId = outputId;
     await fetchMixer();
     await renderDspPanel();
+    startDspMonitorPolling();
   } catch (e) {
     alert('Failed to attach plugin: ' + e.message);
   }
@@ -1306,9 +1311,11 @@ async function focusDspPanel(outputId) {
   dspState.focusedId = outputId;
   renderMixer();              // refresh FX bar focus highlights
   await renderDspPanel();
+  startDspMonitorPolling();
 }
 
 async function clearDspFocus() {
+  stopDspMonitorPolling();
   dspState.focusedId = null;
   renderMixer();
   await renderDspPanel();
@@ -1322,6 +1329,7 @@ async function detachPluginInsert(outputId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ backend: null, library: null, label: null }),
     });
+    stopDspMonitorPolling();
     dspState.focusedId = null;
     await fetchMixer();
     await renderDspPanel();
@@ -1412,34 +1420,113 @@ function renderDspGroup(outputId, group, schemaByName, values) {
     if (!c) return '';
     return renderDspControl(outputId, c, values[name]);
   }).join('');
-  return `<div class="dsp-group${activeCls}">
+  return `<div class="dsp-group${activeCls}" data-group-name="${escapeHtml(group.name)}">
     <div class="dsp-group-head">${escapeHtml(group.name)}</div>
     <div class="dsp-group-body">${knobs}</div>
   </div>`;
 }
 
-// Monitoring block — read-only computed values mirroring the plugin's
-// output control ports. Calculation is plugin-specific and lives in
-// the layout's `computeMonitoring(values)` callback.
+// Monitoring block — read-only displays. Initial values come from the
+// client-side fallback formula (so the UI isn't blank for the first
+// 500ms); the polling loop then replaces them in-place with the
+// engine's exact numbers read off the PW filter-chain node.
+//
+// Each value cell carries `data-monitor-key` (= the LADSPA output
+// port name) and `data-monitor-digits` so the polling loop can find
+// it and update its textContent without touching anything else on
+// the panel (= no interruption to a drag in progress).
 function renderDspMonitoring(layout, values) {
-  if (!layout.monitoring || !layout.computeMonitoring) return '';
-  let computed;
-  try { computed = layout.computeMonitoring(values); }
-  catch { computed = {}; }
+  if (!layout.monitoring) return '';
+  let computed = {};
+  if (layout.computeMonitoring) {
+    try { computed = layout.computeMonitoring(values); }
+    catch { computed = {}; }
+  }
   const rows = layout.monitoring.map(m => {
     const v = computed[m.formula];
     const txt = (v === undefined || v === null || Number.isNaN(v))
       ? '—'
       : (m.digits === 0 ? String(Math.round(v)) : Number(v).toFixed(m.digits ?? 2));
+    const key = m.port || m.label;
     return `<div class="dsp-monitor-row">
       <span class="dsp-monitor-label">${escapeHtml(m.label)}</span>
-      <span class="dsp-monitor-value">${escapeHtml(txt)}</span>
+      <span class="dsp-monitor-value"
+            data-monitor-key="${encodeURIComponent(key)}"
+            data-monitor-digits="${m.digits ?? 2}">${escapeHtml(txt)}</span>
     </div>`;
   }).join('');
   return `<div class="dsp-monitor">
     <div class="dsp-group-head">Monitoring</div>
     ${rows}
   </div>`;
+}
+
+// Replace just the value cells of the Monitoring block — leaves
+// labels, sectioning, the rest of the panel untouched. Safe to call
+// while the user is dragging a knob.
+function updateDspMonitoringCells(liveValues) {
+  const panel = document.getElementById('dsp-panel');
+  if (!panel) return;
+  panel.querySelectorAll('[data-monitor-key]').forEach(cell => {
+    const key = decodeURIComponent(cell.dataset.monitorKey);
+    const digits = parseInt(cell.dataset.monitorDigits || '2', 10);
+    const v = liveValues[key];
+    if (v === undefined || v === null || Number.isNaN(v)) return;  // keep stale rather than blank
+    cell.textContent = digits === 0 ? String(Math.round(v)) : Number(v).toFixed(digits);
+  });
+}
+
+// Polling loop. Only runs while a plugin is focused — startDspMonitorPolling
+// is called from focusDspPanel + openFxPicker, stopDspMonitorPolling
+// from clearDspFocus + detachPluginInsert. 500ms is fast enough to
+// feel live but slow enough that the parse cost (one pw-cli per tick)
+// is negligible.
+let dspMonitorTimer = null;
+function startDspMonitorPolling() {
+  if (dspMonitorTimer) return;
+  pollDspMonitoring();  // fire one immediately so values appear quickly
+  dspMonitorTimer = setInterval(pollDspMonitoring, 500);
+}
+function stopDspMonitorPolling() {
+  if (dspMonitorTimer) { clearInterval(dspMonitorTimer); dspMonitorTimer = null; }
+}
+async function pollDspMonitoring() {
+  const outputId = dspState.focusedId;
+  if (!outputId) return;
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert/monitoring');
+    if (!r.ok) return;
+    const liveValues = await r.json();
+    updateDspMonitoringCells(liveValues);
+  } catch (e) { /* keep polling — transient errors are normal */ }
+}
+
+// After any control change, re-evaluate which Mode-bound section
+// should be highlighted as active. Toggles the .active class on each
+// .dsp-group element in-place — no innerHTML, no DOM rebuild, no
+// interaction lost.
+function updateDspActiveGroups(outputId) {
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !out.insert) return;
+  const layout = PLUGIN_LAYOUTS[out.insert.label];
+  if (!layout || !layout.groups) return;
+  const panel = document.getElementById('dsp-panel');
+  if (!panel) return;
+  layout.groups.forEach(g => {
+    if (!g.activeWhen) return;
+    const cur = out.insert.controls[g.activeWhen.control];
+    const isActive = (cur !== undefined && Math.round(cur) === g.activeWhen.value);
+    const el = panel.querySelector(`.dsp-group[data-group-name="${cssEscape(g.name)}"]`);
+    if (el) el.classList.toggle('active', isActive);
+  });
+}
+
+// Minimal CSS.escape polyfill — older browsers don't have CSS.escape
+// and the group names are simple identifiers anyway, but quoting is
+// safer if someone adds a section called "Dry/Wet" later.
+function cssEscape(s) {
+  if (window.CSS && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, m => '\\' + m);
 }
 
 // Hardcoded layout map for plugins whose LADSPA descriptor doesn't
@@ -1463,14 +1550,15 @@ const PLUGIN_LAYOUTS = {
       { name: "Phase",    controls: ["Phase Invert Left", "Phase Invert Right"] },
       { name: "Output",   controls: ["Output gain (G)"] },
     ],
-    // Read-only output ports that mirror what the plugin currently
-    // computes — same idea as LSP's Monitoring section. Values are
-    // derived client-side from the input controls (Mode + the
-    // active unit's value) so we don't need to poll PW node params.
+    // Read-only output ports — LSP's Monitoring section. The
+    // Monitoring poll reads the engine's exact values via
+    // /insert/monitoring and looks them up by the `port` name.
+    // `formula` is a client-side fallback used until the first poll
+    // lands so the UI isn't empty for ~500ms.
     monitoring: [
-      { label: "Time (ms)",      formula: "time_ms",       digits: 2 },
-      { label: "Samples (samp)", formula: "samples",       digits: 0 },
-      { label: "Distance (cm)",  formula: "distance_cm",   digits: 1 },
+      { label: "Time (ms)",      port: "Delay time (ms)",      formula: "time_ms",     digits: 2 },
+      { label: "Samples (samp)", port: "Delay samples (samp)", formula: "samples",     digits: 0 },
+      { label: "Distance (cm)",  port: "Delay distance (cm)",  formula: "distance_cm", digits: 1 },
     ],
     computeMonitoring(values) {
       // LSP's comp_delay_stereo: Mode picks which input drives the
@@ -1525,9 +1613,13 @@ function renderDspControl(outputId, c, currentValue) {
   const v = currentValue !== undefined ? currentValue : (c.default ?? 0);
   if (c.toggled) {
     const on = v > 0.5;
+    const encName = encodeURIComponent(c.name);
     return `<div class="dsp-control">
       <div class="dsp-ctl-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
-      <button class="toggle${on ? ' on' : ''}" onclick="dspToggleControl('${outputId}', '${encodeURIComponent(c.name)}', ${on ? 0 : 1})">${on ? 'ON' : 'OFF'}</button>
+      <button class="toggle${on ? ' on' : ''}"
+              data-toggle-output="${outputId}"
+              data-toggle-name="${encName}"
+              onclick="dspToggleControl('${outputId}', '${encName}', ${on ? 0 : 1})">${on ? 'ON' : 'OFF'}</button>
     </div>`;
   }
   // Heuristic for "enum-ish" integer controls (e.g. LSP "Mode" 0-2).
@@ -1783,19 +1875,36 @@ async function dspSetControl(outputId, encName, value) {
     );
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const out = await r.json();
-    // Patch the local mixerState in place so subsequent renders
-    // reflect the new value without a full /mixer refetch.
     mixerState.outputs = (mixerState.outputs || []).map(
       o => o.id === outputId ? out : o
     );
+    // Re-evaluate Mode-bound section highlights in-place. No
+    // innerHTML, so any in-flight drag stays bound to its knob.
+    updateDspActiveGroups(outputId);
   } catch (e) {
     console.warn('control set failed', name, e);
   }
 }
 
+// Toggle handler. Updates the button's class + label + onclick in
+// place so the next click flips the inverse value, then patches the
+// new value via dspSetControl. Critically: no renderDspPanel() — a
+// full re-render would tear down every knob's DOM mid-interaction.
 async function dspToggleControl(outputId, encName, newVal) {
+  const panel = document.getElementById('dsp-panel');
+  const btn = panel?.querySelector(
+    `button[data-toggle-output="${outputId}"][data-toggle-name="${encName}"]`
+  );
+  if (btn) {
+    const on = Number(newVal) > 0.5;
+    btn.classList.toggle('on', on);
+    btn.textContent = on ? 'ON' : 'OFF';
+    btn.setAttribute(
+      'onclick',
+      `dspToggleControl('${outputId}', '${encName}', ${on ? 0 : 1})`
+    );
+  }
   await dspSetControl(outputId, encName, newVal);
-  await renderDspPanel();
 }
 
 function renderMixSources() {

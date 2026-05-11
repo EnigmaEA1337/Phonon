@@ -483,6 +483,24 @@ class MixerService:
             defaults[c.name] = float(c.default)
         return defaults
 
+    async def read_output_insert_live_controls(self, output_id: str) -> dict[str, float]:
+        """Live read of an output's filter-chain control values from
+        PW — gives the Monitoring UI the engine's exact numbers
+        (LADSPA output ports are computed by the plugin in real-time)
+        instead of approximating in JS. Returns {} when the output
+        has no insert or the chain isn't currently loaded."""
+        cur = self._output(output_id)
+        if cur.insert is None:
+            return {}
+        chain = chain_name_for(cur)
+        try:
+            return await self._pw.read_filter_node_controls(chain)
+        except Exception:
+            logger.info(
+                "mixer.read_insert_live_failed", output_id=output_id, exc_info=False
+            )
+            return {}
+
     async def update_output_insert_control(
         self, output_id: str, control_name: str, value: float
     ) -> Output:

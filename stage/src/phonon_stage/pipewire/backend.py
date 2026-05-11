@@ -139,3 +139,11 @@ class PipeWireBackend(Protocol):
     async def set_filter_node_control(
         self, node_name: str, control_name: str, value: float
     ) -> None: ...
+
+    # Read every control port value (input AND output) currently set
+    # on a filter-chain node. LADSPA output control ports are
+    # computed live by the plugin (e.g. LSP delay's "Delay time (ms)"
+    # / "Delay samples" / "Delay distance" track the active mode);
+    # this is how the UI's Monitoring block gets the engine's exact
+    # numbers instead of approximating client-side.
+    async def read_filter_node_controls(self, node_name: str) -> dict[str, float]: ...

@@ -233,3 +233,13 @@ class FakePipeWireBackend:
         self, node_name: str, control_name: str, value: float
     ) -> None:
         self.filter_chain_controls[(node_name, control_name)] = float(value)
+
+    async def read_filter_node_controls(self, node_name: str) -> dict[str, float]:
+        """Return everything the test has set on this chain via
+        set_filter_node_control. Tests that need to assert on monitoring
+        behaviour pre-populate `filter_chain_controls` themselves."""
+        return {
+            ctl: v
+            for (n, ctl), v in self.filter_chain_controls.items()
+            if n == node_name
+        }

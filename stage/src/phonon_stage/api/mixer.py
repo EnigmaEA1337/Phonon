@@ -317,6 +317,25 @@ async def patch_output_insert(request: Request, output_id: str, body: InsertSet)
     return _to_output_resp(out)
 
 
+@router.get(
+    "/outputs/{output_id}/insert/monitoring",
+    response_model=dict[str, float],
+)
+async def get_output_insert_monitoring(
+    request: Request, output_id: str
+) -> dict[str, float]:
+    """Return the live values of the filter-chain plugin's control
+    ports — input AND output. Used by the DSP panel's Monitoring
+    block: the UI polls this every ~500ms and updates only the
+    readout cells in-place (no panel re-render → drag/wheel stay
+    smooth)."""
+    svc = _service(request)
+    try:
+        return await svc.read_output_insert_live_controls(output_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.patch(
     "/outputs/{output_id}/insert/controls/{control_name:path}",
     response_model=OutputResponse,

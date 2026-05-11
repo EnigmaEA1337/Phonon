@@ -106,7 +106,35 @@ done
 
 echo "  System packages OK"
 
-# ── Step 3/7: Create phonon user ──────────���─────────────────────────────
+# ── Step 2bis: Install lowlatency kernel (x86_64 + apt only) ────────────
+# Raspberry Pi OS uses its own kernel image (linux-image-rpi-*) — no
+# lowlatency variant. Skip silently when the package isn't available.
+#
+# The lowlatency kernel switches to CONFIG_PREEMPT + HZ=1000, which on
+# our scope cuts audio xrun risk roughly in half. Phonon runs fine on
+# the generic kernel — the install just won't be optimal until a
+# reboot picks up the new image. Marked idempotent (no-op if already
+# on lowlatency).
+
+NEEDS_REBOOT_FOR_LOWLATENCY=false
+
+if apt-cache show linux-lowlatency >/dev/null 2>&1; then
+    if uname -r | grep -q "lowlatency"; then
+        echo "  Lowlatency kernel already running ($(uname -r))"
+    else
+        echo "  Installing linux-lowlatency kernel..."
+        if apt-get install -y -qq linux-lowlatency; then
+            NEEDS_REBOOT_FOR_LOWLATENCY=true
+            echo "  Lowlatency kernel installed — reboot needed after install.sh"
+        else
+            echo "  WARN: linux-lowlatency install failed, keeping generic kernel"
+        fi
+    fi
+else
+    echo "  No linux-lowlatency package on this distro — skipping"
+fi
+
+# ── Step 3/7: Create phonon user ────────────────────────────────────────
 
 echo "[3/11] Creating phonon user..."
 
@@ -723,6 +751,16 @@ sleep 3
 
 # Detect bind IP for display
 BIND_IP=$(grep bind_address "${CONFIG_DIR}/stage.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "localhost")
+
+# If we installed the lowlatency kernel this run, the running system is
+# still on the generic kernel until reboot. Phonon will run, just won't
+# get the audio scheduling benefit until then.
+if [ "${NEEDS_REBOOT_FOR_LOWLATENCY}" = true ]; then
+    echo ""
+    echo "[REBOOT NEEDED] linux-lowlatency was installed but isn't active yet."
+    echo "  Current kernel: $(uname -r) — reboot to switch to the lowlatency one."
+    echo "  After reboot, verify with: uname -r   (should end in '-lowlatency')"
+fi
 
 # Friendly tip if the human operator (the user who ran sudo bash install.sh)
 # doesn't have NOPASSWD configured. install.sh works fine without it — phonon

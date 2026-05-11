@@ -804,11 +804,19 @@ USVC
 # ${DATA_DIR}/plugins/<plugin-name>/ — phonon-stage creates the file
 # at first enable, the unit references it by absolute path.
 
-# AirPlay v1 — shairport-sync 3.x
+# AirPlay v1 — shairport-sync 3.x / 4.x
 # `Wants=` (not `Requires=`) on pipewire-pulse: shairport-sync will
 # keep trying to connect to the PA socket if it's not ready, that's
 # fine and more robust than a hard requirement that would put the
 # unit into 'failed' state during a pipewire restart.
+#
+# `-o pa` is mandatory: shairport-sync 4.x on Ubuntu defaults to the
+# ALSA backend even when the conf says `output_backend = "pa"` (the
+# conf value is parsed but doesn't actually switch the backend at
+# runtime — empirically reproduced 2026-05-11). Without -o pa, the
+# audio bypasses the airplay_in null-sink the plugin sets up and
+# WirePlumber auto-routes it to the default sink, defeating the
+# whole Phonon routing matrix.
 mkdir -p "${DATA_DIR}/plugins/airplay-v1"
 cat > "${DATA_DIR}/.config/systemd/user/shairport-sync.service" <<APV1SVC
 [Unit]
@@ -818,7 +826,7 @@ Wants=pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/shairport-sync -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf
+ExecStart=/usr/bin/shairport-sync -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf -o pa
 Restart=on-failure
 RestartSec=2
 

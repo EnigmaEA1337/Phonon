@@ -223,6 +223,15 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .row-mrls button.active { background: var(--red); color: #fff; border-color: var(--red); }
 .row-mrls button.solo.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
 
+/* Live dB readout that overlays the bottom of the fader column.
+   Updates during drag/wheel so the operator sees the exact value
+   without releasing the mouse — standard DAW affordance. */
+.fader-db { position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: -2px; font-family: var(--font-m); font-size: 8px;
+  color: var(--cyan); background: rgba(6,10,16,0.7);
+  padding: 1px 4px; border-radius: 2px; pointer-events: none;
+  text-shadow: 0 0 2px #000; line-height: 10px; white-space: nowrap; }
+
 /* dB ticks alongside the VU bars — same scale as the existing
    mappings strips so meter readings translate 1:1 between the
    legacy view and the new console. */
@@ -1273,34 +1282,112 @@ function mixScotchEdit(el, kind, id) {
   });
 }
 
-// Fader column for mixer strips. Reuses the existing fader-col CSS;
-// the actual drag handling for these new strips is delegated to a
-// small wheel/scroll handler — proper drag will land in a follow-up.
+// DAW-style fader. Uses the existing faderDbToY/faderYToDb knee curve
+// (0 → -12 dB across the top 80 % of the rail, then -12 → -90 dB on
+// the bottom 20 %), so the precision lands where mixing actually
+// happens — between 0 and ~-6 dB.
+//
+// Interactions:
+//   * drag handle     → 1 px = 1 % of rail
+//   * drag rail       → jumps to clicked Y, then drag continues
+//   * shift + drag    → 5× slower (precision)
+//   * wheel           → ±1 dB (±0.1 with shift)
+//   * double-click    → 0 dB (unity)
+//
+// The current dB value is rendered into a span on the strip that the
+// MRLS row shares; updates live during drag/wheel without re-render.
+const MIX_FADER_DB_MIN = -90;
+const MIX_FADER_DB_MAX = 12;
+
 function faderCol(kind, id, gainDb) {
-  const y = faderDbToY(Math.max(-12, Math.min(0, gainDb)));
-  return `<div class="fader-col"
-    onclick="mixFaderClick(event, '${kind}', '${id}', this)"
+  const y = faderDbToY(gainDb);
+  // The mixer fader binds the FULL range (-90 → +12 dB) — use the
+  // knee curve unchanged. The legacy clamp at [-12, 0] was a v1
+  // compromise; gone now.
+  const dataAttr = `data-mix-fader-kind="${kind}" data-mix-fader-id="${id}"`;
+  return `<div class="fader-col" ${dataAttr}
+    onmousedown="mixFaderMouseDown(event, '${kind}', '${id}', this)"
+    ontouchstart="mixFaderMouseDown(event, '${kind}', '${id}', this)"
     onwheel="mixFaderWheel(event, '${kind}', '${id}')"
     ondblclick="mixFaderReset('${kind}', '${id}')"
-    title="Click to set, scroll to adjust, double-click to reset to 0 dB">
+    title="Drag to set · Shift+drag fine · Scroll ±1 dB (Shift = 0.1) · Double-click 0 dB">
     <div class="fader-rail"></div>
     <div class="fader-fill" style="height:${100 - y}%"></div>
     <div class="fader-handle" style="top:${y}%"></div>
+    <div class="fader-db" ${dataAttr}>${gainDb.toFixed(1)} dB</div>
   </div>`;
 }
 
-function mixFaderClick(ev, kind, id, colEl) {
+// Drag state (one at a time — single mouse, single fader).
+const _mixDrag = { kind: null, id: null, startClientY: 0, startDb: 0 };
+
+function mixFaderMouseDown(ev, kind, id, colEl) {
+  ev.preventDefault();
+  const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+  // If the click landed on the RAIL (not the handle), jump to that
+  // dB value first, then start dragging from there. Matches DAW
+  // muscle memory (Ableton, Reaper, Studio One): click anywhere and
+  // drag continues.
+  if (!ev.target.classList.contains('fader-handle')) {
+    const rect = colEl.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100));
+    const db = faderYToDb(pct);
+    applyMixFader(kind, id, db, /*persist=*/ false);
+    _mixDrag.startDb = db;
+  } else {
+    _mixDrag.startDb = currentMixGain(kind, id);
+  }
+  _mixDrag.kind = kind;
+  _mixDrag.id = id;
+  _mixDrag.startClientY = clientY;
+}
+
+function _mixDragMove(ev) {
+  if (!_mixDrag.kind) return;
+  const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+  const colEl = document.querySelector(
+    `.fader-col[data-mix-fader-kind="${_mixDrag.kind}"][data-mix-fader-id="${_mixDrag.id}"]`
+  );
+  if (!colEl) return;
   const rect = colEl.getBoundingClientRect();
-  const y = (ev.clientY - rect.top) / rect.height;
-  const dbValue = faderYToDb(Math.max(0, Math.min(1, y)) * 100);
-  applyMixFader(kind, id, dbValue);
+  const startPct = faderDbToY(_mixDrag.startDb);
+  const dy = clientY - _mixDrag.startClientY;
+  const fineFactor = ev.shiftKey ? 0.2 : 1.0;
+  const pct = Math.max(0, Math.min(100, startPct + (dy / rect.height) * 100 * fineFactor));
+  const db = faderYToDb(pct);
+  applyMixFader(_mixDrag.kind, _mixDrag.id, db, /*persist=*/ false);
+  ev.preventDefault?.();
+}
+
+function _mixDragEnd() {
+  if (!_mixDrag.kind) return;
+  // Persist the final value once on mouseup so dragging doesn't
+  // spam the PATCH endpoint — the live updates during drag were
+  // local-only (persist=false). Final value comes from the state
+  // which optimistic updates have already written.
+  const cur = currentMixGain(_mixDrag.kind, _mixDrag.id);
+  applyMixFader(_mixDrag.kind, _mixDrag.id, cur, /*persist=*/ true);
+  _mixDrag.kind = null;
+  _mixDrag.id = null;
+}
+
+// Wire the document-level move/up listeners once. Idempotent on
+// re-renders because we attach to document, not to per-strip nodes.
+if (!window._mixDragWired) {
+  window._mixDragWired = true;
+  document.addEventListener('mousemove', _mixDragMove);
+  document.addEventListener('mouseup', _mixDragEnd);
+  document.addEventListener('touchmove', _mixDragMove, { passive: false });
+  document.addEventListener('touchend', _mixDragEnd);
 }
 
 function mixFaderWheel(ev, kind, id) {
   ev.preventDefault();
   const cur = currentMixGain(kind, id);
-  const delta = ev.shiftKey ? 0.1 : 1.0;
-  const next = Math.max(-12, Math.min(0, cur - Math.sign(ev.deltaY) * delta));
+  const step = ev.shiftKey ? 0.1 : 1.0;
+  // deltaY > 0 = wheel down = -dB ; deltaY < 0 = wheel up = +dB
+  const next = Math.max(MIX_FADER_DB_MIN, Math.min(MIX_FADER_DB_MAX,
+    cur + (ev.deltaY < 0 ? step : -step)));
   applyMixFader(kind, id, next);
 }
 
@@ -1316,15 +1403,35 @@ function currentMixGain(kind, id) {
 }
 
 let _mixFaderDebounce = null;
-function applyMixFader(kind, id, dbValue) {
-  // Optimistic UI: update local state immediately, then debounce PATCH.
+// Update the gain locally + visually, optionally persist over the
+// REST API. During a drag we set persist=false on every move so we
+// don't spam PATCHes (each PATCH triggers a full _reconcile server-
+// side which tears down + rebuilds links/loopbacks — heavy). Drag
+// end then issues one final PATCH with persist=true.
+function applyMixFader(kind, id, dbValue, persist = true) {
+  // Optimistic local state.
   if (kind === 'mix-master') mixerState.master = { ...mixerState.master, gain_db: dbValue };
   else if (kind === 'mix-src') {
     mixerState.sources = mixerState.sources.map(s => s.id === id ? { ...s, gain_db: dbValue } : s);
   } else if (kind === 'mix-out') {
     mixerState.outputs = mixerState.outputs.map(o => o.id === id ? { ...o, gain_db: dbValue } : o);
   }
-  renderMixer();
+  // Direct DOM updates during drag — skip a full renderMixer() so
+  // the fader handle slides smoothly without re-rendering every
+  // 16 ms. The handle, fill, and dB label are the only visuals
+  // that change.
+  const sel = `.fader-col[data-mix-fader-kind="${kind}"][data-mix-fader-id="${id}"]`;
+  const colEl = document.querySelector(sel);
+  if (colEl) {
+    const y = faderDbToY(dbValue);
+    const handle = colEl.querySelector('.fader-handle');
+    const fill = colEl.querySelector('.fader-fill');
+    const dbEl = colEl.querySelector('.fader-db');
+    if (handle) handle.style.top = y + '%';
+    if (fill) fill.style.height = (100 - y) + '%';
+    if (dbEl) dbEl.textContent = dbValue.toFixed(1) + ' dB';
+  }
+  if (!persist) return;
   clearTimeout(_mixFaderDebounce);
   _mixFaderDebounce = setTimeout(async () => {
     try {

@@ -164,6 +164,34 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* AirPlay = Apple-style blue, distinct from BT's lighter cyan. */
 .patch-icon.airplay { color: #5e8eff; }
 
+/* ── Mix strip annotations ─────────────────────────────
+   Above the fader: input name (where audio comes from).
+   Below the fader: output name (where audio goes).
+   Both kept compact and ellipsised so a long PW node name doesn't
+   blow out the strip width. */
+.strip-io { font-family: var(--font-m); font-size: 8px; text-align: center;
+  line-height: 1.2; width: 100%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; opacity: 0.85; padding: 1px 2px; }
+.strip-io.input  { color: var(--green); border-bottom: 1px dashed rgba(52,211,153,0.25); }
+.strip-io.output { color: var(--magenta); border-top: 1px dashed rgba(232,121,249,0.25); margin-top: 2px; }
+.strip-io.master { color: var(--cyan); }
+/* Click-to-edit "scotch tape" label — slightly off-axis, cream
+   background with hand-drawn-feeling stroke. Visible at all times
+   so the operator can read it at a glance from across the room. */
+.strip-scotch { width: 96%; margin: 4px auto 0;
+  background: linear-gradient(180deg, #f5ecc4 0%, #ece1ab 50%, #d8c98a 100%);
+  color: #2a1d0a; font-family: 'Comic Sans MS', 'Marker Felt', Chalkduster, cursive;
+  font-size: 11px; font-weight: 700; text-align: center;
+  padding: 4px 6px; border-radius: 1px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.3), inset 0 0 8px rgba(180,140,40,0.18);
+  transform: rotate(-1.2deg); cursor: text; min-height: 16px;
+  border-left: 1px dashed rgba(0,0,0,0.18); border-right: 1px dashed rgba(0,0,0,0.18);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strip-scotch:hover { background: linear-gradient(180deg, #f9f0c8 0%, #f0e5af 50%, #dccd8e 100%); }
+.strip-scotch.empty { color: rgba(42,29,10,0.4); font-style: italic; font-weight: 500; }
+.strip-scotch input { width: 100%; background: transparent; border: none; outline: none;
+  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit; text-align: center; }
+
 /* ── Mix Console (3-column strip view) ───────────────── */
 .mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0; overflow-x: auto; }
 .mix-col { display: flex; flex-direction: column; gap: 8px; min-width: 120px; }
@@ -929,6 +957,29 @@ function renderMixer() {
   renderMixOutputs();
 }
 
+// Friendly display for a PW node — prefers the node's `nick` if we
+// have it cached in state.nodes, falls back to a shortened version
+// of the raw `name`. Long ALSA paths get reduced to their card
+// segment (e.g., `alsa_output.usb-...DG60...-00.analog-stereo` → `DG60-00`).
+function prettyPwName(pwName) {
+  if (!pwName) return '';
+  const node = (state.nodes || []).find(n => n.name === pwName);
+  if (node?.nick) return node.nick;
+  // Heuristics for the common shapes when the node isn't in state.nodes.
+  const m = pwName.match(/alsa_(?:output|input)\..*?([A-Za-z0-9_]+)\.(?:analog-stereo|iec958|mono)/);
+  if (m) return m[1];
+  return pwName;
+}
+
+// Summarise where a source sends its audio downstream.
+function sourceDestinationSummary(s, outputsById) {
+  const parts = [];
+  if (s.to_master) parts.push('Master');
+  const direct = s.direct_outputs.length;
+  if (direct) parts.push(`${direct} direct`);
+  return parts.length ? '→ ' + parts.join(' + ') : '→ (no route)';
+}
+
 function renderMixSources() {
   const el = document.getElementById('mix-sources');
   if (!el) return;
@@ -941,6 +992,8 @@ function renderMixSources() {
         }).join('')}</div>`
       : '';
     const ledColor = s.mute ? 'var(--red)' : 'var(--green)';
+    const inputName = prettyPwName(s.source_node_name);
+    const outputName = sourceDestinationSummary(s, outputsById);
     return `<div class="strip mix-src" data-mix-source-id="${s.id}">
       <div style="display:flex;align-items:center;gap:3px;width:100%">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
@@ -948,7 +1001,7 @@ function renderMixSources() {
         <span style="flex:1"></span>
         <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div class="strip-name" title="${escapeHtml(s.source_node_name)}">${escapeHtml(s.label)}</div>
+      <div class="strip-io input" title="${escapeHtml(s.source_node_name)}">▶ ${escapeHtml(inputName)}</div>
       <div class="mix-route-bar">
         <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
         <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
@@ -959,6 +1012,8 @@ function renderMixSources() {
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
         ${faderCol('mix-src', s.id, s.gain_db)}
       </div>
+      <div class="strip-io output" title="${escapeHtml(outputName)}">${escapeHtml(outputName)}</div>
+      ${scotchLabel('mix-src', s.id, s.label)}
     </div>`;
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No sources — click + Add</div>';
 }
@@ -968,18 +1023,25 @@ function renderMixMaster() {
   if (!el) return;
   const m = mixerState.master || { gain_db: 0, mute: false };
   const ledColor = m.mute ? 'var(--red)' : 'var(--cyan)';
+  // Count sources actually feeding the master + outputs actually
+  // drawing from it — informs the operator at a glance whether the
+  // master is in the signal path at all (vs everyone going direct).
+  const sourcesIn = (mixerState.sources || []).filter(s => s.to_master && !s.mute).length;
+  const outputsOut = (mixerState.outputs || []).filter(o => o.receives_master && !o.mute).length;
   el.innerHTML = `<div class="strip mix-master">
     <div style="display:flex;align-items:center;gap:3px;width:100%">
       <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
       <button class="btn-mute${m.mute ? ' active' : ''}" onclick="mixMasterToggleMute()" style="width:18px;height:14px;font-size:7px">M</button>
     </div>
-    <div class="strip-name" style="color:var(--red)">MASTER</div>
+    <div class="strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
     <div class="mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="fader-area">
       <div class="vu-bar" data-ch="L" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
       <div class="vu-bar" data-ch="R" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
       ${faderCol('mix-master', '', m.gain_db)}
     </div>
+    <div class="strip-io output master" title="Outputs receiving from the master bus">→ ${outputsOut} output${outputsOut > 1 ? 's' : ''}</div>
+    <div class="strip-scotch" title="Master bus — fixed name">MASTER</div>
   </div>`;
 }
 
@@ -992,6 +1054,16 @@ function renderMixOutputs() {
     // HW vol widget — reuse the existing widget which looks up by sink
     // name fragment in the alsa-cards list.
     const hw = mixHwVolForSink(o.sink_node_name, alsaCards);
+    // Count direct sends arriving at this output (one entry per
+    // source listing this output in its direct_outputs).
+    const directIn = (mixerState.sources || []).filter(
+      s => !s.mute && s.direct_outputs.includes(o.id)
+    ).length;
+    const inputParts = [];
+    if (o.receives_master) inputParts.push('Master');
+    if (directIn) inputParts.push(`${directIn} direct`);
+    const inputName = inputParts.length ? '← ' + inputParts.join(' + ') : '← (no feed)';
+    const sinkPretty = prettyPwName(o.sink_node_name);
     return `<div class="strip mix-out" data-mix-output-id="${o.id}">
       <div style="display:flex;align-items:center;gap:3px;width:100%">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
@@ -999,7 +1071,7 @@ function renderMixOutputs() {
         <span style="flex:1"></span>
         <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
       </div>
-      <div class="strip-name" title="${escapeHtml(o.sink_node_name)}">${escapeHtml(o.label)}</div>
+      <div class="strip-io input" title="${escapeHtml(inputName)}">${escapeHtml(inputName)}</div>
       <div class="mix-route-bar">
         <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
       </div>
@@ -1016,6 +1088,8 @@ function renderMixOutputs() {
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
         ${faderCol('mix-out', o.id, o.gain_db)}
       </div>
+      <div class="strip-io output" title="${escapeHtml(o.sink_node_name)}">▶ ${escapeHtml(sinkPretty)}</div>
+      ${scotchLabel('mix-out', o.id, o.label)}
     </div>`;
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No outputs — click + Add</div>';
 }
@@ -1039,6 +1113,49 @@ function mixHwVolForSink(sinkName, alsaCards) {
     <button class="btn" style="padding:0 4px;font-size:8px"
             onclick="openHwVolEditor('${encodeURIComponent(card.card_name)}','${encodeURIComponent(ctrl.name)}')">Edit</button>
   </div>`;
+}
+
+// Scotch-tape style editable label. Click → input, Enter or blur
+// saves to the corresponding strip's `label` field via PATCH. Empty
+// label shows placeholder text so the operator can spot strips
+// they haven't named yet.
+function scotchLabel(kind, id, label) {
+  const display = (label && label.trim()) ? escapeHtml(label) : '— click to label —';
+  const cls = (label && label.trim()) ? 'strip-scotch' : 'strip-scotch empty';
+  return `<div class="${cls}" title="Click to rename"
+    onclick="mixScotchEdit(this, '${kind}', '${id}')">${display}</div>`;
+}
+
+function mixScotchEdit(el, kind, id) {
+  if (el.querySelector('input')) return; // already editing
+  const original = (el.classList.contains('empty') ? '' : el.textContent || '').trim();
+  el.innerHTML = `<input type="text" maxlength="128" value="${escapeHtml(original)}" />`;
+  const input = el.querySelector('input');
+  input.focus();
+  input.select();
+  let saved = false;
+  const finalize = async () => {
+    if (saved) return;
+    saved = true;
+    const next = input.value.trim();
+    if (next !== original) {
+      const path = kind === 'mix-src' ? `/mixer/sources/${id}` : `/mixer/outputs/${id}`;
+      try {
+        await fetch(API + path, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: next || 'unnamed' }),
+        });
+      } catch { /* fetchMixer will re-render either way */ }
+    }
+    await fetchMixer();
+  };
+  input.addEventListener('blur', finalize);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    else if (ev.key === 'Escape') { saved = true; fetchMixer(); }
+    ev.stopPropagation();
+  });
 }
 
 // Fader column for mixer strips. Reuses the existing fader-col CSS;

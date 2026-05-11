@@ -341,7 +341,12 @@ async def get_output_insert_monitoring(
     if debug:
         backend = getattr(request.app.state, "pw_backend", None)
         raw = getattr(backend, "_last_filter_dump", "") or ""
-        return {"values": values, "raw_pw_cli_output": raw}
+        last_set = getattr(backend, "_last_set_param", None)
+        return {
+            "values": values,
+            "raw_pw_cli_output": raw,
+            "last_set_param": last_set,
+        }
     return values
 
 

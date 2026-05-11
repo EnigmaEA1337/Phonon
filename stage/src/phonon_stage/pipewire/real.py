@@ -551,15 +551,36 @@ class RealPipeWireBackend:
         # the engine gets the write.
         prefixed = control_name if control_name.startswith("fx:") else f"fx:{control_name}"
         payload = '{ params = [ "' + prefixed + '" ' + str(float(value)) + " ] }"
+        # Stash payload + last result so the diagnostic endpoint can
+        # show us what pw-cli actually saw (silent set-param failures
+        # are unobservable otherwise — rc=0 with no stdout/stderr).
         try:
-            await cli.run_command("pw-cli", "set-param", str(target.id), "Props", payload)
+            import asyncio as _asyncio
+            import os as _os
+
+            env = {**_os.environ, "LC_ALL": "C", "LANG": "C"}
+            proc = await _asyncio.create_subprocess_exec(
+                "pw-cli", "set-param", str(target.id), "Props", payload,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_b, stderr_b = await _asyncio.wait_for(proc.communicate(), timeout=3)
+            self._last_set_param = {  # type: ignore[attr-defined]
+                "cmd": f"pw-cli set-param {target.id} Props {payload}",
+                "rc": proc.returncode,
+                "stdout": stdout_b.decode("utf-8", errors="replace"),
+                "stderr": stderr_b.decode("utf-8", errors="replace"),
+            }
             logger.info(
                 "pipewire.filter_control_set",
                 node_name=node_name,
                 node_id=target.id,
                 control=control_name,
                 value=value,
+                rc=proc.returncode,
             )
+            return
         except Exception:
             logger.warning(
                 "pipewire.filter_control_set_failed",

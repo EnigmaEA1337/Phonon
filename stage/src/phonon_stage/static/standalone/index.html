@@ -1448,11 +1448,14 @@ function renderDspMonitoring(layout, values) {
       ? '—'
       : (m.digits === 0 ? String(Math.round(v)) : Number(v).toFixed(m.digits ?? 2));
     const key = m.port || m.label;
+    const formulaAttr = m.formula
+      ? ` data-monitor-formula="${encodeURIComponent(m.formula)}"`
+      : '';
     return `<div class="dsp-monitor-row">
       <span class="dsp-monitor-label">${escapeHtml(m.label)}</span>
       <span class="dsp-monitor-value"
             data-monitor-key="${encodeURIComponent(key)}"
-            data-monitor-digits="${m.digits ?? 2}">${escapeHtml(txt)}</span>
+            data-monitor-digits="${m.digits ?? 2}"${formulaAttr}>${escapeHtml(txt)}</span>
     </div>`;
   }).join('');
   return `<div class="dsp-monitor">
@@ -1464,14 +1467,34 @@ function renderDspMonitoring(layout, values) {
 // Replace just the value cells of the Monitoring block — leaves
 // labels, sectioning, the rest of the panel untouched. Safe to call
 // while the user is dragging a knob.
-function updateDspMonitoringCells(liveValues) {
+//
+// PW filter-chain only exposes the plugin's INPUT control ports
+// (the ones you can write to with set-param); LADSPA output ports
+// are computed internally and never surfaced. So Monitoring values
+// are derived from the live inputs via the layout's
+// `computeMonitoring` callback — physically identical to what the
+// plugin engine computes (same formula, same precision).
+function updateDspMonitoringCells(liveValues, layout) {
   const panel = document.getElementById('dsp-panel');
   if (!panel) return;
+  let derived = {};
+  if (layout && layout.computeMonitoring) {
+    try { derived = layout.computeMonitoring(liveValues); }
+    catch { derived = {}; }
+  }
   panel.querySelectorAll('[data-monitor-key]').forEach(cell => {
-    const key = decodeURIComponent(cell.dataset.monitorKey);
+    const portKey = decodeURIComponent(cell.dataset.monitorKey);
+    const formula = cell.dataset.monitorFormula
+      ? decodeURIComponent(cell.dataset.monitorFormula)
+      : null;
     const digits = parseInt(cell.dataset.monitorDigits || '2', 10);
-    const v = liveValues[key];
-    if (v === undefined || v === null || Number.isNaN(v)) return;  // keep stale rather than blank
+    // Prefer derived value (from formula) — that's the engine-equivalent.
+    // Fall back to a direct lookup by port name in case a future plugin
+    // does expose its output controls via PW.
+    let v;
+    if (formula && derived[formula] !== undefined) v = derived[formula];
+    else v = liveValues[portKey];
+    if (v === undefined || v === null || Number.isNaN(v)) return;
     cell.textContent = digits === 0 ? String(Math.round(v)) : Number(v).toFixed(digits);
   });
 }
@@ -1493,11 +1516,14 @@ function stopDspMonitorPolling() {
 async function pollDspMonitoring() {
   const outputId = dspState.focusedId;
   if (!outputId) return;
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !out.insert) return;
+  const layout = PLUGIN_LAYOUTS[out.insert.label];
   try {
     const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert/monitoring');
     if (!r.ok) return;
     const liveValues = await r.json();
-    updateDspMonitoringCells(liveValues);
+    updateDspMonitoringCells(liveValues, layout);
   } catch (e) { /* keep polling — transient errors are normal */ }
 }
 

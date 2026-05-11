@@ -466,25 +466,51 @@ class RealPipeWireBackend:
         self._last_filter_dump = (
             f"# resolved chain {node_name} → node id {target.id} ({target.name})\n" + out
         )  # type: ignore[attr-defined]
+        # Names in the params Struct are prefixed with the
+        # filter-graph node name (we use `name = fx` in the conf, so
+        # everything comes back as `fx:<control>`). Strip the prefix
+        # to mirror the LADSPA descriptor's flat names.
         result: dict[str, float] = {}
         pending: str | None = None
-        # Per-line lex. Names can contain spaces / parens (LSP labels).
         name_re = re.compile(r'^\s*String\s+"([^"]+)"')
-        # Both Float and Int values come back here — Mode is integer
-        # on this plugin but other plugins use float-encoded ints.
         num_re = re.compile(r"^\s*(?:Float|Int)\s+(-?\d+(?:\.\d+)?)")
+        # Bool params (Bypass, Ramping, Phase Invert *) → 0.0 / 1.0
+        # so the JS doesn't need a separate code path for booleans.
+        bool_re = re.compile(r"^\s*Bool\s+(true|false)")
         for line in out.splitlines():
             m = name_re.match(line)
             if m:
                 pending = m.group(1)
                 continue
-            m = num_re.match(line)
-            if m and pending is not None:
+            if pending is None:
+                continue
+            mn = num_re.match(line)
+            if mn:
                 try:
-                    result[pending] = float(m.group(1))
+                    val = float(mn.group(1))
                 except ValueError:
-                    pass
+                    pending = None
+                    continue
+                key = pending[3:] if pending.startswith("fx:") else pending
+                # We're only interested in the plugin's own params,
+                # not PW's audioconvert / channelmix / resample
+                # housekeeping — those don't carry the fx: prefix
+                # so they get filtered here.
+                if pending.startswith("fx:"):
+                    result[key] = val
                 pending = None
+                continue
+            mb = bool_re.match(line)
+            if mb:
+                val = 1.0 if mb.group(1) == "true" else 0.0
+                if pending.startswith("fx:"):
+                    result[pending[3:]] = val
+                pending = None
+                continue
+            # Other value types (String, Array, Id) — drop the
+            # pending name so we don't accidentally pair it with
+            # something further down.
+            pending = None
         return result
 
     async def set_filter_node_control(

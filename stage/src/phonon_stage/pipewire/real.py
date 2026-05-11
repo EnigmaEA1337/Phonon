@@ -543,10 +543,14 @@ class RealPipeWireBackend:
                 control=control_name,
             )
             return
-        # pw-cli set-param Props expects spa-json. Quoting the control
-        # name preserves whitespace and special chars in LSP labels
-        # (e.g. "Time (ms)").
-        payload = '{ params = [ "' + control_name + '" ' + str(float(value)) + " ] }"
+        # pw-cli set-param Props expects spa-json. PW prefixes every
+        # filter-graph control with the filter.graph node name (we
+        # use `name = fx` in the conf), so the key in Props is
+        # `fx:<control>` — set-param with the bare name is a silent
+        # no-op (the engine has no param to match). Prefix here so
+        # the engine gets the write.
+        prefixed = control_name if control_name.startswith("fx:") else f"fx:{control_name}"
+        payload = '{ params = [ "' + prefixed + '" ' + str(float(value)) + " ] }"
         try:
             await cli.run_command("pw-cli", "set-param", str(target.id), "Props", payload)
             logger.info(

@@ -86,6 +86,7 @@ if ! apt-get install -y -qq \
     avahi-daemon \
     bluez \
     bluez-tools \
+    alsa-utils \
     pipewire \
     pipewire-alsa \
     pipewire-pulse \
@@ -99,7 +100,7 @@ fi
 # Verify the binaries the rest of install.sh expects to find. Catches
 # the rare case where a package was 'installed' but its binary lives
 # under a different path (e.g. a sysroot mismatch on cross-builds).
-for bin in /usr/sbin/ptp4l /usr/sbin/phc2sys /usr/bin/wpctl /usr/bin/pw-link /usr/bin/pactl; do
+for bin in /usr/sbin/ptp4l /usr/sbin/phc2sys /usr/bin/wpctl /usr/bin/pw-link /usr/bin/pactl /usr/bin/amixer /usr/bin/aplay /usr/sbin/alsactl; do
     if [ ! -x "${bin}" ]; then
         echo "  ERROR: expected binary ${bin} missing after apt install" >&2
         exit 1

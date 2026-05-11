@@ -58,7 +58,7 @@ async def _levels_loop() -> None:
             tasks: list[Any] = []
             keys: list[str] = []
 
-            for key, bridge in _active_bridges.items():
+            for _key, bridge in _active_bridges.items():
                 name = bridge.get("name", "")
                 btype = bridge.get("type", "")
                 # Playback bridges (Phonon -> BT speaker via aplay/bluealsa)
@@ -72,9 +72,13 @@ async def _levels_loop() -> None:
                 # Capture bridge is now a null-sink (`bt_<name>_in`) fed
                 # by `arecord | pacat` — the readable PipeWire source is
                 # the null-sink's MONITOR port (`bt_<name>_in.monitor`).
-                source_name = f"bt_{name}_in.monitor"
-                keys.append(key)
-                tasks.append(_read_peak(source_name, duration_ms=20))
+                # Key by `node:<pw-name>` so the UI's per-fader VU lookup
+                # (which joins on mapping.source_node_name) finds it
+                # directly. The previous bridge-mac key was opaque to
+                # the patch-bay rendering and broke BT VU on faders.
+                source_name = f"bt_{name}_in"
+                keys.append(f"node:{source_name}")
+                tasks.append(_read_peak(f"{source_name}.monitor", duration_ms=20))
 
             # AES67 receivers expose an Audio/Source named
             # `aes67-recv-<stream_name>`. parec reads it directly — no
@@ -83,14 +87,18 @@ async def _levels_loop() -> None:
             # interesting level is the upstream feeder, which is
             # already covered by the bluealsa-bridge case above (or by
             # the local non-BT input sources, which we don't meter yet).
-            for sid, s in _active_streams.items():
+            for _sid, s in _active_streams.items():
                 if s.get("kind") != "recv":
                     continue
                 stream_name = str(s.get("name", ""))
                 if not stream_name:
                     continue
                 source_name = f"aes67-recv-{stream_name}"
-                keys.append(f"aes67_{sid}")
+                # Keyed by node name so the UI's per-fader VU finds it
+                # via the same `node:<name>` lookup as the other source
+                # families. The old `aes67_<sid>` key was opaque to
+                # the patch bay.
+                keys.append(f"node:{source_name}")
                 tasks.append(_read_peak(source_name, duration_ms=20))
 
             # Source plugins (AirPlay, …): each owns a null-sink whose

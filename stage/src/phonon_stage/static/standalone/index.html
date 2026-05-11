@@ -2648,39 +2648,16 @@ connectWS();
 // Peak hold state per bar
 const peakHolds = new WeakMap();
 
-// Resolve the metered level for a given mapping source name. We try
-// the per-source key first (`node:<name>` for plugin null-sinks like
-// airplay_in, or the bluealsa bridge's auto-generated key like
-// `<mac>:capture`), then fall back to anything that looks like the
-// same bridge id. Returns 0 when nothing matches — a fader for a
-// source that isn't metered yet (e.g. AES67 send) shows no level
-// rather than borrowing one from a different source.
+// Resolve the metered level for a given mapping source name. The
+// server publishes every metered source under `node:<pw-name>`
+// (plugin null-sinks like airplay_in, BT bridge null-sinks like
+// bt_X_in, AES67 receivers like aes67-recv-<stream>). One lookup
+// covers everything; sources without an entry return 0 rather than
+// borrowing another source's level.
 function levelForSource(sourceName) {
   if (!sourceName) return 0;
-  // Plugin null-sinks publish under `node:<sink-name>`.
-  const direct = vuLevels['node:' + sourceName];
-  if (typeof direct === 'number') return direct;
-  // Bluealsa bridges use the bridge name as part of their key. The
-  // null-sink follows the convention `bt_<bridge-name>_in`, so we strip
-  // that to recover the bridge name and look it up among levels keys.
-  const m = sourceName.match(/^bt_(.+)_in$/);
-  if (m) {
-    const bridge = m[1];
-    for (const k of Object.keys(vuLevels)) {
-      if (k.includes(bridge)) return vuLevels[k];
-    }
-  }
-  // AES67 receive sources are named `aes67-recv-<stream>` and the
-  // server keys them as `aes67_<stream-id>`. No clean reverse lookup
-  // without the stream id, so just match by prefix — good enough for
-  // a single AES67 mapping; if multiple, the first wins. Fix later
-  // when AES67 mappings get explicit stream-id metadata in the UI.
-  if (sourceName.startsWith('aes67-recv-')) {
-    for (const k of Object.keys(vuLevels)) {
-      if (k.startsWith('aes67_')) return vuLevels[k];
-    }
-  }
-  return 0;
+  const v = vuLevels['node:' + sourceName];
+  return typeof v === 'number' ? v : 0;
 }
 
 function animateVU() {

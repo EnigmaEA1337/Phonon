@@ -175,6 +175,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip-io.input  { color: var(--green); border-bottom: 1px dashed rgba(52,211,153,0.25); }
 .strip-io.output { color: var(--magenta); border-top: 1px dashed rgba(232,121,249,0.25); margin-top: 2px; }
 .strip-io.master { color: var(--cyan); }
+/* Pre-fader head — fixed min-height so faders align horizontally
+   across every strip kind (Source/Master/Output) regardless of how
+   much variable content sits above. justify-content:flex-end keeps
+   the content pinned to the bottom so the fader always starts at
+   the same Y. Sized to fit the tallest combo: action bar (~18) +
+   IO-in (~14) + routing (~22) + delay (~28) + HW (~16) ≈ 100 px. */
+.strip-head { display: flex; flex-direction: column; gap: 4px; width: 100%;
+  justify-content: flex-end; align-items: stretch; min-height: 110px; }
 /* Click-to-edit "scotch tape" label — slightly off-axis, cream
    background with hand-drawn-feeling stroke. Visible at all times
    so the operator can read it at a glance from across the room. */
@@ -995,18 +1003,20 @@ function renderMixSources() {
     const inputName = prettyPwName(s.source_node_name);
     const outputName = sourceDestinationSummary(s, outputsById);
     return `<div class="strip mix-src" data-mix-source-id="${s.id}">
-      <div style="display:flex;align-items:center;gap:3px;width:100%">
-        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-        <button class="btn-mute${s.mute ? ' active' : ''}" onclick="mixSourceToggleMute('${s.id}')" style="width:18px;height:14px;font-size:7px">M</button>
-        <span style="flex:1"></span>
-        <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+      <div class="strip-head">
+        <div style="display:flex;align-items:center;gap:3px;width:100%">
+          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+          <button class="btn-mute${s.mute ? ' active' : ''}" onclick="mixSourceToggleMute('${s.id}')" style="width:18px;height:14px;font-size:7px">M</button>
+          <span style="flex:1"></span>
+          <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+        </div>
+        <div class="strip-io input" title="${escapeHtml(s.source_node_name)}">▶ ${escapeHtml(inputName)}</div>
+        <div class="mix-route-bar">
+          <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
+          <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
+        </div>
+        ${directChips}
       </div>
-      <div class="strip-io input" title="${escapeHtml(s.source_node_name)}">▶ ${escapeHtml(inputName)}</div>
-      <div class="mix-route-bar">
-        <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
-        <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
-      </div>
-      ${directChips}
       <div class="fader-area">
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
@@ -1029,12 +1039,14 @@ function renderMixMaster() {
   const sourcesIn = (mixerState.sources || []).filter(s => s.to_master && !s.mute).length;
   const outputsOut = (mixerState.outputs || []).filter(o => o.receives_master && !o.mute).length;
   el.innerHTML = `<div class="strip mix-master">
-    <div style="display:flex;align-items:center;gap:3px;width:100%">
-      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-      <button class="btn-mute${m.mute ? ' active' : ''}" onclick="mixMasterToggleMute()" style="width:18px;height:14px;font-size:7px">M</button>
+    <div class="strip-head">
+      <div style="display:flex;align-items:center;gap:3px;width:100%">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <button class="btn-mute${m.mute ? ' active' : ''}" onclick="mixMasterToggleMute()" style="width:18px;height:14px;font-size:7px">M</button>
+      </div>
+      <div class="strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
+      <div class="mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     </div>
-    <div class="strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
-    <div class="mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="fader-area">
       <div class="vu-bar" data-ch="L" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
       <div class="vu-bar" data-ch="R" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
@@ -1065,24 +1077,26 @@ function renderMixOutputs() {
     const inputName = inputParts.length ? '← ' + inputParts.join(' + ') : '← (no feed)';
     const sinkPretty = prettyPwName(o.sink_node_name);
     return `<div class="strip mix-out" data-mix-output-id="${o.id}">
-      <div style="display:flex;align-items:center;gap:3px;width:100%">
-        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
-        <button class="btn-mute${o.mute ? ' active' : ''}" onclick="mixOutputToggleMute('${o.id}')" style="width:18px;height:14px;font-size:7px">M</button>
-        <span style="flex:1"></span>
-        <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+      <div class="strip-head">
+        <div style="display:flex;align-items:center;gap:3px;width:100%">
+          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+          <button class="btn-mute${o.mute ? ' active' : ''}" onclick="mixOutputToggleMute('${o.id}')" style="width:18px;height:14px;font-size:7px">M</button>
+          <span style="flex:1"></span>
+          <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+        </div>
+        <div class="strip-io input" title="${escapeHtml(inputName)}">${escapeHtml(inputName)}</div>
+        <div class="mix-route-bar">
+          <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
+        </div>
+        <div class="delay-input-wrap" title="Delay 0-600 ms — phasing/codec compensation applied here once for all sources going via master">
+          <input type="number" class="delay-input" min="0" max="600" step="0.5"
+                 value="${(o.delay_ms ?? 0).toFixed(1)}"
+                 oninput="mixOutputUpdateDelay('${o.id}', this.value)"
+                 onkeydown="event.stopPropagation()">
+          <span class="delay-unit">ms</span>
+        </div>
+        ${hw}
       </div>
-      <div class="strip-io input" title="${escapeHtml(inputName)}">${escapeHtml(inputName)}</div>
-      <div class="mix-route-bar">
-        <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
-      </div>
-      <div class="delay-input-wrap" title="Delay 0-600 ms — phasing/codec compensation applied here once for all sources going via master">
-        <input type="number" class="delay-input" min="0" max="600" step="0.5"
-               value="${(o.delay_ms ?? 0).toFixed(1)}"
-               oninput="mixOutputUpdateDelay('${o.id}', this.value)"
-               onkeydown="event.stopPropagation()">
-        <span class="delay-unit">ms</span>
-      </div>
-      ${hw}
       <div class="fader-area">
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
         <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>

@@ -349,9 +349,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   height: 32px; box-sizing: border-box; }
 .mix-col-body { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Strip variants — colour-coded edge to disambiguate at a glance. */
-.strip.mix-src { border-top: 3px solid var(--green); }
+/* Strips are locked-width so any new row (FX bar, future inserts)
+   can't push the column wider than the IN/OUT labels. Inside-row
+   ellipsis handles long content. Master stays at 100px (no FX bar,
+   no scotch tape input — narrower by design). */
+.strip.mix-src { border-top: 3px solid var(--green); width: 120px; }
 .strip.mix-master { border-top: 3px solid var(--red); width: 100px; }
-.strip.mix-out { border-top: 3px solid var(--magenta); }
+.strip.mix-out { border-top: 3px solid var(--magenta); width: 120px; }
 /* Per-strip routing toggles (Source side). [M] = via master, [D] = direct picker. */
 .mix-route-bar { display: flex; gap: 3px; width: 100%; justify-content: center; }
 .mix-route-btn { flex: 1; padding: 2px 4px; font-family: var(--font-m); font-size: 9px;

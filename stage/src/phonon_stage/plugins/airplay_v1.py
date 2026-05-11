@@ -50,15 +50,6 @@ class AirplayV1Settings(PluginSettings):
         max_length=64,
         description="Optional password clients must supply. Empty = open.",
     )
-    volume_mode: Literal["software", "hardware"] = Field(
-        default="software",
-        description=(
-            "software = shairport applies volume in software before "
-            "PA output (recommended behind pipewire-pulse). "
-            "hardware = pass-through to the ALSA mixer of the output "
-            "device (only useful with raw alsa backend)."
-        ),
-    )
     interpolation: Literal["basic", "soxr"] = Field(
         default="soxr",
         description=(
@@ -180,7 +171,6 @@ class AirplayV1Plugin:
             f'  name = "{s.name}";\n'
             f"  {password_line}\n"
             f'  interpolation = "{s.interpolation}";\n'
-            f'  volume_control_profile = "{s.volume_mode}";\n'
             "};\n"
             "\n"
             "sessioncontrol =\n"
@@ -217,14 +207,10 @@ class AirplayV1Plugin:
         interp = _extract_quoted(text, "interpolation") or defaults.interpolation
         if interp not in {"basic", "soxr"}:
             interp = defaults.interpolation
-        vmode = _extract_quoted(text, "volume_control_profile") or defaults.volume_mode
-        if vmode not in {"software", "hardware"}:
-            vmode = defaults.volume_mode
         return AirplayV1Settings(
             name=name,
             password=password,
             interpolation=interp,
-            volume_mode=vmode,
         )
 
 

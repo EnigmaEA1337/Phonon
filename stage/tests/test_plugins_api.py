@@ -99,7 +99,6 @@ class TestPluginSettings:
         body = resp.json()
         assert body["name"] == "Phonon"
         assert body["interpolation"] == "soxr"
-        assert body["volume_mode"] == "software"
 
     async def test_put_settings_persists_and_responds(self, client: AsyncClient) -> None:
         resp = await client.put(

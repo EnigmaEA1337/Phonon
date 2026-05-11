@@ -732,13 +732,6 @@ async function openPluginSettings(name) {
           style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
       </label>
       <label style="display:block;margin-bottom:10px">
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Volume mode</div>
-        <select id="ap-volume-mode" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
-          <option value="software" ${settings.volume_mode === 'software' ? 'selected' : ''}>software</option>
-          <option value="hardware" ${settings.volume_mode === 'hardware' ? 'selected' : ''}>hardware</option>
-        </select>
-      </label>
-      <label style="display:block;margin-bottom:10px">
         <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Interpolation (soxr = better quality, ~2% more CPU)</div>
         <select id="ap-interpolation" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
           <option value="soxr" ${settings.interpolation === 'soxr' ? 'selected' : ''}>soxr</option>
@@ -758,7 +751,6 @@ async function savePluginSettings(name) {
   const body = {
     name: document.getElementById('ap-name').value,
     password: document.getElementById('ap-password').value,
-    volume_mode: document.getElementById('ap-volume-mode').value,
     interpolation: document.getElementById('ap-interpolation').value,
   };
   try {

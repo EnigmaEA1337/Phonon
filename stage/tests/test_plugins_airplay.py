@@ -100,7 +100,6 @@ class TestAirplayV1Settings:
         assert s.name == "Phonon"
         assert s.password == ""
         assert s.interpolation == "soxr"
-        assert s.volume_mode == "software"
 
     async def test_put_settings_writes_conf(
         self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
@@ -116,9 +115,7 @@ class TestAirplayV1Settings:
     async def test_put_settings_roundtrip(self, plugin: AirplayV1Plugin) -> None:
         """Render then parse must yield the same settings. Pins the
         custom curly-brace serializer/regex parser pair."""
-        original = AirplayV1Settings(
-            name="Salon Phonon", password="1234", interpolation="basic", volume_mode="hardware"
-        )
+        original = AirplayV1Settings(name="Salon Phonon", password="1234", interpolation="basic")
         await plugin.put_settings(original)
         roundtripped = await plugin.get_settings()
         assert roundtripped == original
@@ -179,7 +176,3 @@ class TestAirplayV1Validation:
     def test_interpolation_constrained(self) -> None:
         with pytest.raises(ValueError):
             AirplayV1Settings(interpolation="lanczos")  # type: ignore[arg-type]
-
-    def test_volume_mode_constrained(self) -> None:
-        with pytest.raises(ValueError):
-            AirplayV1Settings(volume_mode="muted")  # type: ignore[arg-type]

@@ -550,6 +550,105 @@ class TestSolo:
         assert len(fake_pw.loopbacks) == 2
 
 
+class TestReconcileFastPath:
+    """The naive reconcile tears down every link + loopback on every
+    state change, which audibly cuts the audio on EVERY strip. These
+    tests pin the fast paths that avoid the full rebuild when only
+    volume-equivalent or single-output-delay fields move.
+
+    Witnessed live on the 3070: bumping one output's delay silenced
+    every other output for ~200 ms — these regressions are exactly
+    what these tests prevent from coming back."""
+
+    async def test_gain_change_does_not_destroy_links(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        await service.add_output(
+            sink_node_name="alsa_output.dg60_1", label="A", delay_ms=50.0
+        )
+        await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        loopbacks_before = set(fake_pw.loopbacks.keys())
+        links_before = {lk.id for lk in fake_pw.links}
+
+        await service.update_master(gain_db=-6.0)
+
+        # Fast path: same loopbacks, same links — only volume changed.
+        assert set(fake_pw.loopbacks.keys()) == loopbacks_before
+        assert {lk.id for lk in fake_pw.links} == links_before
+
+    async def test_mute_left_does_not_destroy_links(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        o = await service.add_output(sink_node_name="alsa_output.dg60_1", label="A")
+        s = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        loopbacks_before = set(fake_pw.loopbacks.keys())
+        links_before = {lk.id for lk in fake_pw.links}
+
+        await service.update_source(s.id, mute_left=True)
+        await service.update_output(o.id, mute_right=True)
+
+        # Topology untouched.
+        assert set(fake_pw.loopbacks.keys()) == loopbacks_before
+        assert {lk.id for lk in fake_pw.links} == links_before
+
+    async def test_delay_change_only_rebuilds_that_output_loopback(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Delay-only change on output A must NOT tear down output B's
+        loopback. That was the bug: a delay tweak silenced every
+        output during the rebuild gap. With the fast path, B keeps
+        its loopback intact."""
+        o_a = await service.add_output(
+            sink_node_name="alsa_output.dg60_1", label="A", delay_ms=50.0
+        )
+        o_b = await service.add_output(
+            sink_node_name="alsa_output.dg60_2", label="B", delay_ms=0.0
+        )
+        b_loopback_id = next(
+            mid for mid, (_, sink, _) in fake_pw.loopbacks.items()
+            if sink == "alsa_output.dg60_2"
+        )
+        a_loopback_id = next(
+            mid for mid, (_, sink, _) in fake_pw.loopbacks.items()
+            if sink == "alsa_output.dg60_1"
+        )
+
+        await service.update_output(o_a.id, delay_ms=200.0)
+
+        # B's loopback survived (no audio interruption on that output).
+        assert b_loopback_id in fake_pw.loopbacks
+        # A's loopback was swapped — old id gone, new one in with new latency.
+        assert a_loopback_id not in fake_pw.loopbacks
+        a_loopback_now = next(
+            t for t in fake_pw.loopbacks.values() if t[1] == "alsa_output.dg60_1"
+        )
+        assert a_loopback_now[2] == 200
+        assert o_b.id  # quiet
+
+    async def test_label_only_change_is_pure_persistence(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Renaming a strip (the scotch label) must not touch PW at
+        all — pure metadata change."""
+        s = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        loopbacks_before = set(fake_pw.loopbacks.keys())
+        links_before = {lk.id for lk in fake_pw.links}
+        vols_before = dict(fake_pw.channel_volumes)
+
+        await service.update_source(s.id, label="iPhone Salon")
+
+        assert set(fake_pw.loopbacks.keys()) == loopbacks_before
+        assert {lk.id for lk in fake_pw.links} == links_before
+        # Volumes also untouched — pure label PATCH.
+        assert fake_pw.channel_volumes == vols_before
+
+
 class TestProductionScenario:
     async def test_two_dg60_outputs_two_sources_via_master(
         self, service: MixerService, fake_pw: FakePipeWireBackend

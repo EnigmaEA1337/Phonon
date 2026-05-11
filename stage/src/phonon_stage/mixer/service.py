@@ -172,18 +172,53 @@ class MixerService:
         mute_right: bool | None = None,
     ) -> MasterBus:
         m = self._store.state.master
+        # Track which kinds of fields are actually changing so we can
+        # avoid full _reconcile when only volume-equivalent fields
+        # move. A reconcile tears down + rebuilds the whole audio
+        # graph (audible gap on every strip); for gain/mute_l/mute_r
+        # we just need to push new channel volumes on one node.
+        topology_change = False
         if gain_db is not None:
             validate_gain_db(gain_db)
             m = replace(m, gain_db=gain_db)
         if mute is not None:
+            if mute != self._store.state.master.mute:
+                topology_change = True
             m = replace(m, mute=mute)
         if mute_left is not None:
             m = replace(m, mute_left=mute_left)
         if mute_right is not None:
             m = replace(m, mute_right=mute_right)
         self._store.replace_state(replace(self._store.state, master=m))
-        await self._reconcile()
+        if topology_change:
+            await self._reconcile()
+        else:
+            await self._apply_master_volume()
         return m
+
+    async def _apply_master_volume(self) -> None:
+        """Volume-only fast path for master changes — no graph teardown.
+        Used when only gain_db / mute_left / mute_right move; mute (the
+        global one) still tears down loopbacks so it falls back to a
+        full reconcile in the caller."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            return
+        master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
+        if master_node is None:
+            return
+        lin = self._db_to_linear(self.master.gain_db)
+        try:
+            await self._pw.set_node_channel_volumes(
+                master_node.id,
+                [
+                    0.0 if self.master.mute_left else lin,
+                    0.0 if self.master.mute_right else lin,
+                ],
+            )
+        except Exception:
+            logger.warning("mixer.master_volume_fast_path_failed", exc_info=True)
 
     # ── Output mutations ────────────────────────────────────────
 
@@ -230,28 +265,120 @@ class MixerService:
     ) -> Output:
         cur = self._output(output_id)
         new = cur
+        # Classify the change so we can pick the cheapest PW update.
+        # `delay_only` is a special intermediate path: it doesn't
+        # need a full reconcile but it DOES need to recreate the
+        # output's own loopback (pactl module-loopback latency_msec
+        # is set at load time, can't be tuned live).
+        topology_change = False
+        delay_changed = False
         if label is not None:
             new = replace(new, label=label)
         if gain_db is not None:
             validate_gain_db(gain_db)
             new = replace(new, gain_db=gain_db)
         if mute is not None:
+            if mute != cur.mute:
+                topology_change = True
             new = replace(new, mute=mute)
         if mute_left is not None:
             new = replace(new, mute_left=mute_left)
         if mute_right is not None:
             new = replace(new, mute_right=mute_right)
         if solo is not None:
+            if solo != cur.solo:
+                topology_change = True
             new = replace(new, solo=solo)
         if delay_ms is not None:
             validate_delay_ms(delay_ms)
+            if delay_ms != cur.delay_ms:
+                delay_changed = True
             new = replace(new, delay_ms=delay_ms)
         if receives_master is not None:
+            if receives_master != cur.receives_master:
+                topology_change = True
             new = replace(new, receives_master=receives_master)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
-        await self._reconcile()
+        if topology_change:
+            await self._reconcile()
+        elif delay_changed:
+            # Only this output's loopback needs rebuilding. Other
+            # outputs / sources keep their audio flowing during the
+            # ~50 ms it takes to swap one pactl module — no graph
+            # teardown elsewhere.
+            await self._rebuild_output_loopback(new)
+            await self._apply_strip_volume_output(new)
+        else:
+            await self._apply_strip_volume_output(new)
         return new
+
+    async def _apply_strip_volume_output(self, output: Output) -> None:
+        """Set per-channel volume on a single output sink — no topology
+        change. Used for gain_db / mute_left / mute_right moves where
+        a full reconcile would needlessly silence every other strip."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            return
+        sink_node = next((n for n in nodes if n.name == output.sink_node_name), None)
+        if sink_node is None:
+            return
+        lin = self._db_to_linear(output.gain_db)
+        try:
+            await self._pw.set_node_channel_volumes(
+                sink_node.id,
+                [
+                    0.0 if output.mute_left else lin,
+                    0.0 if output.mute_right else lin,
+                ],
+            )
+        except Exception:
+            logger.warning(
+                "mixer.output_volume_fast_path_failed",
+                output_id=output.id,
+                exc_info=True,
+            )
+
+    async def _rebuild_output_loopback(self, output: Output) -> None:
+        """Targeted unload + reload of a single output's master loopback.
+        Other outputs/links are untouched, so they keep playing while
+        this one has a brief (~50 ms) gap as pactl swaps the module."""
+        try:
+            modules = await self._pw.list_loopback_modules()
+        except Exception:
+            return
+        master_src = f"source={MASTER_SINK_NAME}.monitor"
+        sink_match = f"sink={output.sink_node_name}"
+        for mid, args in modules.items():
+            if master_src in args and sink_match in args:
+                try:
+                    await self._pw.unload_module(mid)
+                except Exception:
+                    continue
+                if mid in self._owned_loopbacks:
+                    self._owned_loopbacks.remove(mid)
+        # Reload only if this output should still be hearing the master.
+        src_solo_active = any(s.solo and not s.mute for s in self._store.state.sources)
+        # If the output is muted, solo-silenced, or master-muted, no
+        # need to load a fresh loopback — its role is silent for now.
+        out_solo_active = any(o.solo and not o.mute for o in self._store.state.outputs)
+        if (
+            output.receives_master
+            and not output.mute
+            and not self.master.mute
+            and not (out_solo_active and not output.solo)
+        ):
+            new_mid = await self._pw.load_loopback(
+                f"{MASTER_SINK_NAME}.monitor",
+                output.sink_node_name,
+                int(output.delay_ms),
+            )
+            if new_mid is not None:
+                self._owned_loopbacks.append(new_mid)
+        # src_solo_active unused here but threading it through keeps
+        # the local scope coherent with the rest of the reconcile.
+        _ = src_solo_active
 
     async def remove_output(self, output_id: str) -> None:
         # Validate existence first.
@@ -324,20 +451,27 @@ class MixerService:
     ) -> Source:
         cur = self._source(source_id)
         new = cur
+        topology_change = False
         if label is not None:
             new = replace(new, label=label)
         if gain_db is not None:
             validate_gain_db(gain_db)
             new = replace(new, gain_db=gain_db)
         if mute is not None:
+            if mute != cur.mute:
+                topology_change = True
             new = replace(new, mute=mute)
         if mute_left is not None:
             new = replace(new, mute_left=mute_left)
         if mute_right is not None:
             new = replace(new, mute_right=mute_right)
         if solo is not None:
+            if solo != cur.solo:
+                topology_change = True
             new = replace(new, solo=solo)
         if to_master is not None:
+            if to_master != cur.to_master:
+                topology_change = True
             new = replace(new, to_master=to_master)
         if direct_outputs is not None:
             known = {o.id for o in self._store.state.outputs}
@@ -345,11 +479,43 @@ class MixerService:
             if unknown:
                 msg = f"direct_outputs references unknown id(s): {unknown}"
                 raise MixerError(msg)
+            if tuple(direct_outputs) != cur.direct_outputs:
+                topology_change = True
             new = replace(new, direct_outputs=tuple(direct_outputs))
         new_sources = [new if s.id == source_id else s for s in self._store.state.sources]
         self._store.replace_state(replace(self._store.state, sources=new_sources))
-        await self._reconcile()
+        if topology_change:
+            await self._reconcile()
+        else:
+            await self._apply_strip_volume_source(new)
         return new
+
+    async def _apply_strip_volume_source(self, source: Source) -> None:
+        """Volume-only fast path on a source node. Same idea as the
+        output variant — for gain_db / mute_left / mute_right we just
+        push channel volumes on the source PW node, no graph change."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            return
+        src_node = next((n for n in nodes if n.name == source.source_node_name), None)
+        if src_node is None:
+            return
+        lin = self._db_to_linear(source.gain_db)
+        try:
+            await self._pw.set_node_channel_volumes(
+                src_node.id,
+                [
+                    0.0 if source.mute_left else lin,
+                    0.0 if source.mute_right else lin,
+                ],
+            )
+        except Exception:
+            logger.warning(
+                "mixer.source_volume_fast_path_failed",
+                source_id=source.id,
+                exc_info=True,
+            )
 
     async def remove_source(self, source_id: str) -> None:
         self._source(source_id)

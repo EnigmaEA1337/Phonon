@@ -139,7 +139,14 @@ elif [ "${NEEDS_PY}" = true ] || [ "${NEEDS_RESTART}" = true ]; then
             echo "Python reinstall (--force-reinstall --no-deps)"
             "${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${REPO_ROOT}/stage" --quiet
         else
-            echo "Static/HTML only — skipping pip reinstall"
+            # Static assets live inside the installed package
+            # (stage/src/phonon_stage/static/...) — `pip install`
+            # COPIES them into site-packages, it doesn't symlink.
+            # So a daemon restart alone leaves the old copy on disk
+            # being served forever. Reinstall the package whenever
+            # static files moved.
+            echo "Static/HTML only — pip reinstall to refresh static assets"
+            "${VENV_DIR}/bin/pip" install --force-reinstall --no-deps "${REPO_ROOT}/stage" --quiet
         fi
         echo "Restarting phonon-stage user service"
         PHONON_UID="$(id -u phonon)"

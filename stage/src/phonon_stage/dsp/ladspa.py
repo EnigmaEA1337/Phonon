@@ -19,8 +19,6 @@ from typing import Protocol
 
 import structlog
 
-from phonon_stage.pipewire import cli
-
 logger = structlog.get_logger()
 
 
@@ -103,11 +101,52 @@ class LadspaIntrospector(Protocol):
 class RealLadspaIntrospector:
     """Shells out to `analyseplugin <library> <label>` and parses the
     output. `library` is passed verbatim — LADSPA_PATH (typically
-    `/usr/lib/ladspa`) is what resolves it on disk."""
+    `/usr/lib/ladspa` and `/usr/lib/<multiarch>/ladspa`) is what
+    resolves it on disk.
+
+    Important: LADSPA SDK's analyseplugin writes its descriptor to
+    STDERR, not stdout — by design, since it's a diagnostic tool.
+    We can't reuse `cli.run_command` (stdout-only); we run it
+    directly and combine both streams before parsing.
+
+    Multiarch quirk on Ubuntu Studio 26.04: lsp-plugins-ladspa.so
+    lives under `/usr/lib/x86_64-linux-gnu/ladspa/` which isn't in
+    analyseplugin's default search path. We seed LADSPA_PATH with
+    both the canonical dir and the multiarch dir so the bare library
+    name resolves regardless of distro layout."""
+
+    _LADSPA_PATH = "/usr/lib/ladspa:/usr/lib/x86_64-linux-gnu/ladspa:/usr/local/lib/ladspa"
 
     async def describe(self, library: str, label: str) -> PluginDescriptor:
+        import asyncio
+        import os
+
+        env = {
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "LADSPA_PATH": os.environ.get("LADSPA_PATH") or self._LADSPA_PATH,
+        }
         try:
-            out = await cli.run_command("analyseplugin", library, label)
+            proc = await asyncio.create_subprocess_exec(
+                "analyseplugin",
+                library,
+                label,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=10.0
+            )
+        except FileNotFoundError as exc:
+            logger.warning(
+                "dsp.analyseplugin_missing",
+                library=library,
+                label=label,
+            )
+            msg = "analyseplugin binary not found — install ladspa-sdk"
+            raise RuntimeError(msg) from exc
         except Exception:
             logger.warning(
                 "dsp.analyseplugin_failed",
@@ -116,7 +155,20 @@ class RealLadspaIntrospector:
                 exc_info=True,
             )
             raise
-        return parse_analyseplugin_output(out, library=library, label=label)
+        # Combine streams — analyseplugin in some SDK builds writes
+        # the descriptor to stderr, in others to stdout. We feed both.
+        text = (stdout_bytes.decode("utf-8", errors="replace") + "\n"
+                + stderr_bytes.decode("utf-8", errors="replace"))
+        if proc.returncode != 0 and not text.strip():
+            logger.warning(
+                "dsp.analyseplugin_nonzero",
+                library=library,
+                label=label,
+                returncode=proc.returncode,
+            )
+            msg = f"analyseplugin failed (rc={proc.returncode})"
+            raise RuntimeError(msg)
+        return parse_analyseplugin_output(text, library=library, label=label)
 
 
 class FakeLadspaIntrospector:

@@ -248,11 +248,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* DSP panel — single-plugin display, digital-console feel. Sits
    between Monitoring and Mix Console; auto-renders every input
    control port from the schema fetched from /dsp/plugins/schema. */
-/* Plugin layout — VU pair on each side, meta + controls in the
-   middle. This is the canonical shape for every future DSP plugin:
-   the operator always sees IN level on the left, OUT level on the
-   right, plugin-specific controls between them. */
-.dsp-panel { display: grid; grid-template-columns: auto 200px 1fr auto;
+/* Plugin layout — meta on the left, IN VU + controls inline in the
+   middle, OUT VU on the right. The IN sits with the knobs because
+   it shows what's about to be processed (logically grouped with
+   the controls that affect it). The OUT stays on the far edge as
+   the "result" of the chain. This is the canonical shape for
+   every future DSP plugin. */
+.dsp-panel { display: grid; grid-template-columns: 200px 1fr auto;
   gap: 12px; padding: 8px; background: var(--bg-1);
   border: 1px solid var(--border); border-radius: 4px; min-height: 140px; }
 
@@ -1343,7 +1345,10 @@ async function renderDspPanel() {
   const controlsHtml = inputControls.map(c =>
     renderDspControl(out.id, c, out.insert.controls[c.name])
   ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
-  panel.innerHTML = inSide + meta + `<div class="dsp-controls">${controlsHtml}</div>` + outSide;
+  // IN VU sits at the head of the controls row (logically grouped
+  // with the knobs that affect it); OUT VU stays on the far right
+  // as the chain's exit point.
+  panel.innerHTML = meta + `<div class="dsp-controls">${inSide}${controlsHtml}</div>` + outSide;
 }
 
 // Render one IN or OUT meter block — label + L/R vertical bars.

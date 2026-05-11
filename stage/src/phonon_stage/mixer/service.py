@@ -1,0 +1,459 @@
+"""Mixer service — compiles the strip-based model into PipeWire ops.
+
+On every state mutation we re-compile from scratch: tear down the
+links + loopbacks we own and rebuild from the current state. This
+is simple and bullet-proof — the v1 strip count (~16) is way under
+any threshold where the cost of a full rebuild would matter. We can
+move to incremental updates later if needed.
+
+What the service owns in PipeWire:
+  * one null-sink named `phonon_master` (created at init, never
+    destroyed for the lifetime of the daemon)
+  * one module-loopback per output with `receives_master=True` and
+    `mute=False`, latency_msec set to the output's delay_ms
+  * one pw-link per source.monitor → master.playback channel pair
+    for each source with `to_master=True` and `mute=False`
+  * one pw-link per source.monitor → output.sink channel pair for
+    each (source, output) in `direct_outputs`, when neither side is
+    muted
+
+Volumes and mutes:
+  * Master.gain_db → set on the phonon_master sink node volume
+  * Output.gain_db → set on the output sink node volume
+  * Source.gain_db → set on the source node volume (works for
+    null-sinks like airplay_in; capture-source volume is best-effort)
+  * Mutes are structural: muted strips skip link creation entirely
+    so no audio flows, rather than relying on PW volume=0.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import re
+import uuid
+from typing import TYPE_CHECKING
+
+import structlog
+
+from phonon_stage.mixer.models import (
+    MasterBus,
+    MixerState,
+    Output,
+    Source,
+    replace,
+    validate_delay_ms,
+    validate_gain_db,
+)
+
+if TYPE_CHECKING:
+    from phonon_stage.mixer.store import MixerStore
+    from phonon_stage.pipewire.backend import PipeWireBackend, PwNode, PwPort
+
+logger = structlog.get_logger()
+
+
+# Name of the master-bus null-sink in PW. Fixed string — the UI
+# resolves the bus by name, so changing this would require a
+# coordinated UI update. Keep it stable.
+MASTER_SINK_NAME = "phonon_master"
+MASTER_SINK_DESCRIPTION = "Phonon-Master"
+
+
+class MixerError(Exception):
+    """Raised when an operation can't be satisfied — invalid input,
+    capacity limit reached, or an unknown id."""
+
+
+class MixerService:
+    def __init__(self, pw_backend: PipeWireBackend, store: MixerStore) -> None:
+        self._pw = pw_backend
+        self._store = store
+        # PW objects we own. Tracked so reconcile() can tear them down.
+        self._owned_loopbacks: list[int] = []
+        self._owned_links: list[int] = []
+
+    # ── State accessors ─────────────────────────────────────────
+
+    @property
+    def state(self) -> MixerState:
+        return self._store.state
+
+    @property
+    def master(self) -> MasterBus:
+        return self._store.state.master
+
+    @property
+    def outputs(self) -> list[Output]:
+        return list(self._store.state.outputs)
+
+    @property
+    def sources(self) -> list[Source]:
+        return list(self._store.state.sources)
+
+    def _output(self, output_id: str) -> Output:
+        out = next((o for o in self._store.state.outputs if o.id == output_id), None)
+        if out is None:
+            msg = f"unknown output id: {output_id}"
+            raise MixerError(msg)
+        return out
+
+    def _source(self, source_id: str) -> Source:
+        s = next((s for s in self._store.state.sources if s.id == source_id), None)
+        if s is None:
+            msg = f"unknown source id: {source_id}"
+            raise MixerError(msg)
+        return s
+
+    # ── Bootstrap ───────────────────────────────────────────────
+
+    async def init(self) -> None:
+        """Load persisted state, ensure phonon_master exists, apply
+        the model to PipeWire. Idempotent — safe to call on every
+        daemon startup."""
+        self._store.load()
+        await self._ensure_master_null_sink()
+        await self._reconcile()
+
+    async def _ensure_master_null_sink(self) -> None:
+        """phonon_master is the single shared bus null-sink. Created
+        at first init, persists across phonon-stage restarts as long
+        as the user's pipewire session is up. We never tear it down
+        on disable — destroying the master would invalidate all
+        loopbacks and break the audio for one tick on every reconcile.
+        """
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            nodes = []
+        if any(n.name == MASTER_SINK_NAME for n in nodes):
+            return
+        await self._pw.load_null_sink(MASTER_SINK_NAME, MASTER_SINK_DESCRIPTION)
+
+    # ── Master mutations ────────────────────────────────────────
+
+    async def update_master(
+        self,
+        gain_db: float | None = None,
+        mute: bool | None = None,
+    ) -> MasterBus:
+        m = self._store.state.master
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+            m = replace(m, gain_db=gain_db)
+        if mute is not None:
+            m = replace(m, mute=mute)
+        self._store.replace_state(replace(self._store.state, master=m))
+        await self._reconcile()
+        return m
+
+    # ── Output mutations ────────────────────────────────────────
+
+    async def add_output(
+        self,
+        sink_node_name: str,
+        label: str,
+        delay_ms: float = 0.0,
+        gain_db: float = 0.0,
+        receives_master: bool = True,
+    ) -> Output:
+        from phonon_stage.mixer.models import MAX_OUTPUTS
+
+        if len(self._store.state.outputs) >= MAX_OUTPUTS:
+            msg = f"output limit reached ({MAX_OUTPUTS})"
+            raise MixerError(msg)
+        validate_gain_db(gain_db)
+        validate_delay_ms(delay_ms)
+        o = Output(
+            id=uuid.uuid4().hex[:8],
+            sink_node_name=sink_node_name,
+            label=label,
+            gain_db=gain_db,
+            mute=False,
+            delay_ms=delay_ms,
+            receives_master=receives_master,
+        )
+        new_outputs = [*self._store.state.outputs, o]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return o
+
+    async def update_output(
+        self,
+        output_id: str,
+        label: str | None = None,
+        gain_db: float | None = None,
+        mute: bool | None = None,
+        delay_ms: float | None = None,
+        receives_master: bool | None = None,
+    ) -> Output:
+        cur = self._output(output_id)
+        new = cur
+        if label is not None:
+            new = replace(new, label=label)
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+            new = replace(new, gain_db=gain_db)
+        if mute is not None:
+            new = replace(new, mute=mute)
+        if delay_ms is not None:
+            validate_delay_ms(delay_ms)
+            new = replace(new, delay_ms=delay_ms)
+        if receives_master is not None:
+            new = replace(new, receives_master=receives_master)
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
+    async def remove_output(self, output_id: str) -> None:
+        # Validate existence first.
+        self._output(output_id)
+        # Cascade: drop the id from every source's direct_outputs list
+        # so we don't leave dangling references that would fail at
+        # reconcile time.
+        new_sources = [
+            replace(
+                s,
+                direct_outputs=tuple(d for d in s.direct_outputs if d != output_id),
+            )
+            for s in self._store.state.sources
+        ]
+        new_outputs = [o for o in self._store.state.outputs if o.id != output_id]
+        self._store.replace_state(
+            replace(self._store.state, outputs=new_outputs, sources=new_sources)
+        )
+        await self._reconcile()
+
+    # ── Source mutations ────────────────────────────────────────
+
+    async def add_source(
+        self,
+        source_node_name: str,
+        source_is_sink: bool,
+        label: str,
+        gain_db: float = 0.0,
+        to_master: bool = True,
+        direct_outputs: list[str] | None = None,
+    ) -> Source:
+        from phonon_stage.mixer.models import MAX_SOURCES
+
+        if len(self._store.state.sources) >= MAX_SOURCES:
+            msg = f"source limit reached ({MAX_SOURCES})"
+            raise MixerError(msg)
+        validate_gain_db(gain_db)
+        if direct_outputs:
+            known = {o.id for o in self._store.state.outputs}
+            unknown = [d for d in direct_outputs if d not in known]
+            if unknown:
+                msg = f"direct_outputs references unknown id(s): {unknown}"
+                raise MixerError(msg)
+        s = Source(
+            id=uuid.uuid4().hex[:8],
+            source_node_name=source_node_name,
+            source_is_sink=source_is_sink,
+            label=label,
+            gain_db=gain_db,
+            mute=False,
+            to_master=to_master,
+            direct_outputs=tuple(direct_outputs or ()),
+        )
+        new_sources = [*self._store.state.sources, s]
+        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        await self._reconcile()
+        return s
+
+    async def update_source(
+        self,
+        source_id: str,
+        label: str | None = None,
+        gain_db: float | None = None,
+        mute: bool | None = None,
+        to_master: bool | None = None,
+        direct_outputs: list[str] | None = None,
+    ) -> Source:
+        cur = self._source(source_id)
+        new = cur
+        if label is not None:
+            new = replace(new, label=label)
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+            new = replace(new, gain_db=gain_db)
+        if mute is not None:
+            new = replace(new, mute=mute)
+        if to_master is not None:
+            new = replace(new, to_master=to_master)
+        if direct_outputs is not None:
+            known = {o.id for o in self._store.state.outputs}
+            unknown = [d for d in direct_outputs if d not in known]
+            if unknown:
+                msg = f"direct_outputs references unknown id(s): {unknown}"
+                raise MixerError(msg)
+            new = replace(new, direct_outputs=tuple(direct_outputs))
+        new_sources = [new if s.id == source_id else s for s in self._store.state.sources]
+        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        await self._reconcile()
+        return new
+
+    async def remove_source(self, source_id: str) -> None:
+        self._source(source_id)
+        new_sources = [s for s in self._store.state.sources if s.id != source_id]
+        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        await self._reconcile()
+
+    # ── Reconciliation ──────────────────────────────────────────
+
+    async def _reconcile(self) -> None:
+        """Tear down every PW object we own and rebuild from the
+        current MixerState. The master null-sink is never destroyed
+        here — it's created once at init and persists."""
+        # 1. Tear down what we created on the previous reconcile.
+        for owned_mid in self._owned_loopbacks:
+            with contextlib.suppress(Exception):
+                await self._pw.unload_module(owned_mid)
+        for lid in self._owned_links:
+            with contextlib.suppress(Exception):
+                await self._pw.destroy_link(lid)
+        self._owned_loopbacks.clear()
+        self._owned_links.clear()
+
+        # 2. Lookups we'll need throughout the rebuild.
+        try:
+            nodes = await self._pw.list_nodes()
+            ports = await self._pw.list_ports()
+        except Exception:
+            logger.warning("mixer.reconcile_lookup_failed", exc_info=True)
+            return
+        master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
+        if master_node is None:
+            # Master sink doesn't exist yet — possible on a fresh
+            # daemon before init() ran. We bail out gracefully; the
+            # next reconcile (after init) will succeed.
+            logger.info("mixer.reconcile_skip_no_master")
+            return
+
+        # 3. Master volume / mute applied on its sink.
+        try:
+            await self._pw.set_node_volume(master_node.id, self._db_to_linear(self.master.gain_db))
+            await self._pw.set_node_mute(master_node.id, self.master.mute)
+        except Exception:
+            logger.warning("mixer.master_apply_failed", exc_info=True)
+
+        # 4. For each output: loopback master.monitor → output (with
+        #    delay), and the output's own gain/mute on its sink.
+        for o in self._store.state.outputs:
+            sink_node = next((n for n in nodes if n.name == o.sink_node_name), None)
+            if sink_node is None:
+                logger.info(
+                    "mixer.output_sink_missing",
+                    output_id=o.id,
+                    sink_node_name=o.sink_node_name,
+                )
+                continue
+            try:
+                await self._pw.set_node_volume(sink_node.id, self._db_to_linear(o.gain_db))
+            except Exception:
+                logger.warning("mixer.output_volume_failed", output_id=o.id, exc_info=True)
+            if o.receives_master and not o.mute and not self.master.mute:
+                mid = await self._pw.load_loopback(
+                    f"{MASTER_SINK_NAME}.monitor",
+                    o.sink_node_name,
+                    int(o.delay_ms),
+                )
+                if mid is not None:
+                    self._owned_loopbacks.append(mid)
+
+        # 5. For each source: gain on its node + outbound links.
+        for s in self._store.state.sources:
+            src_node = next((n for n in nodes if n.name == s.source_node_name), None)
+            if src_node is None:
+                logger.info(
+                    "mixer.source_node_missing",
+                    source_id=s.id,
+                    source_node_name=s.source_node_name,
+                )
+                continue
+            try:
+                await self._pw.set_node_volume(src_node.id, self._db_to_linear(s.gain_db))
+            except Exception:
+                logger.warning("mixer.source_volume_failed", source_id=s.id, exc_info=True)
+            if s.mute:
+                continue
+            # Output ports of the source — for a null-sink that's its
+            # monitor_FL/FR (direction=output); for a real Audio/Source
+            # that's its capture_FL/FR.
+            src_out_ports = self._ordered_output_ports(ports, src_node)
+            if not src_out_ports:
+                continue
+
+            if s.to_master and not self.master.mute:
+                master_in_ports = self._ordered_input_ports(ports, master_node)
+                await self._link_pairs(src_out_ports, master_in_ports)
+
+            for output_id in s.direct_outputs:
+                output = next((o for o in self._store.state.outputs if o.id == output_id), None)
+                if output is None or output.mute:
+                    continue
+                output_sink = next((n for n in nodes if n.name == output.sink_node_name), None)
+                if output_sink is None:
+                    continue
+                output_in_ports = self._ordered_input_ports(ports, output_sink)
+                await self._link_pairs(src_out_ports, output_in_ports)
+
+        logger.info(
+            "mixer.reconciled",
+            outputs=len(self._store.state.outputs),
+            sources=len(self._store.state.sources),
+            links=len(self._owned_links),
+            loopbacks=len(self._owned_loopbacks),
+        )
+
+    async def _link_pairs(self, src_ports: list[int], dst_ports: list[int]) -> None:
+        """Zip-pair two pre-ordered port lists and create the links.
+        Tracks the resulting link ids so reconcile can tear them
+        down on the next pass."""
+        for src, dst in zip(src_ports, dst_ports, strict=False):
+            try:
+                link = await self._pw.create_link(src, dst)
+                self._owned_links.append(link.id)
+            except Exception:
+                logger.warning("mixer.create_link_failed", src=src, dst=dst, exc_info=True)
+
+    @staticmethod
+    def _ordered_output_ports(ports: list[PwPort], node: PwNode) -> list[int]:
+        """Return the node's output port ids, sorted by port name so
+        FL precedes FR. Same fix as MappingService._order_ports_by_name
+        — PW assigns ids in graph-arrival order, not L/R convention."""
+        ns = [p for p in ports if p.node_id == node.id and p.direction == "output"]
+        ns.sort(key=lambda p: p.name)
+        return [p.id for p in ns]
+
+    @staticmethod
+    def _ordered_input_ports(ports: list[PwPort], node: PwNode) -> list[int]:
+        ns = [p for p in ports if p.node_id == node.id and p.direction == "input"]
+        ns.sort(key=lambda p: p.name)
+        return [p.id for p in ns]
+
+    @staticmethod
+    def _db_to_linear(db: float) -> float:
+        """Convert a strip dB value to a linear volume in [0, ~4].
+        0 dB = 1.0, -6 dB ≈ 0.5, -∞ → 0."""
+        if db <= -60.0:
+            return 0.0
+        return float(10 ** (db / 20.0))
+
+
+def looks_like_sink_source(node_name: str) -> bool:
+    """Heuristic for whether a node name belongs to a null-sink-style
+    source (consume via .monitor) or a real Audio/Source (read
+    directly). Used by the UI when offering new sources; doesn't
+    drive any routing decision directly."""
+    return bool(re.match(r"^(bt_.+_in|airplay_in|spotify_in|mpd_in)$", node_name))
+
+
+__all__ = [
+    "MASTER_SINK_DESCRIPTION",
+    "MASTER_SINK_NAME",
+    "MixerError",
+    "MixerService",
+    "looks_like_sink_source",
+]

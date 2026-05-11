@@ -94,12 +94,18 @@ class TestMappingsApi:
     async def test_pipewire_nodes(self, client: AsyncClient) -> None:
         resp = await client.get("/pipewire/nodes")
         assert resp.status_code == 200
-        assert len(resp.json()) == 3
+        # 3 fixture nodes + phonon_master (auto-created by MixerService.init
+        # during the test client's lifespan startup, which mutates the
+        # shared fake_pw backend).
+        assert len(resp.json()) == 4
+        names = {n["name"] for n in resp.json()}
+        assert "phonon_master" in names
 
     async def test_pipewire_ports(self, client: AsyncClient) -> None:
         resp = await client.get("/pipewire/ports")
         assert resp.status_code == 200
-        assert len(resp.json()) == 6
+        # 6 fixture ports + 4 phonon_master ports (FL/FR x input/output).
+        assert len(resp.json()) == 10
 
     async def test_pipewire_ports_filtered(self, client: AsyncClient) -> None:
         resp = await client.get("/pipewire/ports?node_id=30")

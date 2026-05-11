@@ -21,6 +21,7 @@ from phonon_stage.api.capabilities import router as capabilities_router
 from phonon_stage.api.health import router as health_router
 from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
+from phonon_stage.api.mixer import router as mixer_router
 from phonon_stage.api.pipewire import router as pipewire_router
 from phonon_stage.api.plugins import router as plugins_router
 from phonon_stage.api.ptp import router as ptp_router
@@ -36,6 +37,8 @@ from phonon_stage.discovery.real import RealDiscoveryBackend
 from phonon_stage.logging import configure_logging
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
+from phonon_stage.mixer.service import MixerService
+from phonon_stage.mixer.store import MixerStore
 from phonon_stage.pipewire.real import RealPipeWireBackend
 from phonon_stage.plugins.registry import PluginRegistry
 from phonon_stage.plugins.system import RealSystemBackend, SystemBackend
@@ -97,6 +100,10 @@ def create_app(
     plugin_registry = PluginRegistry(
         system=sysbe, pw_backend=pw, plugin_data_root=plugin_data_root
     )
+    # Mix console state lives next to mappings/plugins state — same
+    # data dir, single backup tree.
+    mixer_store = MixerStore(cfg.standalone_conf_path.parent / "mixer.conf.json")
+    mixer_service = MixerService(pw_backend=pw, store=mixer_store)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -110,6 +117,7 @@ def create_app(
         app.state.mapping_service = svc
         app.state.system_backend = sysbe
         app.state.plugin_registry = plugin_registry
+        app.state.mixer_service = mixer_service
 
         await discovery.register(cfg.stage_id, cfg.bind_address, cfg.port)
 
@@ -126,6 +134,13 @@ def create_app(
             await svc.restore_mappings()
         except Exception:
             logger.warning("stage.mapping_restore_failed", exc_info=True)
+
+        # Bring up the mix console: ensure phonon_master null-sink
+        # exists, then apply the persisted state to PW. Idempotent.
+        try:
+            await mixer_service.init()
+        except Exception:
+            logger.warning("stage.mixer_init_failed", exc_info=True)
 
         # Clean up stale bluealsa bridges from previous run + load per-bridge
         # user overrides (rate / period / channels / format / codec) so the
@@ -206,6 +221,7 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(update_router)
     app.include_router(plugins_router)
+    app.include_router(mixer_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

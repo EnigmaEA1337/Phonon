@@ -1,13 +1,53 @@
 # Phonon Stage Standalone — Documentation v1
 
-> Documentation du Stage Agent autonome tel que déployé sur Raspberry Pi 3B `stage-x01`.
-> Branche : `phase-1-stage-foundations` (CI verte, 122 tests)
+> Documentation du Stage Agent autonome tel que déployé sur Raspberry Pi 3B `stage-x01`, Raspberry Pi 3B `stage-x02`, Optiplex 3070 `stage-x99`.
+> Branche : `phase-1-stage-foundations`
 
-## Quick start
+## First-time setup (sur une machine neuve)
+
+Avant le `install.sh`, configurer l'accès opérateur. Suppose une Ubuntu Server / Pi OS fraîche, un user humain (`manager` par convention) créé pendant l'install OS, SSH activé.
+
+### 1. SSH par clé (depuis la machine d'admin)
 
 ```bash
-git clone https://github.com/EnigmaEA1337/Phonon.git ~/phonon
-cd ~/phonon
+# Sur la machine d'admin :
+ssh-copy-id manager@<stage-ip>            # pousse ta clé publique
+ssh manager@<stage-ip> 'echo ok'          # vérifie : pas de mot de passe demandé
+```
+
+### 2. NOPASSWD sudo pour l'opérateur
+
+Permet à Claude Code / scripts d'install / `phonon-update` d'agir sans
+interrompre la session pour le mot de passe :
+
+```bash
+# Sur le Stage, en console ou via SSH :
+sudo bash -c 'echo "manager ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-manager-nopasswd && chmod 0440 /etc/sudoers.d/90-manager-nopasswd'
+```
+
+> **Note sécurité** : cette config donne sudo libre à `manager`. Sur un
+> Stage de lab sur réseau personnel, c'est le tradeoff opérationnel
+> standard (UniFi, Synology, etc. font pareil). Sur un Stage exposé
+> publiquement, restreindre à des commandes ciblées via
+> `deploy/install-dev-sudoers.sh` (qui ne grant que `systemctl` ciblé).
+
+### 3. Hostname et resolv (recommandé)
+
+Convention Phonon : `stage-<8hex>` pour un Stage, `core-<8hex>` pour un
+Controller, dans le domaine `*.phonon.local`.
+
+```bash
+sudo hostnamectl set-hostname stage-$(printf "%08x\n" $((RANDOM*RANDOM)) | head -c 8)
+```
+
+Une fois ces 3 étapes faites, le `install.sh` ci-dessous peut être lancé
+sans aucune autre intervention manuelle.
+
+## Quick start (install Phonon)
+
+```bash
+git clone https://github.com/EnigmaEA1337/Phonon.git ~/Phonon
+cd ~/Phonon
 sudo bash deploy/install.sh
 ```
 

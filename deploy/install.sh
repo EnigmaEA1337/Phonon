@@ -724,6 +724,25 @@ sleep 3
 # Detect bind IP for display
 BIND_IP=$(grep bind_address "${CONFIG_DIR}/stage.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "localhost")
 
+# Friendly tip if the human operator (the user who ran sudo bash install.sh)
+# doesn't have NOPASSWD configured. install.sh works fine without it — phonon
+# daemon gets its own targeted NOPASSWD grants regardless. But re-running
+# install.sh, deploying updates, running 'phonon-update', and any remote
+# admin via SSH all benefit from skipping the password prompt.
+SSH_USER="${SUDO_USER:-}"
+if [ -n "${SSH_USER}" ] && [ "${SSH_USER}" != "root" ]; then
+    # Re-probe NOPASSWD as the user, not as root.
+    if ! sudo -u "${SSH_USER}" -n true 2>/dev/null; then
+        echo ""
+        echo "[TIP] User '${SSH_USER}' has to type its password for sudo."
+        echo "      For remote admin / re-installs to run uninterrupted, add:"
+        echo ""
+        echo "      sudo bash -c 'echo \"${SSH_USER} ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/90-${SSH_USER}-nopasswd && chmod 0440 /etc/sudoers.d/90-${SSH_USER}-nopasswd'"
+        echo ""
+        echo "      (See README.md 'First-time setup' for full rationale.)"
+    fi
+fi
+
 if curl -s -o /dev/null -w "%{http_code}" "http://${BIND_IP}:8401/health" 2>/dev/null | grep -q "200"; then
     echo ""
     echo "========================================="

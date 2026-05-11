@@ -122,6 +122,65 @@ class TestInit:
         masters = [n for n in fake_pw.nodes if n.name == MASTER_SINK_NAME]
         assert len(masters) == 1
 
+    async def test_init_unloads_orphan_loopbacks_from_prior_session(
+        self, fake_pw: FakePipeWireBackend, store: MixerStore
+    ) -> None:
+        """Regression: pactl modules survive across phonon-stage
+        restarts as long as the user pipewire session is up. The
+        previous daemon's loopbacks are stranded — init must clear
+        them before reconcile, otherwise the new ones stack on top
+        and every output ends up receiving the audio twice (one of
+        the worst real-world bugs we shipped on the 3070)."""
+        # Stage a previous session: master null-sink + two loopbacks
+        # pointing at it. The fake backend's `unload_module` knows
+        # about null_sinks, but for plain loopbacks we just stash
+        # entries in `loopbacks` so the cleanup pass can find them.
+        await fake_pw.load_null_sink(MASTER_SINK_NAME, "Phonon-Master")
+        # Pre-existing orphan loopbacks (simulating leftover state).
+        await fake_pw.load_loopback(
+            f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_1", 90
+        )
+        await fake_pw.load_loopback(
+            f"{MASTER_SINK_NAME}.monitor", "alsa_output.dg60_2", 0
+        )
+        assert len(fake_pw.loopbacks) == 2
+
+        # And one Output persisted to disk so reconcile will try to
+        # create its own loopback after cleanup.
+        store.replace_state(
+            MixerState(
+                master=MasterBus(),
+                outputs=[
+                    Output(
+                        id="o1",
+                        sink_node_name="alsa_output.dg60_1",
+                        label="DG60 #1",
+                        delay_ms=115.0,
+                    ),
+                ],
+                sources=[],
+            )
+        )
+
+        svc = MixerService(pw_backend=fake_pw, store=store)
+        await svc.init()
+
+        # The fake backend's `_cleanup_orphan_loopbacks` is a no-op
+        # (it depends on pactl CLI which the fake doesn't simulate),
+        # so we verify a slightly different invariant: after init,
+        # the live loopbacks must NOT exceed the count implied by
+        # the model (1 receives_master output → 1 loopback).
+        # The orphan-cleanup path is exercised via the real backend
+        # in production; here we assert the in-memory accounting is
+        # right end-to-end.
+        active = list(fake_pw.loopbacks.values())
+        # Filter to only loopbacks coming from our master.
+        ours = [t for t in active if t[0] == f"{MASTER_SINK_NAME}.monitor"]
+        # 1 output in the model means we expect exactly 1 loopback
+        # for our master, regardless of how many orphans were there
+        # before init.
+        assert len(ours) == 1, f"Expected 1 master loopback, got {len(ours)}: {ours}"
+
     async def test_init_restores_state_from_disk(
         self, fake_pw: FakePipeWireBackend, store: MixerStore
     ) -> None:

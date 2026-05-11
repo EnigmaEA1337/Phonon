@@ -109,10 +109,43 @@ class MixerService:
     async def init(self) -> None:
         """Load persisted state, ensure phonon_master exists, apply
         the model to PipeWire. Idempotent — safe to call on every
-        daemon startup."""
+        daemon startup.
+
+        Critical: pactl modules survive across phonon-stage restarts
+        as long as the user's pipewire session stays up (linger
+        keeps it alive). So at every init we must scan for orphaned
+        loopbacks left behind by the previous daemon — otherwise the
+        first reconcile would load new loopbacks on top, and each
+        output would receive the audio twice (once from old + once
+        from new), producing audible doubles / comb filter."""
         self._store.load()
         await self._ensure_master_null_sink()
+        await self._cleanup_orphan_loopbacks()
         await self._reconcile()
+
+    async def _cleanup_orphan_loopbacks(self) -> None:
+        """Find every module-loopback whose source argument targets
+        phonon_master.monitor and unload it. We can't rely on the
+        in-memory `_owned_loopbacks` here — that list is empty at
+        boot — so we ask the backend for the live module list."""
+        try:
+            modules = await self._pw.list_loopback_modules()
+        except Exception:
+            logger.info("mixer.orphan_cleanup_list_failed", exc_info=False)
+            return
+        target = f"source={MASTER_SINK_NAME}.monitor"
+        for mid, args in modules.items():
+            if target not in args:
+                continue
+            try:
+                await self._pw.unload_module(mid)
+                logger.info("mixer.orphan_loopback_unloaded", module_id=mid)
+            except Exception:
+                logger.warning(
+                    "mixer.orphan_loopback_unload_failed",
+                    module_id=mid,
+                    exc_info=True,
+                )
 
     async def _ensure_master_null_sink(self) -> None:
         """phonon_master is the single shared bus null-sink. Created

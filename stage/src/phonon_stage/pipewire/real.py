@@ -213,6 +213,27 @@ class RealPipeWireBackend:
         except Exception:
             logger.info("pipewire.module_unload_failed", module_id=module_id, exc_info=False)
 
+    async def list_loopback_modules(self) -> dict[int, str]:
+        """Parse `pactl list short modules` and return only module-loopback
+        entries as {id: argument_string}. Returns an empty dict on failure
+        — orphan-cleanup at startup is best-effort, not load-bearing."""
+        try:
+            out = await cli.run_command("pactl", "list", "short", "modules")
+        except Exception:
+            logger.info("pipewire.list_modules_failed", exc_info=False)
+            return {}
+        result: dict[int, str] = {}
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or parts[1] != "module-loopback":
+                continue
+            try:
+                mid = int(parts[0])
+            except ValueError:
+                continue
+            result[mid] = parts[2]
+        return result
+
     async def load_null_sink(self, name: str, description: str) -> int | None:
         """Load a pactl module-null-sink. Returns the module id on success,
         None on failure.

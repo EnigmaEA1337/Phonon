@@ -85,3 +85,11 @@ class PipeWireBackend(Protocol):
     # control over where the audio goes (no auto-routing to the
     # default destination).
     async def load_null_sink(self, name: str, description: str) -> int | None: ...
+
+    # Module enumeration — needed at startup to find orphan loopbacks
+    # left behind by a previous daemon session. Returns a dict of
+    # {module_id: argument_string} for loopback modules only (other
+    # module types are noise for our use case). The argument string
+    # is the raw pactl form, e.g.
+    # "source=phonon_master.monitor sink=alsa_output.dg60_1 latency_msec=90".
+    async def list_loopback_modules(self) -> dict[int, str]: ...

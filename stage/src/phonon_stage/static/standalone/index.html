@@ -163,6 +163,37 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .patch-icon.local { color: #34d399; }
 /* AirPlay = Apple-style blue, distinct from BT's lighter cyan. */
 .patch-icon.airplay { color: #5e8eff; }
+
+/* ── Mix Console (3-column strip view) ───────────────── */
+.mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0; overflow-x: auto; }
+.mix-col { display: flex; flex-direction: column; gap: 8px; min-width: 120px; }
+.mix-col-master { padding: 0 12px; border-left: 1px dashed var(--border); border-right: 1px dashed var(--border); }
+.mix-col-head { font-family: var(--font-m); font-size: 10px; font-weight: 700;
+  letter-spacing: 1px; padding: 4px 0; display: flex; align-items: center; }
+.mix-col-body { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Strip variants — colour-coded edge to disambiguate at a glance. */
+.strip.mix-src { border-top: 3px solid var(--green); }
+.strip.mix-master { border-top: 3px solid var(--red); width: 100px; }
+.strip.mix-out { border-top: 3px solid var(--magenta); }
+/* Per-strip routing toggles (Source side). [M] = via master, [D] = direct picker. */
+.mix-route-bar { display: flex; gap: 3px; width: 100%; justify-content: center; }
+.mix-route-btn { flex: 1; padding: 2px 4px; font-family: var(--font-m); font-size: 9px;
+  background: var(--bg-2); color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 3px; cursor: pointer; text-align: center; }
+.mix-route-btn.active { background: var(--cyan); color: #000; border-color: var(--cyan); font-weight: 700; }
+.mix-route-btn:hover { background: var(--bg-3); }
+.mix-route-btn.active:hover { background: #56d4e8; }
+/* Direct-outputs chip list — small pills shown when source has direct sends. */
+.mix-direct-chips { display: flex; flex-wrap: wrap; gap: 2px; font-size: 8px; justify-content: center; }
+.mix-direct-chip { background: var(--bg-2); color: var(--text-mid); padding: 1px 4px;
+  border-radius: 2px; border: 1px solid var(--border); font-family: var(--font-m); }
+/* Picker modal for + Add Source / Output */
+.mix-picker-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 4px; cursor: pointer; }
+.mix-picker-row:hover { border-color: var(--cyan); }
+.mix-picker-row code { font-family: var(--font-m); font-size: 10px; color: var(--text-dim); }
+.mix-picker-row .picker-name { font-size: 12px; flex: 1; }
 .patch-item-row { display: flex; align-items: center; gap: 8px; }
 .patch-item { padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px;
   cursor: pointer; font-size: 11px; transition: border-color 0.15s, background 0.15s; }
@@ -394,6 +425,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
     <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
+    <div class="tab" data-tab="mix" onclick="switchTab('mix')">MIX</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
@@ -584,6 +616,44 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
+  <!-- ─── Tab: MIX (console) ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="mix">
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Mix Console
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchMixer()" title="Refresh from server">Refresh</button>
+      </div>
+      <div class="section-body">
+        <div class="mix-console">
+          <!-- Sources column -->
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:var(--green)">
+              SOURCES
+              <button class="btn" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddSource()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-sources"></div>
+          </div>
+          <!-- Master column (middle) -->
+          <div class="mix-col mix-col-master">
+            <div class="mix-col-head" style="color:var(--red)">MASTER</div>
+            <div class="mix-col-body" id="mix-master"></div>
+          </div>
+          <!-- Outputs column -->
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:var(--magenta)">
+              OUTPUTS
+              <button class="btn" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddOutput()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-outputs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Tab: Settings ─── -->
   <div class="tab-pane edit-only" data-tab-pane="settings">
     <div class="section">
@@ -623,6 +693,7 @@ function switchTab(name) {
   // Plugins tab fetches lazily on first open so we don't query
   // /plugins on every refresh tick when the user isn't looking.
   if (name === 'plugins') fetchPlugins();
+  if (name === 'mix') fetchMixer();
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -829,6 +900,387 @@ async function savePluginSettings(name) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ── Mix Console (Sources | Master | Outputs) ──────────
+// Strip-based mixer. Replaces the legacy Patch Bay + Mappings flow.
+// The whole state comes from a single GET /mixer; mutations are
+// individual PATCH/POST/DELETE that the server applies and we re-
+// render from a fresh fetch (server is source of truth).
+
+let mixerState = { master: { gain_db: 0, mute: false }, outputs: [], sources: [] };
+const MIX_VU_SEGS = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('');
+
+async function fetchMixer() {
+  try {
+    const r = await fetch(API + '/mixer');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    mixerState = await r.json();
+    renderMixer();
+  } catch (e) {
+    const el = document.getElementById('mix-sources');
+    if (el) el.innerHTML = `<div style="color:var(--red);font-size:11px">Failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderMixer() {
+  renderMixSources();
+  renderMixMaster();
+  renderMixOutputs();
+}
+
+function renderMixSources() {
+  const el = document.getElementById('mix-sources');
+  if (!el) return;
+  const outputsById = Object.fromEntries((mixerState.outputs || []).map(o => [o.id, o]));
+  el.innerHTML = (mixerState.sources || []).map(s => {
+    const directChips = s.direct_outputs.length
+      ? `<div class="mix-direct-chips">${s.direct_outputs.map(id => {
+          const o = outputsById[id];
+          return `<span class="mix-direct-chip" title="${escapeHtml(o?.label || id)}">${escapeHtml(o?.label || id).slice(0, 8)}</span>`;
+        }).join('')}</div>`
+      : '';
+    const ledColor = s.mute ? 'var(--red)' : 'var(--green)';
+    return `<div class="strip mix-src" data-mix-source-id="${s.id}">
+      <div style="display:flex;align-items:center;gap:3px;width:100%">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <button class="btn-mute${s.mute ? ' active' : ''}" onclick="mixSourceToggleMute('${s.id}')" style="width:18px;height:14px;font-size:7px">M</button>
+        <span style="flex:1"></span>
+        <button class="btn-del edit-only" onclick="mixSourceRemove('${s.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+      </div>
+      <div class="strip-name" title="${escapeHtml(s.source_node_name)}">${escapeHtml(s.label)}</div>
+      <div class="mix-route-bar">
+        <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
+        <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
+      </div>
+      ${directChips}
+      <div class="fader-area">
+        <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
+        <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
+        ${faderCol('mix-src', s.id, s.gain_db)}
+      </div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No sources — click + Add</div>';
+}
+
+function renderMixMaster() {
+  const el = document.getElementById('mix-master');
+  if (!el) return;
+  const m = mixerState.master || { gain_db: 0, mute: false };
+  const ledColor = m.mute ? 'var(--red)' : 'var(--cyan)';
+  el.innerHTML = `<div class="strip mix-master">
+    <div style="display:flex;align-items:center;gap:3px;width:100%">
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+      <button class="btn-mute${m.mute ? ' active' : ''}" onclick="mixMasterToggleMute()" style="width:18px;height:14px;font-size:7px">M</button>
+    </div>
+    <div class="strip-name" style="color:var(--red)">MASTER</div>
+    <div class="mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
+    <div class="fader-area">
+      <div class="vu-bar" data-ch="L" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
+      <div class="vu-bar" data-ch="R" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
+      ${faderCol('mix-master', '', m.gain_db)}
+    </div>
+  </div>`;
+}
+
+function renderMixOutputs() {
+  const el = document.getElementById('mix-outputs');
+  if (!el) return;
+  const alsaCards = state.alsaCards || [];
+  el.innerHTML = (mixerState.outputs || []).map(o => {
+    const ledColor = o.mute ? 'var(--red)' : (o.receives_master ? 'var(--green)' : 'var(--yellow)');
+    // HW vol widget — reuse the existing widget which looks up by sink
+    // name fragment in the alsa-cards list.
+    const hw = mixHwVolForSink(o.sink_node_name, alsaCards);
+    return `<div class="strip mix-out" data-mix-output-id="${o.id}">
+      <div style="display:flex;align-items:center;gap:3px;width:100%">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <button class="btn-mute${o.mute ? ' active' : ''}" onclick="mixOutputToggleMute('${o.id}')" style="width:18px;height:14px;font-size:7px">M</button>
+        <span style="flex:1"></span>
+        <button class="btn-del edit-only" onclick="mixOutputRemove('${o.id}')" style="width:14px;height:14px;font-size:8px">✕</button>
+      </div>
+      <div class="strip-name" title="${escapeHtml(o.sink_node_name)}">${escapeHtml(o.label)}</div>
+      <div class="mix-route-bar">
+        <button class="mix-route-btn${o.receives_master ? ' active' : ''}" onclick="mixOutputToggleRcvMaster('${o.id}')" title="Receive master bus (vs direct-only)">RCV M</button>
+      </div>
+      <div class="delay-input-wrap" title="Delay 0-600 ms — phasing/codec compensation applied here once for all sources going via master">
+        <input type="number" class="delay-input" min="0" max="600" step="0.5"
+               value="${(o.delay_ms ?? 0).toFixed(1)}"
+               oninput="mixOutputUpdateDelay('${o.id}', this.value)"
+               onkeydown="event.stopPropagation()">
+        <span class="delay-unit">ms</span>
+      </div>
+      ${hw}
+      <div class="fader-area">
+        <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
+        <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
+        ${faderCol('mix-out', o.id, o.gain_db)}
+      </div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No outputs — click + Add</div>';
+}
+
+function mixHwVolForSink(sinkName, alsaCards) {
+  // Output sink names like `alsa_output.usb-...DG60..-00.analog-stereo`
+  // contain the ALSA card short name as a substring. We pick the card
+  // whose short name (DG60, DG60_1, AK1...) is a token in the sink
+  // name. Strict so two cards with the same description don't merge.
+  if (!sinkName || !alsaCards.length) return '';
+  const card = alsaCards.find(c => c.card_name && sinkName.includes(c.card_name));
+  if (!card) return '';
+  const ctrl = (card.controls || []).find(c => c.has_playback && c.volume_max > c.volume_min);
+  if (!ctrl) return '';
+  const color = ctrl.muted ? 'var(--red)'
+              : ctrl.volume_pct < 10 ? 'var(--red)'
+              : ctrl.volume_pct < 30 ? 'var(--yellow)' : 'var(--text-mid)';
+  return `<div style="display:flex;align-items:center;gap:4px;font-family:var(--font-m);font-size:9px;width:100%;justify-content:center">
+    <span style="color:var(--text-fade)">HW</span>
+    <span style="color:${color}">${ctrl.volume_pct}%${ctrl.muted ? ' M' : ''}</span>
+    <button class="btn" style="padding:0 4px;font-size:8px"
+            onclick="openHwVolEditor('${encodeURIComponent(card.card_name)}','${encodeURIComponent(ctrl.name)}')">Edit</button>
+  </div>`;
+}
+
+// Fader column for mixer strips. Reuses the existing fader-col CSS;
+// the actual drag handling for these new strips is delegated to a
+// small wheel/scroll handler — proper drag will land in a follow-up.
+function faderCol(kind, id, gainDb) {
+  const y = faderDbToY(Math.max(-12, Math.min(0, gainDb)));
+  return `<div class="fader-col"
+    onclick="mixFaderClick(event, '${kind}', '${id}', this)"
+    onwheel="mixFaderWheel(event, '${kind}', '${id}')"
+    ondblclick="mixFaderReset('${kind}', '${id}')"
+    title="Click to set, scroll to adjust, double-click to reset to 0 dB">
+    <div class="fader-rail"></div>
+    <div class="fader-fill" style="height:${100 - y}%"></div>
+    <div class="fader-handle" style="top:${y}%"></div>
+  </div>`;
+}
+
+function mixFaderClick(ev, kind, id, colEl) {
+  const rect = colEl.getBoundingClientRect();
+  const y = (ev.clientY - rect.top) / rect.height;
+  const dbValue = faderYToDb(Math.max(0, Math.min(1, y)) * 100);
+  applyMixFader(kind, id, dbValue);
+}
+
+function mixFaderWheel(ev, kind, id) {
+  ev.preventDefault();
+  const cur = currentMixGain(kind, id);
+  const delta = ev.shiftKey ? 0.1 : 1.0;
+  const next = Math.max(-12, Math.min(0, cur - Math.sign(ev.deltaY) * delta));
+  applyMixFader(kind, id, next);
+}
+
+function mixFaderReset(kind, id) {
+  applyMixFader(kind, id, 0);
+}
+
+function currentMixGain(kind, id) {
+  if (kind === 'mix-master') return mixerState.master?.gain_db || 0;
+  if (kind === 'mix-src') return (mixerState.sources.find(s => s.id === id) || {}).gain_db || 0;
+  if (kind === 'mix-out') return (mixerState.outputs.find(o => o.id === id) || {}).gain_db || 0;
+  return 0;
+}
+
+let _mixFaderDebounce = null;
+function applyMixFader(kind, id, dbValue) {
+  // Optimistic UI: update local state immediately, then debounce PATCH.
+  if (kind === 'mix-master') mixerState.master = { ...mixerState.master, gain_db: dbValue };
+  else if (kind === 'mix-src') {
+    mixerState.sources = mixerState.sources.map(s => s.id === id ? { ...s, gain_db: dbValue } : s);
+  } else if (kind === 'mix-out') {
+    mixerState.outputs = mixerState.outputs.map(o => o.id === id ? { ...o, gain_db: dbValue } : o);
+  }
+  renderMixer();
+  clearTimeout(_mixFaderDebounce);
+  _mixFaderDebounce = setTimeout(async () => {
+    try {
+      if (kind === 'mix-master') {
+        await fetch(API + '/mixer/master', { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
+      } else if (kind === 'mix-src') {
+        await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
+      } else if (kind === 'mix-out') {
+        await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
+      }
+    } catch (e) { /* swallow; next fetchMixer reconciles */ }
+  }, 150);
+}
+
+async function mixSourceToggleMute(id) {
+  const s = mixerState.sources.find(x => x.id === id); if (!s) return;
+  await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mute: !s.mute }) });
+  await fetchMixer();
+}
+async function mixSourceToggleMaster(id) {
+  const s = mixerState.sources.find(x => x.id === id); if (!s) return;
+  await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ to_master: !s.to_master }) });
+  await fetchMixer();
+}
+async function mixSourceRemove(id) {
+  if (!confirm('Remove this source from the mixer?')) return;
+  await fetch(API + `/mixer/sources/${id}`, { method: 'DELETE' });
+  await fetchMixer();
+}
+async function mixOutputToggleMute(id) {
+  const o = mixerState.outputs.find(x => x.id === id); if (!o) return;
+  await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mute: !o.mute }) });
+  await fetchMixer();
+}
+async function mixOutputToggleRcvMaster(id) {
+  const o = mixerState.outputs.find(x => x.id === id); if (!o) return;
+  await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ receives_master: !o.receives_master }) });
+  await fetchMixer();
+}
+async function mixOutputRemove(id) {
+  if (!confirm('Remove this output from the mixer?')) return;
+  await fetch(API + `/mixer/outputs/${id}`, { method: 'DELETE' });
+  await fetchMixer();
+}
+async function mixMasterToggleMute() {
+  await fetch(API + '/mixer/master', { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mute: !mixerState.master.mute }) });
+  await fetchMixer();
+}
+
+let _mixDelayDebounce = {};
+function mixOutputUpdateDelay(id, raw) {
+  const v = Math.max(0, Math.min(600, parseFloat(raw) || 0));
+  // Optimistic
+  mixerState.outputs = mixerState.outputs.map(o => o.id === id ? { ...o, delay_ms: v } : o);
+  clearTimeout(_mixDelayDebounce[id]);
+  _mixDelayDebounce[id] = setTimeout(async () => {
+    await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ delay_ms: v }) });
+  }, 200);
+}
+
+async function mixerResync() {
+  // Re-apply persisted state to PW: piggyback on a PATCH master with
+  // current values (the server's PATCH triggers a full _reconcile).
+  await fetch(API + '/mixer/master', { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: mixerState.master.gain_db }) });
+  await fetchMixer();
+}
+
+// ── + Add pickers ───────────────────────────────────────
+async function openMixAddSource() {
+  // Source candidates: every PW node that LOOKS like a source-side —
+  // real Audio/Source, or a null-sink whose monitor we'd read
+  // (airplay_in, spotify_in, bt_<x>_in, aes67-recv-<x>).
+  const nodes = state.nodes || [];
+  const used = new Set(mixerState.sources.map(s => s.source_node_name));
+  const candidates = nodes.filter(n => {
+    if (used.has(n.name)) return false;
+    if (n.name === 'phonon_master') return false;
+    if (n.media_class.includes('Source')) return true;
+    if (n.media_class.includes('Sink') && (n.name.endsWith('_in') || n.name.startsWith('aes67-recv-'))) return true;
+    return false;
+  });
+  showMixPicker('Add Source', candidates, async (n) => {
+    const isSink = n.media_class.includes('Sink');
+    await fetch(API + '/mixer/sources', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source_node_name: n.name,
+        source_is_sink: isSink,
+        label: n.nick || n.name,
+      }),
+    });
+    await fetchMixer();
+  });
+}
+
+async function openMixAddOutput() {
+  // Output candidates: every Audio/Sink EXCEPT phonon_master and
+  // the source-side null-sinks (those are inputs, not outputs).
+  const nodes = state.nodes || [];
+  const used = new Set(mixerState.outputs.map(o => o.sink_node_name));
+  const candidates = nodes.filter(n => {
+    if (used.has(n.name)) return false;
+    if (n.name === 'phonon_master') return false;
+    if (!n.media_class.includes('Sink')) return false;
+    if (n.name.endsWith('_in')) return false;  // source-side null-sinks
+    return true;
+  });
+  showMixPicker('Add Output', candidates, async (n) => {
+    await fetch(API + '/mixer/outputs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sink_node_name: n.name,
+        label: n.nick || n.name,
+      }),
+    });
+    await fetchMixer();
+  });
+}
+
+function showMixPicker(title, candidates, onPick) {
+  let overlay = document.getElementById('mix-picker-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'mix-picker-overlay';
+  overlay.className = 'modal-overlay open';
+  const rows = candidates.length
+    ? candidates.map((n, i) => `<div class="mix-picker-row" onclick="window._mixPickerPick(${i})">
+        <span class="picker-name">${escapeHtml(n.nick || n.name)}</span>
+        <code>${escapeHtml(n.name)}</code>
+        <code style="color:var(--text-fade)">${escapeHtml(n.media_class)}</code>
+      </div>`).join('')
+    : '<div style="color:var(--text-fade);font-size:11px;padding:12px;text-align:center">No new candidates — every PW node of the right kind is already in the mixer.</div>';
+  overlay.innerHTML = `<div class="modal" style="max-width:560px">
+    <div class="modal-head"><h2>${escapeHtml(title)}</h2></div>
+    <div class="modal-body">
+      ${rows}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" onclick="document.getElementById('mix-picker-overlay').remove()">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  window._mixPickerPick = (i) => {
+    document.getElementById('mix-picker-overlay').remove();
+    onPick(candidates[i]);
+  };
+}
+
+async function openMixDirectPicker(sourceId) {
+  const s = mixerState.sources.find(x => x.id === sourceId); if (!s) return;
+  let overlay = document.getElementById('mix-picker-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'mix-picker-overlay';
+  overlay.className = 'modal-overlay open';
+  const rows = mixerState.outputs.length
+    ? mixerState.outputs.map(o => {
+        const checked = s.direct_outputs.includes(o.id);
+        return `<label class="mix-picker-row" style="cursor:pointer">
+          <input type="checkbox" class="mix-direct-cb" data-out-id="${o.id}" ${checked ? 'checked' : ''} style="margin-right:8px">
+          <span class="picker-name">${escapeHtml(o.label)}</span>
+          <code>${escapeHtml(o.sink_node_name)}</code>
+        </label>`;
+      }).join('')
+    : '<div style="color:var(--text-fade);font-size:11px;padding:12px">No outputs yet — add some first.</div>';
+  overlay.innerHTML = `<div class="modal" style="max-width:560px">
+    <div class="modal-head"><h2>Direct sends — ${escapeHtml(s.label)}</h2></div>
+    <div class="modal-body">
+      <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Check the outputs this source should reach DIRECTLY, bypassing the master bus. Additive — works in parallel with the master send (toggle [M] separately).</p>
+      ${rows}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" onclick="document.getElementById('mix-picker-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="mixSaveDirectOutputs('${sourceId}')">Save</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function mixSaveDirectOutputs(sourceId) {
+  const ids = Array.from(document.querySelectorAll('.mix-direct-cb'))
+    .filter(cb => cb.checked).map(cb => cb.dataset.outId);
+  await fetch(API + `/mixer/sources/${sourceId}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ direct_outputs: ids }),
+  });
+  document.getElementById('mix-picker-overlay').remove();
+  await fetchMixer();
 }
 
 // ── Mode LIVE/EDIT (synced across all browsers via server) ──

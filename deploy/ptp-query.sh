@@ -16,5 +16,6 @@ set -euo pipefail
 case "${1:-}" in
     port)    exec /usr/sbin/pmc -u -b 0 "GET PORT_DATA_SET" ;;
     current) exec /usr/sbin/pmc -u -b 0 "GET CURRENT_DATA_SET" ;;
-    *)       echo "usage: $0 {port|current}" >&2; exit 2 ;;
+    parent)  exec /usr/sbin/pmc -u -b 0 "GET PARENT_DATA_SET" ;;
+    *)       echo "usage: $0 {port|current|parent}" >&2; exit 2 ;;
 esac

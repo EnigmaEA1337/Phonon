@@ -38,6 +38,14 @@ class PtpStatus(BaseModel):
     interface: str
     profile: str
     note: str
+    # Grandmaster identity from PARENT_DATA_SET (e.g. "abcdef.fffe.123456").
+    # Empty when role==grandmaster (we ARE the GM, nothing to report) or
+    # when the BMCA hasn't elected one yet. For a slave node this is the
+    # ID of whoever Phonon is syncing TO.
+    grandmaster_id: str = ""
+    # Convenience: "self" if we're the GM, "<id>" if we're tracking a remote,
+    # "—" if BMCA pending. UI displays this directly.
+    grandmaster_label: str = ""
 
 
 PTP4L_BINS = ("/usr/sbin/ptp4l", "/usr/bin/ptp4l")
@@ -150,6 +158,45 @@ async def _query_pmc_state() -> tuple[str, int | None]:
         except TimeoutError:
             proc2.kill()
     return role, offset_ns
+
+
+async def _query_pmc_parent() -> str:
+    """Query `pmc GET PARENT_DATA_SET` and extract the grandmaster identity.
+
+    Output of pmc on parent dataset includes (among others):
+        gm.ClockIdentity        abcdef.fffe.123456
+        grandmasterIdentity     abcdef.fffe.123456
+    Different ptp4l versions use slightly different keys — try both. The
+    clock identity is 8 hex bytes formatted as `XXXX.XXXX.XXXXXXXX` or
+    a dotted variant; we normalize to lowercase with dots for display.
+
+    Empty string if pmc fails or we're not running ptp4l.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "sudo",
+        "-n",
+        "/usr/local/sbin/phonon-ptp-query",
+        "parent",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except TimeoutError:
+        proc.kill()
+        return ""
+    if proc.returncode != 0:
+        return ""
+    text = out.decode(errors="ignore")
+    # Try the canonical key first ('grandmasterIdentity') then a couple of
+    # alternates that ptp4l emits depending on the build. The value is a
+    # ClockIdentity (8 bytes), formatted by ptp4l as XX:XX:XX.FF:FE.XX:XX:XX
+    # or XXXX.XXXX.XXXXXXXX. Capture the whole token after the key.
+    for key in ("grandmasterIdentity", "gm.ClockIdentity", "clockIdentity"):
+        m = re.search(rf"{key}\s+(\S+)", text)
+        if m:
+            return m.group(1).lower()
+    return ""
 
 
 async def _read_journal_state() -> tuple[str, int | None]:
@@ -375,6 +422,18 @@ async def ptp_status() -> PtpStatus:
     via_unit = await _service_active(PTP4L_SERVICE)
     iface = await _ptp4l_interface()
 
+    # Grandmaster identity — only meaningful for a slave (we're tracking
+    # someone) or listening (BMCA in progress). When we're the GM ourselves,
+    # the parent dataset reports our own clockId; rather than expose that
+    # confusing detail we just say "self" so the UI is unambiguous.
+    gm_id = ""
+    gm_label = ""
+    if role == "grandmaster":
+        gm_label = "self"
+    elif role in ("slave", "listening"):
+        gm_id = await _query_pmc_parent()
+        gm_label = gm_id if gm_id else "—"
+
     if via_unit:
         note = "managed by phonon-ptp4l.service"
         # Detect mismatch between Settings and reality
@@ -393,4 +452,6 @@ async def ptp_status() -> PtpStatus:
         interface=iface,
         profile=cfg.profile,
         note=note,
+        grandmaster_id=gm_id,
+        grandmaster_label=gm_label,
     )

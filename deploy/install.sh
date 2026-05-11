@@ -421,6 +421,7 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-reset
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-list-bonds
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query port
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query current
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query parent
 # System-instance services controllable from the UI's System panel
 # (start/stop/restart only — the daemon doesn't need to enable/disable).
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *
@@ -536,7 +537,7 @@ fi
 if [ -f "${REPO_ROOT}/deploy/ptp-query.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/ptp-query.sh"
     ln -sf "${REPO_ROOT}/deploy/ptp-query.sh" /usr/local/sbin/phonon-ptp-query
-    echo "  PTP query wrapper wired (sudo phonon-ptp-query port|current available)"
+    echo "  PTP query wrapper wired (sudo phonon-ptp-query port|current|parent available)"
 fi
 
 # Disable rival PipeWire stacks for non-phonon users. Two pipewire+

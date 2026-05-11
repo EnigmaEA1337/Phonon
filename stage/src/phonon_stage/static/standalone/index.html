@@ -2158,6 +2158,11 @@ function renderPtpStatus(p) {
       </div>
       ${p.interface ? `<div style="color:var(--text-dim)">iface: ${p.interface}</div>` : ''}
       ${p.profile ? `<div style="color:var(--text-dim)">profile: ${p.profile}</div>` : ''}
+      ${p.grandmaster_label ? `
+        <div style="display:flex;align-items:center;gap:4px;color:var(--text-dim)" title="${p.grandmaster_id ? 'PTP grandmaster clock identity (from PARENT_DATA_SET)' : 'Grandmaster: self — this Stage is the GM'}">
+          <span>GM:</span>
+          <span style="color:${p.grandmaster_label === 'self' ? 'var(--magenta)' : p.grandmaster_label === '—' ? 'var(--text-fade)' : 'var(--cyan)'};font-weight:600;font-family:var(--font-m)">${p.grandmaster_label}</span>
+        </div>` : ''}
       <div style="flex:1"></div>
       <div style="color:var(--text-fade);font-size:9px;font-style:italic">${p.note || ''}</div>
     </div>

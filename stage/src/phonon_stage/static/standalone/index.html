@@ -280,7 +280,37 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .dsp-panel-empty { color: var(--text-fade); font-size: 11px; padding: 20px;
   display: flex; align-items: center; justify-content: center; font-style: italic; }
 
-.dsp-controls { display: flex; flex-wrap: wrap; gap: 10px; align-content: flex-start; }
+.dsp-controls { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; align-items: stretch; }
+
+/* Plugin sections — match the LSP native layout (Signal / Samples /
+   Distance / Time / Monitoring etc.). The catalogue layout map
+   declares which controls live in each group. Sections that the
+   plugin's Mode points to get an `.active` highlight so the
+   operator sees which delay-mode is currently driving the chain. */
+.dsp-group { display: flex; flex-direction: column; gap: 4px;
+  padding: 4px 6px 6px; min-width: 0;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 3px; }
+.dsp-group-head { font-family: var(--font-m); font-size: 9px;
+  color: var(--text-fade); text-transform: uppercase; letter-spacing: 0.5px;
+  padding-bottom: 2px; border-bottom: 1px solid var(--border); }
+.dsp-group.active { background: rgba(6,182,212,0.08); border-color: var(--cyan); }
+.dsp-group.active .dsp-group-head { color: var(--cyan); }
+.dsp-group-body { display: flex; gap: 6px; align-items: flex-start; }
+.dsp-group .dsp-control { background: transparent; border: none; padding: 2px 0; min-width: 78px; }
+
+/* Monitoring section — read-only numeric displays for the plugin's
+   output control ports. Values computed client-side from current
+   inputs (Mode + the chosen unit). The Cryogenic-style cyan numeric
+   readout echoes the LSP native UI. */
+.dsp-monitor { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px 6px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 3px;
+  min-width: 130px; }
+.dsp-monitor .dsp-monitor-row { display: flex; justify-content: space-between;
+  align-items: baseline; gap: 8px; }
+.dsp-monitor .dsp-monitor-label { font-family: var(--font-m); font-size: 9px;
+  color: var(--text-fade); }
+.dsp-monitor .dsp-monitor-value { font-family: var(--font-m); font-size: 14px;
+  font-weight: 700; color: var(--cyan); letter-spacing: 0.5px; }
 .dsp-control { display: flex; flex-direction: column; gap: 3px;
   min-width: 90px; padding: 6px 8px;
   background: var(--bg-2); border: 1px solid var(--border); border-radius: 3px; }
@@ -1342,14 +1372,136 @@ async function renderDspPanel() {
       <button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>
     </div>
   </div>`;
-  const controlsHtml = inputControls.map(c =>
-    renderDspControl(out.id, c, out.insert.controls[c.name])
-  ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
-  // IN VU sits at the head of the controls row (logically grouped
-  // with the knobs that affect it); OUT VU stays on the far right
-  // as the chain's exit point.
-  panel.innerHTML = meta + `<div class="dsp-controls">${inSide}${controlsHtml}</div>` + outSide;
+  const layout = PLUGIN_LAYOUTS[out.insert.label];
+  let bodyHtml;
+  if (layout) {
+    // Grouped layout — mirror the LSP native UI's sections so the
+    // operator sees what they're used to. The control schema is
+    // still the source of truth (defaults, ranges, hints); the
+    // layout only decides arrangement.
+    const schemaByName = Object.fromEntries(
+      (schema.controls || []).map(c => [c.name, c])
+    );
+    const groupsHtml = (layout.groups || []).map(g =>
+      renderDspGroup(out.id, g, schemaByName, out.insert.controls)
+    ).join('');
+    const monitorHtml = renderDspMonitoring(layout, out.insert.controls);
+    bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}</div>`;
+  } else {
+    // Fallback for plugins without a layout map — flat row of knobs.
+    const controlsHtml = inputControls.map(c =>
+      renderDspControl(out.id, c, out.insert.controls[c.name])
+    ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
+    bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}</div>`;
+  }
+  panel.innerHTML = meta + bodyHtml + outSide;
 }
+
+// Render one named section of a plugin (e.g. Signal, Distance...).
+// Highlights the group when Mode points at it (LSP convention).
+function renderDspGroup(outputId, group, schemaByName, values) {
+  let activeCls = '';
+  if (group.activeWhen) {
+    const cur = values[group.activeWhen.control];
+    if (cur !== undefined && Math.round(cur) === group.activeWhen.value) {
+      activeCls = ' active';
+    }
+  }
+  const knobs = group.controls.map(name => {
+    const c = schemaByName[name];
+    if (!c) return '';
+    return renderDspControl(outputId, c, values[name]);
+  }).join('');
+  return `<div class="dsp-group${activeCls}">
+    <div class="dsp-group-head">${escapeHtml(group.name)}</div>
+    <div class="dsp-group-body">${knobs}</div>
+  </div>`;
+}
+
+// Monitoring block — read-only computed values mirroring the plugin's
+// output control ports. Calculation is plugin-specific and lives in
+// the layout's `computeMonitoring(values)` callback.
+function renderDspMonitoring(layout, values) {
+  if (!layout.monitoring || !layout.computeMonitoring) return '';
+  let computed;
+  try { computed = layout.computeMonitoring(values); }
+  catch { computed = {}; }
+  const rows = layout.monitoring.map(m => {
+    const v = computed[m.formula];
+    const txt = (v === undefined || v === null || Number.isNaN(v))
+      ? '—'
+      : (m.digits === 0 ? String(Math.round(v)) : Number(v).toFixed(m.digits ?? 2));
+    return `<div class="dsp-monitor-row">
+      <span class="dsp-monitor-label">${escapeHtml(m.label)}</span>
+      <span class="dsp-monitor-value">${escapeHtml(txt)}</span>
+    </div>`;
+  }).join('');
+  return `<div class="dsp-monitor">
+    <div class="dsp-group-head">Monitoring</div>
+    ${rows}
+  </div>`;
+}
+
+// Hardcoded layout map for plugins whose LADSPA descriptor doesn't
+// declare grouping (LADSPA never does — LV2 does, but PW 1.6.2 here
+// lacks LV2 support). For each plugin we mirror the native UI's
+// section breakdown so the operator sees something familiar. Plugins
+// not in this map fall back to the flat row of knobs.
+const PLUGIN_LAYOUTS = {
+  "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo": {
+    groups: [
+      {
+        name: "Signal",
+        controls: ["Dry amount (G)", "Wet amount (G)", "Dry/Wet balance (%)"],
+      },
+      // Each delay-mode group lights up when Mode points at it.
+      // LSP Mode values: 0 = Samples, 1 = Distance, 2 = Time.
+      { name: "Samples",  controls: ["Samples (samp)"], activeWhen: { control: "Mode", value: 0 } },
+      { name: "Distance", controls: ["Meters (m)", "Centimeters (cm)", "Temperature (°C)"], activeWhen: { control: "Mode", value: 1 } },
+      { name: "Time",     controls: ["Time (ms)"], activeWhen: { control: "Mode", value: 2 } },
+      { name: "Switches", controls: ["Mode", "Ramping", "Bypass"] },
+      { name: "Phase",    controls: ["Phase Invert Left", "Phase Invert Right"] },
+      { name: "Output",   controls: ["Output gain (G)"] },
+    ],
+    // Read-only output ports that mirror what the plugin currently
+    // computes — same idea as LSP's Monitoring section. Values are
+    // derived client-side from the input controls (Mode + the
+    // active unit's value) so we don't need to poll PW node params.
+    monitoring: [
+      { label: "Time (ms)",      formula: "time_ms",       digits: 2 },
+      { label: "Samples (samp)", formula: "samples",       digits: 0 },
+      { label: "Distance (cm)",  formula: "distance_cm",   digits: 1 },
+    ],
+    computeMonitoring(values) {
+      // LSP's comp_delay_stereo: Mode picks which input drives the
+      // delay; the other two units are derived. We mirror that.
+      // Speed of sound c(T) ≈ 331.4 + 0.6·T m/s (good to <0.1% in
+      // the operator-relevant 0-40°C window).
+      const SR = 48000;
+      const mode = Math.round(values["Mode"] ?? 0);
+      const tempC = values["Temperature (°C)"] ?? 20;
+      const c_m_s = 331.4 + 0.6 * tempC;
+      const c_cm_per_ms = c_m_s * 100 / 1000;  // cm per millisecond
+      let time_ms;
+      if (mode === 0) {
+        const samples = values["Samples (samp)"] ?? 0;
+        time_ms = samples * 1000 / SR;
+      } else if (mode === 1) {
+        const m  = values["Meters (m)"] ?? 0;
+        const cm = values["Centimeters (cm)"] ?? 0;
+        const total_cm = m * 100 + cm;
+        time_ms = c_cm_per_ms > 0 ? total_cm / c_cm_per_ms : 0;
+      } else {
+        time_ms = values["Time (ms)"] ?? 0;
+      }
+      return {
+        time_ms,
+        samples:     time_ms * SR / 1000,
+        distance_cm: time_ms * c_cm_per_ms,
+      };
+    },
+  },
+};
 
 // Render one IN or OUT meter block — label + L/R vertical bars.
 // `vuSource` is the PW node name the WS levels loop is sending peak

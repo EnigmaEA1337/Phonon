@@ -264,11 +264,19 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip-orphan-side .strip-orphan-banner { font-family: var(--font-m); font-size: 8px;
   color: var(--yellow); letter-spacing: 0.5px; font-weight: 700; }
 
-/* Knob */
-.knob-wrap { position: relative; width: 40px; height: 40px; cursor: pointer; touch-action: none; }
-.knob-svg { width: 100%; height: 100%; }
-.knob-val { font-family: var(--font-m); font-size: 8px; color: var(--text-mid);
-  text-align: center; margin-top: 1px; }
+/* Delay numeric input (replaces the rotary knob — operator can type
+   precise values like 240 ms, far more usable on a 0-600 ms range
+   than drag-rotate on a 40 px knob). */
+.delay-input-wrap { display: flex; align-items: center; justify-content: center;
+  gap: 2px; width: 100%; height: 28px; }
+.delay-input { width: 44px; padding: 2px 4px; font-family: var(--font-m); font-size: 10px;
+  text-align: right; background: var(--bg-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px; outline: none;
+  -moz-appearance: textfield; }
+.delay-input::-webkit-outer-spin-button,
+.delay-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.delay-input:focus { border-color: var(--cyan); }
+.delay-unit { color: var(--text-fade); font-family: var(--font-m); font-size: 9px; }
 
 /* Vertical Fader */
 .fader-area { display: flex; gap: 2px; align-items: flex-end; height: 160px; }
@@ -1112,8 +1120,6 @@ function renderMappings(mappings) {
   // tight range so slider granularity is ~0.1 dB / px instead of the
   // previous ~0.7 dB / px. For full silence use the M (mute) button.
   const dbToY = (db) => faderDbToY(db);
-  // Knob angle: map 0-600 ms to 0-270 degrees of dial sweep.
-  const delayToAngle = (ms) => Math.min(ms / 600, 1) * 270;
 
   el.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:4px 0">' +
     mappings.map(m => {
@@ -1135,20 +1141,6 @@ function renderMappings(mappings) {
                    : 'var(--text-fade)';
     const delayVal = (m.delay_ms || 0).toFixed(1);
     const faderY = dbToY(m.gain_db);
-    const knobAngle = delayToAngle(m.delay_ms || 0);
-
-    // SVG knob
-    const knobR = 15, knobCx = 20, knobCy = 20;
-    const startAngle = 135, endAngle = startAngle + knobAngle;
-    const toRad = a => (a - 90) * Math.PI / 180;
-    const arcEnd = { x: knobCx + knobR * Math.cos(toRad(endAngle)), y: knobCy + knobR * Math.sin(toRad(endAngle)) };
-    const largeArc = knobAngle > 180 ? 1 : 0;
-    const arcStart = { x: knobCx + knobR * Math.cos(toRad(startAngle)), y: knobCy + knobR * Math.sin(toRad(startAngle)) };
-    const knobPath = knobAngle > 0.5 ? `M${arcStart.x},${arcStart.y} A${knobR},${knobR} 0 ${largeArc} 1 ${arcEnd.x},${arcEnd.y}` : '';
-    // Indicator dot
-    const dotAngle = toRad(endAngle);
-    const dotX = knobCx + (knobR - 4) * Math.cos(dotAngle);
-    const dotY = knobCy + (knobR - 4) * Math.sin(dotAngle);
 
     // Orphan strips are rendered in a dedicated section, not inline here
     return `<div class="strip" data-mapping-id="${m.id}" data-active="${hasLinks}" data-gain="${m.gain_db}">
@@ -1161,16 +1153,14 @@ function renderMappings(mappings) {
       <div class="strip-name" title="${srcName} → ${sinkName}">▶ ${srcName}</div>
       <div class="strip-route" title="${sinkName}">◀ ${sinkName}</div>
 
-      <!-- Delay Knob -->
-      <div class="knob-wrap" data-mapping="${m.id}" data-param="delay" data-value="${delayVal}">
-        <svg class="knob-svg" viewBox="0 0 40 40">
-          <circle cx="${knobCx}" cy="${knobCy}" r="${knobR}" fill="none" stroke="#1a2230" stroke-width="3"/>
-          ${knobPath ? `<path d="${knobPath}" fill="none" stroke="var(--cyan)" stroke-width="3" stroke-linecap="round"/>` : ''}
-          <circle cx="${knobCx}" cy="${knobCy}" r="8" fill="#1a2230" stroke="#2a3850" stroke-width="1"/>
-          <circle cx="${dotX}" cy="${dotY}" r="2" fill="var(--text)"/>
-        </svg>
+      <!-- Delay numeric input (0-600 ms, step 0.5) -->
+      <div class="delay-input-wrap" title="Delay 0-600 ms — type a value, scroll, or use arrow keys">
+        <input type="number" class="delay-input" id="dv-${m.id}"
+               min="0" max="600" step="0.5" value="${delayVal}"
+               oninput="updateDelay('${m.id}', this.value)"
+               onkeydown="event.stopPropagation()">
+        <span class="delay-unit">ms</span>
       </div>
-      <div class="knob-val" id="dv-${m.id}">${delayVal}ms</div>
 
       <!-- VU L + VU R + Fader + ticks -->
       <div class="fader-area">
@@ -1192,9 +1182,10 @@ function renderMappings(mappings) {
     </div>`;
   }).join('') + '</div>';
 
-  // Setup fader drag handlers
+  // Setup fader drag handlers. The delay knob has been replaced by a
+  // numeric input — operator types the value directly. No setup needed,
+  // the <input>'s native scroll-wheel + arrow-key handling does the job.
   el.querySelectorAll('.fader-col').forEach(setupFaderDrag);
-  el.querySelectorAll('.knob-wrap').forEach(setupKnobDrag);
 }
 
 // Two-segment fader curve. Top 80% of travel = fine trim 0 → -12 dB
@@ -1286,69 +1277,6 @@ function setupFaderDrag(faderEl) {
   faderEl.title = 'Gain (dB) — drag, scroll, shift+drag for fine, double-click for 0 dB';
 }
 
-function setupKnobDrag(knobEl) {
-  // DAW-style knob — delay range 0-600 ms (covers ~200 m of room
-  // alignment, way more than the original 50 ms ceiling that was
-  // useless beyond same-pièce stereo). Sensitivities rescaled so the
-  // gestures stay usable across the bigger range:
-  //   * drag         : 1.5 ms / px → 400 px to sweep 0-600 (normal)
-  //   * shift+drag   : 0.3 ms / px → 5× finer (fine)
-  //   * scroll wheel : 5 ms / tick (1 ms with shift)
-  //   * double-click : reset to 0 ms
-  //   * step quantified at 0.5 ms (no point in sub-ms over this range)
-  const mid = knobEl.dataset.mapping;
-  const MIN = 0, MAX = 600;
-  let dragging = false, startY = 0, startVal = 0, shiftHeld = false;
-
-  // Quantize to 0.5 ms — finer than human ear can resolve over a
-  // gain mix, removes accidental jitter from drag/scroll input.
-  const clamp = (v) => Math.round(Math.max(MIN, Math.min(MAX, v)) * 2) / 2;
-  const apply = (val) => {
-    val = clamp(val);
-    knobEl.dataset.value = val.toFixed(1);
-    const dvEl = document.getElementById('dv-' + mid);
-    if (dvEl) dvEl.textContent = val.toFixed(1) + ' ms';
-    updateDelay(mid, val.toFixed(1));
-  };
-
-  const onDown = (e) => {
-    dragging = true;
-    startY = e.touches ? e.touches[0].clientY : e.clientY;
-    startVal = parseFloat(knobEl.dataset.value) || 0;
-    shiftHeld = !!(e.shiftKey);
-    e.preventDefault();
-  };
-  const onMove = (e) => {
-    if (!dragging) return;
-    const y = e.touches ? e.touches[0].clientY : e.clientY;
-    const sensitivity = (e.shiftKey || shiftHeld) ? 0.3 : 1.5;
-    const delta = (startY - y) * sensitivity;
-    apply(startVal + delta);
-    e.preventDefault();
-  };
-  const onUp = () => { dragging = false; };
-  const onWheel = (e) => {
-    e.preventDefault();
-    const step = e.shiftKey ? 1.0 : 5.0;
-    const cur = parseFloat(knobEl.dataset.value) || 0;
-    apply(cur + (e.deltaY < 0 ? step : -step));
-  };
-  const onDblClick = (e) => {
-    e.preventDefault();
-    apply(0);
-  };
-
-  knobEl.addEventListener('mousedown', onDown);
-  knobEl.addEventListener('touchstart', onDown, {passive: false});
-  knobEl.addEventListener('wheel', onWheel, {passive: false});
-  knobEl.addEventListener('dblclick', onDblClick);
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('touchmove', onMove, {passive: false});
-  window.addEventListener('mouseup', onUp);
-  window.addEventListener('touchend', onUp);
-  knobEl.title = 'Delay 0-600 ms — drag (1.5 ms/px), shift+drag (0.3 ms/px), scroll (5 ms/tick), double-click resets';
-}
-
 let gainTimeout = {};
 function updateGain(id, val) {
   document.getElementById('gv-' + id).textContent = parseFloat(val).toFixed(1) + ' dB';
@@ -1361,12 +1289,15 @@ function updateGain(id, val) {
 
 let delayTimeout = {};
 function updateDelay(id, val) {
-  document.getElementById('dv-' + id).textContent = parseFloat(val).toFixed(1) + ' ms';
+  // dv-<id> is now an <input>, not a span — its .value drives the display
+  // and is set directly by the user. We only debounce the API PATCH so
+  // PipeWire isn't hammered while the user is typing.
+  const num = Math.max(0, Math.min(600, parseFloat(val) || 0));
   clearTimeout(delayTimeout[id]);
   delayTimeout[id] = setTimeout(() => {
     api('/mappings/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ delay_ms: parseFloat(val) }) });
-  }, 200);
+      body: JSON.stringify({ delay_ms: num }) });
+  }, 300);
 }
 
 async function toggleMute(id, mute) {

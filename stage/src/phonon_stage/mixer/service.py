@@ -28,6 +28,7 @@ Volumes and mutes:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 import uuid
@@ -342,26 +343,55 @@ class MixerService:
 
     async def _rebuild_output_loopback(self, output: Output) -> None:
         """Targeted unload + reload of a single output's master loopback.
-        Other outputs/links are untouched, so they keep playing while
-        this one has a brief (~50 ms) gap as pactl swaps the module."""
+        Other outputs/links are untouched.
+
+        Click-masking: unloading a pactl module-loopback drains its
+        buffer instantly, producing an audible click on the
+        destination sink (witnessed live as "petit bruit strident").
+        We pre-mute the sink, wait one tick for the last buffer cycle
+        to flush, swap the loopback, wait for the new one to fill,
+        then restore the sink's volume. Net effect: a ~80 ms silence
+        dip on this output during a delay change, but no click."""
         try:
             modules = await self._pw.list_loopback_modules()
         except Exception:
             return
         master_src = f"source={MASTER_SINK_NAME}.monitor"
         sink_match = f"sink={output.sink_node_name}"
-        for mid, args in modules.items():
-            if master_src in args and sink_match in args:
-                try:
-                    await self._pw.unload_module(mid)
-                except Exception:
-                    continue
-                if mid in self._owned_loopbacks:
-                    self._owned_loopbacks.remove(mid)
-        # Reload only if this output should still be hearing the master.
-        src_solo_active = any(s.solo and not s.mute for s in self._store.state.sources)
-        # If the output is muted, solo-silenced, or master-muted, no
-        # need to load a fresh loopback — its role is silent for now.
+        to_unload = [
+            mid
+            for mid, args in modules.items()
+            if master_src in args and sink_match in args
+        ]
+
+        # Pre-mute the destination sink so the impending unload's
+        # buffer-drain click doesn't make it to the speakers.
+        muted_for_swap = False
+        if to_unload:
+            try:
+                await self._pw.set_node_channel_volumes(
+                    output.sink_node_name, [0.0, 0.0]
+                )
+                muted_for_swap = True
+                # Give the last audio buffer ~30 ms to flush through
+                # ALSA before the loopback disappears. Empirically
+                # enough on USB Audio (DG60) at 48 kHz with the
+                # default quantum.
+                await asyncio.sleep(0.030)
+            except Exception:
+                # Best-effort: if the pre-mute fails (sink missing,
+                # pactl unreachable) we proceed anyway. User hears
+                # the click rather than the operation failing.
+                pass
+
+        for mid in to_unload:
+            try:
+                await self._pw.unload_module(mid)
+            except Exception:
+                continue
+            if mid in self._owned_loopbacks:
+                self._owned_loopbacks.remove(mid)
+
         out_solo_active = any(o.solo and not o.mute for o in self._store.state.outputs)
         if (
             output.receives_master
@@ -376,9 +406,26 @@ class MixerService:
             )
             if new_mid is not None:
                 self._owned_loopbacks.append(new_mid)
-        # src_solo_active unused here but threading it through keeps
-        # the local scope coherent with the rest of the reconcile.
-        _ = src_solo_active
+
+        # Let the new loopback prime its buffer before un-muting so
+        # the audio comes back cleanly, not mid-frame.
+        if muted_for_swap:
+            await asyncio.sleep(0.030)
+            lin = self._db_to_linear(output.gain_db)
+            try:
+                await self._pw.set_node_channel_volumes(
+                    output.sink_node_name,
+                    [
+                        0.0 if output.mute_left else lin,
+                        0.0 if output.mute_right else lin,
+                    ],
+                )
+            except Exception:
+                logger.warning(
+                    "mixer.swap_volume_restore_failed",
+                    output_id=output.id,
+                    exc_info=True,
+                )
 
     async def remove_output(self, output_id: str) -> None:
         # Validate existence first.

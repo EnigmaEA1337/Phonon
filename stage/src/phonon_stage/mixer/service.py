@@ -457,6 +457,22 @@ class MixerService:
         await self._reconcile()
         return new
 
+    async def _introspect_control_exists(
+        self, backend: str, library: str, label: str, control_name: str
+    ) -> bool:
+        """Best-effort check whether a control with `control_name` is
+        declared by the plugin's LADSPA descriptor. Returns False if
+        we have no introspector wired (Pi Stages) or the plugin is
+        unknown — in which case the caller falls back to the strict
+        "unknown control" error."""
+        if self._introspector is None or backend != "ladspa":
+            return False
+        try:
+            desc = await self._introspector.describe(library, label)
+        except Exception:
+            return False
+        return any(c.name == control_name for c in desc.controls)
+
     async def _introspect_defaults(
         self, backend: str, library: str, label: str
     ) -> dict[str, float]:
@@ -518,11 +534,21 @@ class MixerService:
             msg = f"output {output_id} has no plugin insert"
             raise MixerError(msg)
         if control_name not in cur.insert.controls:
-            msg = (
-                f"unknown control {control_name!r} on output {output_id}'s "
-                f"insert {cur.insert.label!r}"
+            # Auto-heal: if introspection had failed at the time the
+            # plugin was first attached, insert.controls is empty (or
+            # partial). Reconsult the introspector now — if the
+            # control IS valid for this plugin, accept the write and
+            # let it land in the dict. The first user move silently
+            # rebuilds the missing defaults.
+            valid = await self._introspect_control_exists(
+                cur.insert.backend, cur.insert.library, cur.insert.label, control_name
             )
-            raise MixerError(msg)
+            if not valid:
+                msg = (
+                    f"unknown control {control_name!r} on output {output_id}'s "
+                    f"insert {cur.insert.label!r}"
+                )
+                raise MixerError(msg)
         new_controls = dict(cur.insert.controls)
         new_controls[control_name] = float(value)
         new_insert = replace(cur.insert, controls=new_controls)

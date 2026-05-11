@@ -1738,13 +1738,16 @@ function knobDenormalise(norm, min, max, logarithmic, integer) {
 }
 
 // Compute the SVG `d` for the filled-arc portion of the knob. The
-// arc starts at -135° (lower-left) and sweeps through `norm * 270°`
-// going clockwise.
+// arc starts at bottom-left and sweeps clockwise through the top
+// for `norm * 270°` so the gap of the dial sits at the bottom —
+// matches the track's rotate(135) offset and the tick's rotation.
+// Math angle 135° = bottom-left in SVG (y-down) — using -135° put
+// the arc start at top-left, offsetting it 90° vs the track.
 function knobArcPath(norm) {
   if (norm <= 0) return '';
   const cx = 21, cy = 21, r = 17;
-  const startA = -135 * Math.PI / 180;
-  const endA   = (-135 + 270 * norm) * Math.PI / 180;
+  const startA = 135 * Math.PI / 180;
+  const endA   = (135 + 270 * norm) * Math.PI / 180;
   const x1 = cx + r * Math.cos(startA);
   const y1 = cy + r * Math.sin(startA);
   const x2 = cx + r * Math.cos(endA);

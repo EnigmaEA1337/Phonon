@@ -246,6 +246,59 @@ class TestMappingLoopbackDelay:
         assert first_module in fake_pw.unloaded_modules
         assert fake_pw.loopbacks[updated.loopback_module_id][2] == 300
 
+    async def test_mute_delayed_mapping_unloads_loopback(
+        self, mapping_service: MappingService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Muting a delayed mapping must unload its loopback module —
+        otherwise the loopback keeps buffering and the audio carries
+        on playing despite the mute toggle being on. Witnessed live
+        on the 3070: user pressed mute on a 115 ms mapping and heard
+        no change."""
+        m = await mapping_service.create_mapping(
+            source_node_id=31,
+            source_port_ids=[42],
+            sink_node_id=32,
+            sink_port_ids=[44],
+            delay_ms=100.0,
+        )
+        first_module = m.loopback_module_id
+        assert first_module is not None
+        assert len(fake_pw.loopbacks) == 1
+
+        muted = await mapping_service.update_mapping(m.id, mute=True)
+        assert muted.mute is True
+        assert muted.loopback_module_id is None
+        assert first_module in fake_pw.unloaded_modules
+        assert len(fake_pw.loopbacks) == 0
+
+    async def test_unmute_delayed_mapping_reloads_loopback_not_links(
+        self, mapping_service: MappingService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Unmuting must restore the original transport: a delayed
+        mapping comes back as a loopback (with the stored delay), not
+        as direct pw-links. The original mute/unmute code silently
+        swapped the transport on every cycle, which dropped the delay
+        and broke codec-latency compensation."""
+        m = await mapping_service.create_mapping(
+            source_node_id=31,
+            source_port_ids=[42, 43],
+            sink_node_id=32,
+            sink_port_ids=[44, 45],
+            delay_ms=120.0,
+        )
+        await mapping_service.update_mapping(m.id, mute=True)
+        assert len(fake_pw.loopbacks) == 0
+
+        unmuted = await mapping_service.update_mapping(m.id, mute=False)
+        assert unmuted.mute is False
+        assert unmuted.delay_ms == 120.0
+        assert unmuted.loopback_module_id is not None
+        assert unmuted.link_ids == []  # No direct links — loopback only.
+        assert len(fake_pw.loopbacks) == 1
+        # And it has the original latency.
+        (_src, _sink, lat) = next(iter(fake_pw.loopbacks.values()))
+        assert lat == 120
+
     async def test_delete_unloads_loopback(
         self, mapping_service: MappingService, fake_pw: FakePipeWireBackend
     ) -> None:

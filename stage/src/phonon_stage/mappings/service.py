@@ -193,21 +193,48 @@ class MappingService:
             updates["pan"] = pan
 
         if mute is not None and mute != mapping.mute:
+            # Tear down whichever transport is live: direct pw-links
+            # (delay==0) AND/OR module-loopback (delay>0). The mute
+            # path used to handle only link_ids, which silently left
+            # a delayed mapping audible because its loopback kept
+            # running.
+            for link_id in mapping.link_ids:
+                with contextlib.suppress(Exception):
+                    await self._pw.destroy_link(link_id)
+            if mapping.loopback_module_id is not None:
+                with contextlib.suppress(Exception):
+                    await self._pw.unload_module(mapping.loopback_module_id)
+
             if mute:
-                # Muting: destroy links
-                for link_id in mapping.link_ids:
-                    try:
-                        await self._pw.destroy_link(link_id)
-                    except Exception:
-                        logger.warning("mapping.mute_destroy_failed", link_id=link_id)
                 updates["link_ids"] = []
+                updates["loopback_module_id"] = None
                 updates["mute"] = True
             else:
-                # Unmuting: recreate links
-                new_link_ids = await self._create_links(
-                    mapping.source_port_ids, mapping.sink_port_ids
-                )
-                updates["link_ids"] = new_link_ids
+                # Unmuting: rebuild whichever transport matches the
+                # stored delay_ms. The original code always recreated
+                # direct pw-links here, which silently dropped the
+                # delay on a delayed mapping after a mute/unmute cycle.
+                if mapping.delay_ms > 0 and mapping.source_node_name and mapping.sink_node_name:
+                    nodes = await self._pw.list_nodes()
+                    src_node = next(
+                        (n for n in nodes if n.id == mapping.source_node_id),
+                        None,
+                    )
+                    src_is_sink = bool(src_node and "Sink" in src_node.media_class)
+                    new_loopback_id = await self._load_loopback_for(
+                        mapping.source_node_name,
+                        mapping.sink_node_name,
+                        src_is_sink,
+                        int(mapping.delay_ms),
+                    )
+                    updates["link_ids"] = []
+                    updates["loopback_module_id"] = new_loopback_id
+                else:
+                    new_link_ids = await self._create_links(
+                        mapping.source_port_ids, mapping.sink_port_ids
+                    )
+                    updates["link_ids"] = new_link_ids
+                    updates["loopback_module_id"] = None
                 updates["mute"] = False
 
         updated = self._store.update(mapping_id, **updates)
@@ -234,7 +261,7 @@ class MappingService:
                         exc_info=True,
                     )
 
-            new_loopback_id: int | None = None
+            new_loopback_id = None
             new_link_ids = list(updated.link_ids)
 
             if not updated.mute:

@@ -521,10 +521,15 @@ async def create_bridge(
         #   * pacat --latency-msec is the target stream latency, which on
         #     Pi 3 needs at least 4x the bluealsa frame interval to ride
         #     out scheduling jitter. 50 ms == 2 BT frames, too short.
-        #     200 ms is comfortable and still well within human-acceptable
-        #     monitoring latency for our use case (mostly distributed
-        #     reinforcement, not live monitoring of self).
-        pacat_latency_ms = max(eff["period_ms"], 200)
+        #     500 ms — bumped from 200 after metallic resampling artifacts
+        #     showed up on the 3070 when a DG60 sink (hardware-locked at
+        #     48 kHz) ran on the direct-pw-link path: ERR=484 over 2 min
+        #     of playback because the 44.1→48 kHz resample didn't have
+        #     enough upstream buffer to ride out USB scheduling jitter.
+        #     500 ms gives the resampler comfortable headroom; still well
+        #     under any human-noticeable monitoring lag for distributed
+        #     reinforcement (the only use case where this chain matters).
+        pacat_latency_ms = max(eff["period_ms"], 500)
         arecord_buf_frames = period_frames * 4
         bridge_cmd = (
             f"while true; do "

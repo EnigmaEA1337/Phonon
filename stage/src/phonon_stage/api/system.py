@@ -216,11 +216,27 @@ async def system_status(request: Request) -> SystemStatusResponse:
             pass
 
     kernel_release = platform.release()
-    # Two signals trigger "lowlatency": the Ubuntu/Debian convention of
-    # naming the package's kernel image `*-lowlatency`, and the
-    # PREEMPT_RT variant (full real-time, used by audio-pro distros).
-    # Both deliver the scheduling guarantees Phonon benefits from.
+    # Three signals can trigger "lowlatency" — covers every Ubuntu / Debian
+    # variant Phonon ships on:
+    #   1. uname -r contains 'lowlatency' (classic, 22.04 & 24.04 ship a
+    #      separate linux-image-*-lowlatency package — the name itself is
+    #      proof)
+    #   2. uname -r contains 'preempt_rt' (the RT kernel family, e.g.
+    #      Ubuntu Studio's real-time variant or hand-built kernels)
+    #   3. /proc/cmdline contains 'preempt=full' (Ubuntu 26.04+ unified
+    #      approach: the lowlatency-kernel package no longer ships a
+    #      separate image, it just appends `preempt=full rcu_nocbs=all`
+    #      to GRUB and the generic kernel runs in full-preempt mode at
+    #      boot. CONFIG_PREEMPT_DYNAMIC=y in the generic build makes this
+    #      switchable.)
     kernel_ll = "lowlatency" in kernel_release.lower() or "preempt_rt" in kernel_release.lower()
+    if not kernel_ll:
+        try:
+            cmdline = Path("/proc/cmdline").read_text(errors="ignore")
+        except OSError:
+            cmdline = ""
+        if "preempt=full" in cmdline:
+            kernel_ll = True
 
     result = SystemStatusResponse(
         agent_version=__version__,

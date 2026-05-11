@@ -50,29 +50,48 @@ class MappingService:
         mute: bool = False,
         delay_ms: float = 0.0,
     ) -> Mapping:
-        """Create a new audio mapping with PipeWire links."""
+        """Create a new audio mapping.
+
+        Routing depends on delay_ms:
+          * 0 ms  : direct PipeWire pw-link from source ports → sink ports
+                    (zero-latency, the original path)
+          * >0 ms : load a `module-loopback` with `latency_msec=delay_ms`
+                    between source.<monitor> and sink. The loopback
+                    buffers the audio for the requested ms → real
+                    perceptible delay, as opposed to the
+                    `latencyOffsetNsec` scheduling hint which doesn't
+                    add buffering.
+        """
         validate_gain(gain_db)
 
         mapping_id = uuid.uuid4().hex[:8]
         link_ids: list[int] = []
+        loopback_id: int | None = None
 
-        if not mute:
-            link_ids = await self._create_links(source_port_ids, sink_port_ids)
-
-        # Apply volume and delay
-        if not mute:
-            volume = db_to_linear(gain_db)
-            await self._apply_volume(sink_node_id, volume, pan)
-        if delay_ms > 0:
-            await self._pw.set_node_latency_offset(sink_node_id, int(delay_ms * 1_000_000))
-
-        # Capture node names so we can re-resolve after a PW restart
+        # Capture node names so we can re-resolve after a PW restart, AND
+        # determine if the source is a sink (we'll need .monitor) or a
+        # real Audio/Source (direct name).
         nodes = await self._pw.list_nodes()
         node_by_id = {n.id: n for n in nodes}
         src_node = node_by_id.get(source_node_id)
         sink_node = node_by_id.get(sink_node_id)
         src_name = src_node.name if src_node else ""
         sink_name = sink_node.name if sink_node else ""
+        src_is_sink = bool(src_node and "Sink" in src_node.media_class)
+
+        if not mute:
+            if delay_ms > 0 and src_name and sink_name:
+                loopback_id = await self._load_loopback_for(
+                    src_name, sink_name, src_is_sink, int(delay_ms)
+                )
+            else:
+                link_ids = await self._create_links(source_port_ids, sink_port_ids)
+
+        # Apply volume on the sink. With a loopback in the path, the
+        # sink volume still controls the final loudness.
+        if not mute:
+            volume = db_to_linear(gain_db)
+            await self._apply_volume(sink_node_id, volume, pan)
 
         mapping = Mapping(
             id=mapping_id,
@@ -85,6 +104,7 @@ class MappingService:
             pan=pan,
             mute=mute,
             delay_ms=delay_ms,
+            loopback_module_id=loopback_id,
             created_at=self._clock.now().isoformat(),
             source_node_name=src_name,
             sink_node_name=sink_name,
@@ -92,12 +112,29 @@ class MappingService:
 
         self._store.add(mapping)
         logger.info(
-            "mapping.created", mapping_id=mapping_id, source=source_node_id, sink=sink_node_id
+            "mapping.created",
+            mapping_id=mapping_id,
+            source=source_node_id,
+            sink=sink_node_id,
+            delay_ms=delay_ms,
+            via="loopback" if loopback_id is not None else "pw-link",
         )
         return mapping
 
+    async def _load_loopback_for(
+        self, src_name: str, sink_name: str, src_is_sink: bool, latency_msec: int
+    ) -> int | None:
+        """Build the PA-style names and call the backend. Encapsulates the
+        `bt_X_in` (null-sink) vs `alsa_input.X` (real source) decision."""
+        # For null-sinks the readable side is the monitor port; for real
+        # capture sources (alsa_input.X, BT a2dp-sink exposed as source)
+        # the node name itself reads directly.
+        pa_source = f"{src_name}.monitor" if src_is_sink else src_name
+        return await self._pw.load_loopback(pa_source, sink_name, latency_msec)
+
     async def delete_mapping(self, mapping_id: str) -> None:
-        """Delete a mapping and destroy its PipeWire links."""
+        """Delete a mapping. Destroys whichever transport it was using —
+        direct pw-links (delay=0) or the module-loopback (delay>0)."""
         mapping = self._store.get(mapping_id)
         if mapping is None:
             msg = f"Mapping {mapping_id} not found"
@@ -108,6 +145,16 @@ class MappingService:
                 await self._pw.destroy_link(link_id)
             except Exception:
                 logger.warning("mapping.link_destroy_failed", link_id=link_id, exc_info=True)
+
+        if mapping.loopback_module_id is not None:
+            try:
+                await self._pw.unload_module(mapping.loopback_module_id)
+            except Exception:
+                logger.warning(
+                    "mapping.loopback_unload_failed",
+                    module_id=mapping.loopback_module_id,
+                    exc_info=True,
+                )
 
         self._store.remove(mapping_id)
         logger.info("mapping.deleted", mapping_id=mapping_id)
@@ -160,10 +207,69 @@ class MappingService:
             volume = db_to_linear(updated.gain_db)
             await self._apply_volume(updated.sink_node_id, volume, updated.pan)
 
-        if delay_ms is not None:
+        if delay_ms is not None and delay_ms != mapping.delay_ms:
+            # Switch transport when crossing 0 ↔ >0, or just reload the
+            # loopback with the new latency when staying >0.
+            had_delay = mapping.delay_ms > 0
+            wants_delay = delay_ms > 0
+
+            if had_delay and updated.loopback_module_id is not None:
+                # Tear down the current loopback before anything else.
+                try:
+                    await self._pw.unload_module(updated.loopback_module_id)
+                except Exception:
+                    logger.warning(
+                        "mapping.update_loopback_unload_failed",
+                        module_id=updated.loopback_module_id,
+                        exc_info=True,
+                    )
+
+            new_loopback_id: int | None = None
+            new_link_ids = list(updated.link_ids)
+
+            if not updated.mute:
+                if wants_delay:
+                    # Make sure any direct pw-links are gone before adding
+                    # the loopback path (otherwise audio plays twice — one
+                    # direct, one delayed → comb filter).
+                    if updated.link_ids:
+                        for link_id in updated.link_ids:
+                            try:
+                                await self._pw.destroy_link(link_id)
+                            except Exception:
+                                logger.warning(
+                                    "mapping.update_link_destroy_failed",
+                                    link_id=link_id,
+                                    exc_info=True,
+                                )
+                        new_link_ids = []
+                    # Spawn the loopback with the new latency.
+                    nodes = await self._pw.list_nodes()
+                    src = next(
+                        (n for n in nodes if n.id == updated.source_node_id),
+                        None,
+                    )
+                    src_is_sink = bool(src and "Sink" in src.media_class)
+                    new_loopback_id = await self._load_loopback_for(
+                        updated.source_node_name,
+                        updated.sink_node_name,
+                        src_is_sink,
+                        int(delay_ms),
+                    )
+                elif had_delay:
+                    # Going from delayed → instant: recreate the direct
+                    # pw-links since the loopback handled routing before.
+                    new_link_ids = await self._create_links(
+                        updated.source_port_ids, updated.sink_port_ids
+                    )
+
+            updated = self._store.update(
+                mapping_id,
+                delay_ms=delay_ms,
+                loopback_module_id=new_loopback_id,
+                link_ids=new_link_ids,
+            )
             updates["delay_ms"] = delay_ms
-            updated = self._store.update(mapping_id, delay_ms=delay_ms)
-            await self._pw.set_node_latency_offset(updated.sink_node_id, int(delay_ms * 1_000_000))
 
         logger.info("mapping.updated", mapping_id=mapping_id, updates=list(updates.keys()))
         return updated
@@ -171,7 +277,12 @@ class MappingService:
     async def restore_mappings(self) -> None:
         """Restore mappings from persistence on startup. Resolves nodes by
         NAME (not stale IDs from before the last PW restart) so links land
-        on the right ports even if PipeWire has renumbered everything."""
+        on the right ports even if PipeWire has renumbered everything.
+
+        For delayed mappings, the previous-run loopback module is gone
+        (pactl modules don't persist across daemon restarts), so we
+        recreate it. The stale `loopback_module_id` from disk is
+        replaced by the new pactl module id."""
         mappings = self._store.load()
         restored = 0
         skipped = 0
@@ -185,7 +296,22 @@ class MappingService:
                     skipped += 1
                     continue
                 src_node_id, src_port_ids, sink_node_id, sink_port_ids = new_ids
-                new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
+                # Resolve src_is_sink from the fresh node list
+                nodes = await self._pw.list_nodes()
+                src = next((n for n in nodes if n.id == src_node_id), None)
+                src_is_sink = bool(src and "Sink" in src.media_class)
+
+                new_link_ids: list[int] = []
+                new_loopback_id: int | None = None
+                if mapping.delay_ms > 0 and mapping.source_node_name and mapping.sink_node_name:
+                    new_loopback_id = await self._load_loopback_for(
+                        mapping.source_node_name,
+                        mapping.sink_node_name,
+                        src_is_sink,
+                        int(mapping.delay_ms),
+                    )
+                else:
+                    new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
                 self._store.update(
                     mapping.id,
                     source_node_id=src_node_id,
@@ -193,6 +319,7 @@ class MappingService:
                     sink_node_id=sink_node_id,
                     sink_port_ids=sink_port_ids,
                     link_ids=new_link_ids,
+                    loopback_module_id=new_loopback_id,
                 )
                 volume = db_to_linear(mapping.gain_db)
                 await self._apply_volume(sink_node_id, volume, mapping.pan)
@@ -204,8 +331,13 @@ class MappingService:
         logger.info("mappings.restored", total=len(mappings), restored=restored, skipped=skipped)
 
     async def resync_mappings(self) -> dict[str, int]:
-        """User-triggered resync — call after PW restart to recreate every
-        persisted mapping using the current node IDs. Returns counts."""
+        """User-triggered resync — call after a PW restart or BT reconnect
+        to recreate every persisted mapping using the current node IDs.
+
+        Same logic as restore_mappings for the routing choice: delay>0
+        means recreate the loopback (the previous one's pactl module is
+        gone after a PW user-session restart), delay=0 means direct
+        pw-links."""
         mappings = self._store.mappings
         ok = 0
         skipped = 0
@@ -218,7 +350,21 @@ class MappingService:
                     skipped += 1
                     continue
                 src_node_id, src_port_ids, sink_node_id, sink_port_ids = new_ids
-                new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
+                nodes = await self._pw.list_nodes()
+                src = next((n for n in nodes if n.id == src_node_id), None)
+                src_is_sink = bool(src and "Sink" in src.media_class)
+
+                new_link_ids: list[int] = []
+                new_loopback_id: int | None = None
+                if mapping.delay_ms > 0 and mapping.source_node_name and mapping.sink_node_name:
+                    new_loopback_id = await self._load_loopback_for(
+                        mapping.source_node_name,
+                        mapping.sink_node_name,
+                        src_is_sink,
+                        int(mapping.delay_ms),
+                    )
+                else:
+                    new_link_ids = await self._create_links(src_port_ids, sink_port_ids)
                 self._store.update(
                     mapping.id,
                     source_node_id=src_node_id,
@@ -226,6 +372,7 @@ class MappingService:
                     sink_node_id=sink_node_id,
                     sink_port_ids=sink_port_ids,
                     link_ids=new_link_ids,
+                    loopback_module_id=new_loopback_id,
                 )
                 volume = db_to_linear(mapping.gain_db)
                 await self._apply_volume(sink_node_id, volume, mapping.pan)

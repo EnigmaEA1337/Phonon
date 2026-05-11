@@ -22,6 +22,12 @@ class Mapping:
     pan: float = 0.0
     mute: bool = False
     delay_ms: float = 0.0  # Latency offset for output sync (0-600 ms)
+    # pactl module-loopback id when delay_ms > 0 (None when direct pw-link).
+    # Real delay is implemented by inserting a loopback stream with
+    # latency_msec=delay_ms in the chain, because PipeWire's per-node
+    # `latencyOffsetNsec` is a scheduling hint that doesn't add audible
+    # buffering. Stored to destroy/recreate the module on update + delete.
+    loopback_module_id: int | None = None
     created_at: str = ""  # ISO 8601
     # Node names captured at create-time. PipeWire IDs change across
     # restarts; names don't, so a re-resolve by name lets us restore
@@ -42,6 +48,7 @@ class Mapping:
             "pan": self.pan,
             "mute": self.mute,
             "delay_ms": self.delay_ms,
+            "loopback_module_id": self.loopback_module_id,
             "created_at": self.created_at,
             "source_node_name": self.source_node_name,
             "sink_node_name": self.sink_node_name,
@@ -61,6 +68,11 @@ class Mapping:
             pan=float(data.get("pan", 0.0)),
             mute=bool(data.get("mute", False)),
             delay_ms=float(data.get("delay_ms", 0.0)),
+            loopback_module_id=(
+                int(data["loopback_module_id"])
+                if data.get("loopback_module_id") is not None
+                else None
+            ),
             created_at=str(data.get("created_at", "")),
             source_node_name=str(data.get("source_node_name", "")),
             sink_node_name=str(data.get("sink_node_name", "")),

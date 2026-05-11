@@ -154,3 +154,61 @@ class RealPipeWireBackend:
             logger.info("pipewire.latency_offset_set", node_id=node_id, offset_ns=offset_ns)
         except Exception:
             logger.warning("pipewire.latency_offset_failed", node_id=node_id, exc_info=True)
+
+    async def load_loopback(self, source: str, sink: str, latency_msec: int) -> int | None:
+        """Load pactl module-loopback that buffers `latency_msec` ms of audio
+        between `source` and `sink`. Returns the module id (int) on success,
+        None on failure.
+
+        `source` and `sink` are PA-style names. For an Audio/Source node
+        (e.g. `alsa_input.usb-...`), pass the node name directly. For a
+        null-sink whose monitor port is the readable side (e.g. our
+        `bt_<name>_in` BT capture bridge), pass `<name>.monitor`. The
+        caller decides — MappingService inspects the source node's
+        media_class to figure that out.
+        """
+        try:
+            out = await cli.run_command(
+                "pactl",
+                "load-module",
+                "module-loopback",
+                f"source={source}",
+                f"sink={sink}",
+                f"latency_msec={int(latency_msec)}",
+            )
+        except Exception:
+            logger.warning(
+                "pipewire.loopback_load_failed",
+                source=source,
+                sink=sink,
+                latency_msec=latency_msec,
+                exc_info=True,
+            )
+            return None
+        out = out.strip()
+        if not out.isdigit():
+            logger.warning(
+                "pipewire.loopback_load_unexpected_output",
+                source=source,
+                sink=sink,
+                output=out,
+            )
+            return None
+        mid = int(out)
+        logger.info(
+            "pipewire.loopback_loaded",
+            module_id=mid,
+            source=source,
+            sink=sink,
+            latency_msec=latency_msec,
+        )
+        return mid
+
+    async def unload_module(self, module_id: int) -> None:
+        """Unload a pactl module by id. No-op on failure (module may already
+        be gone from a prior cleanup pass)."""
+        try:
+            await cli.run_command("pactl", "unload-module", str(module_id))
+            logger.info("pipewire.module_unloaded", module_id=module_id)
+        except Exception:
+            logger.info("pipewire.module_unload_failed", module_id=module_id, exc_info=False)

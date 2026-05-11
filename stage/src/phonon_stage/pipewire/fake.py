@@ -19,7 +19,13 @@ class FakePipeWireBackend:
         self.volumes: dict[int, float] = {}
         self.mutes: dict[int, bool] = {}
         self.latency_offsets: dict[int, int] = {}
+        # In-memory tracking of loaded modules. Key = synthetic module id,
+        # value = (source, sink, latency_msec) tuple. Mirrors pactl's
+        # module list for tests to inspect.
+        self.loopbacks: dict[int, tuple[str, str, int]] = {}
+        self.unloaded_modules: list[int] = []
         self._next_link_id = 100
+        self._next_module_id = 536_870_912  # pactl convention for pulse-compat modules
 
     async def list_nodes(self) -> list[PwNode]:
         return list(self.nodes)
@@ -54,3 +60,13 @@ class FakePipeWireBackend:
 
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
         self.latency_offsets[node_id] = offset_ns
+
+    async def load_loopback(self, source: str, sink: str, latency_msec: int) -> int | None:
+        mid = self._next_module_id
+        self._next_module_id += 1
+        self.loopbacks[mid] = (source, sink, latency_msec)
+        return mid
+
+    async def unload_module(self, module_id: int) -> None:
+        self.loopbacks.pop(module_id, None)
+        self.unloaded_modules.append(module_id)

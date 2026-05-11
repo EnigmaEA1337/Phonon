@@ -22,6 +22,7 @@ class MappingResponse(BaseModel):
     pan: float
     mute: bool
     delay_ms: float
+    loopback_module_id: int | None = None
     created_at: str
     source_node_name: str = ""
     sink_node_name: str = ""

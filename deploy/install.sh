@@ -690,7 +690,50 @@ WantedBy=multi-user.target
 PHC2SYSSVC
 
 systemctl daemon-reload
-echo "  PTP installed (services NOT enabled — use Stage UI to opt in)"
+
+# Capture pre-existing enable state so re-installs don't override a user
+# who explicitly disabled PTP via the UI / systemctl.
+PTP4L_PREVSTATE=$(systemctl is-enabled phonon-ptp4l.service 2>/dev/null || echo "not-found")
+PHC2SYS_PREVSTATE=$(systemctl is-enabled phonon-phc2sys.service 2>/dev/null || echo "not-found")
+
+# On x86_64 (Optiplex, Geekom, generic PCs), auto-enable PTP services at
+# install time. These boxes are usually the Stage Core: they get a proper
+# NIC with hardware timestamping (or at least software fallback), AES67
+# is the design target, PTP needs to be up for the whole chain to make
+# sense. Skipping the manual "go to the UI and toggle" step removes one
+# friction point on fresh installs.
+#
+# On Pi (arm64) keep the opt-in default: the USB-Ethernet adapters have
+# no PHC, software PTP is noisy, and most Pi-only standalone use cases
+# don't need PTP at all. Enable manually via Settings or `systemctl`.
+if [ "${PLATFORM}" = "x86_64" ]; then
+    case "${PTP4L_PREVSTATE}" in
+        enabled)
+            echo "  phonon-ptp4l kept enabled (user state preserved)"
+            ;;
+        disabled|masked)
+            echo "  phonon-ptp4l left ${PTP4L_PREVSTATE} (user state preserved)"
+            ;;
+        *)
+            systemctl enable --now phonon-ptp4l.service 2>/dev/null || true
+            echo "  phonon-ptp4l enabled + started (x86 default)"
+            ;;
+    esac
+    case "${PHC2SYS_PREVSTATE}" in
+        enabled)
+            echo "  phonon-phc2sys kept enabled (user state preserved)"
+            ;;
+        disabled|masked)
+            echo "  phonon-phc2sys left ${PHC2SYS_PREVSTATE} (user state preserved)"
+            ;;
+        *)
+            systemctl enable --now phonon-phc2sys.service 2>/dev/null || true
+            echo "  phonon-phc2sys enabled + started (x86 default)"
+            ;;
+    esac
+else
+    echo "  PTP installed but NOT enabled (Pi default — toggle in Stage UI when ready)"
+fi
 
 # -- Step 10/11: Setup user service + linger ----------------------------------
 

@@ -30,12 +30,62 @@ class SapSettings(BaseModel):
 
 
 class PtpSettings(BaseModel):
+    """All ptp4l(8) parameters surfaced for UI control. The full
+    /etc/linuxptp/phonon-aes67.conf is rendered from this model — every
+    field maps to one line of the [global] section. Defaults match the
+    AES67 Media Profile §6 (sub-millisecond, multicast, 8 Hz announce
+    + sync). Snake_case here, the renderer converts to ptp4l's
+    camelCase / mixed-case keys.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    enabled: bool = False  # off until linuxptp is wired up for real
-    mode: Literal["auto", "grandmaster", "slave"] = "auto"
-    interface: str = ""  # empty = auto-pick best wired NIC
+
+    # — Activation —
+    enabled: bool = False
+    interface: str = ""  # empty = auto-pick first wired NIC up
     profile: Literal["aes67", "smpte2059-2", "default"] = "aes67"
+    mode: Literal["auto", "grandmaster", "slave"] = "auto"
+    # auto        : full BMCA election, can be either role
+    # grandmaster : refuse to become slave (serverOnly=1 on linuxptp ≥4.0,
+    #               or priority1=1 fallback on older builds)
+    # slave       : refuse to become master (slaveOnly=1)
+
+    # — BMCA / clock identity —
+    priority1: int = Field(default=128, ge=0, le=255)
+    priority2: int = Field(default=128, ge=0, le=255)
+    clock_class: int = Field(default=248, ge=0, le=255)
+    clock_accuracy: str = Field(default="0xFE", pattern=r"^0x[0-9A-Fa-f]{2}$")
+    offset_scaled_log_variance: str = Field(default="0xFFFF", pattern=r"^0x[0-9A-Fa-f]{4}$")
     domain: int = Field(default=0, ge=0, le=127)
+
+    # — Timing (log2 seconds for *_interval fields) —
+    log_announce_interval: int = Field(default=1, ge=-3, le=4)
+    log_sync_interval: int = Field(default=-3, ge=-7, le=4)
+    log_min_delay_req_interval: int = Field(default=-3, ge=-7, le=4)
+    announce_receipt_timeout: int = Field(default=3, ge=2, le=10)
+
+    # — Transport —
+    network_transport: Literal["UDPv4", "UDPv6", "L2"] = "UDPv4"
+    delay_mechanism: Literal["E2E", "P2P"] = "E2E"
+    # 'auto' = backend picks hardware if ethtool -T reports SOF_TIMESTAMPING_TX_HARDWARE,
+    # falls back to software. Manual override useful for testing on HW-capable cards.
+    time_stamping: Literal["auto", "hardware", "software", "legacy"] = "auto"
+    tx_timestamp_timeout: int = Field(default=50, ge=1, le=10000)  # ms
+    hybrid_e2e: bool = False
+    inhibit_multicast_service: bool = False
+
+    # — QoS DiffServ Code Point (AES67-recommended: 46 = EF) —
+    dscp_event: int = Field(default=46, ge=0, le=63)
+    dscp_general: int = Field(default=46, ge=0, le=63)
+
+    # — Servo —
+    clock_servo: Literal["pi", "linreg", "nullf", "refclock_sock"] = "pi"
+    step_threshold: float = Field(default=0.000002, ge=0.0, le=10.0)  # seconds
+    first_step_threshold: float = Field(default=0.000020, ge=0.0, le=10.0)
+    max_frequency: int = Field(default=900_000_000, ge=1, le=1_000_000_000)  # ppb
+
+    # — Companion phc2sys daemon —
+    phc2sys_enabled: bool = True
 
 
 class Aes67Defaults(BaseModel):

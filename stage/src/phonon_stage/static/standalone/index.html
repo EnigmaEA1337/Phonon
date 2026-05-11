@@ -382,6 +382,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="services" onclick="switchTab('services')">SERVICES</div>
     <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
+    <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
@@ -545,6 +546,22 @@ body.mode-live .edit-only select { opacity: 0.4; }
       <div class="section-head">Network Stages</div>
       <div class="section-body" id="stages-list">
         <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: PTP ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="ptp">
+    <div class="section">
+      <div class="section-head">PTP Live Status <span style="font-weight:400;color:var(--text-dim);font-size:10px">grandmaster election + sync state</span></div>
+      <div class="section-body" id="ptp-tab-status">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head">PTP Configuration <span style="font-weight:400;color:var(--text-dim);font-size:10px">/etc/linuxptp/phonon-aes67.conf — rewritten on Apply</span></div>
+      <div class="section-body" id="ptp-config-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
       </div>
     </div>
   </div>
@@ -729,10 +746,22 @@ async function refreshAll() {
   if (stages) renderStages(stages);
   if (aes67) { state.aes67 = aes67; renderAes67(aes67); }
   if (aes67d) renderAes67Discovered(aes67d);
-  if (ptp) { renderPtpStatus(ptp); renderTopbarPtp(ptp); }
+  if (ptp) {
+    state.ptp = ptp;
+    renderPtpStatus(ptp);
+    renderTopbarPtp(ptp);
+    // Render PTP tab too (config form + live status), if settings are loaded
+    if (state.settings) renderPtpTab(state.settings.ptp, ptp, state.ifaces || []);
+  }
   if (xruns) { state.xruns = xruns; renderTopbarXruns(xruns); }
   if (updateStatus) { state.updateStatus = updateStatus; renderTopbarUpdate(updateStatus); }
-  if (settings) { state.settings = settings; renderSettings(settings, ifaces || []); }
+  if (settings) {
+    state.settings = settings;
+    state.ifaces = ifaces || [];
+    renderSettings(settings, ifaces || []);
+    // Re-render PTP tab now that we have both ptp live status and settings
+    if (state.ptp) renderPtpTab(settings.ptp, state.ptp, ifaces || []);
+  }
   // MESH badge: STANDALONE + at least one AES67 stream OR another Stage seen
   updateModeBadge(stages || [], aes67 || []);
 
@@ -1789,26 +1818,10 @@ function renderSettings(s, ifaces) {
       <input type="checkbox" id="stg-sap-lis" ${s.sap.listen_enabled?'checked':''} onchange="settingsMarkDirty()">
     </div>
 
-    <div class="stg-section">PTP — IEEE 1588 sync</div>
-    <div class="stg-grid">
-      <label>Enable ptp4l</label>
-      <input type="checkbox" id="stg-ptp-en" ${s.ptp.enabled?'checked':''} onchange="settingsMarkDirty()">
-      <label>Mode</label>
-      <select id="stg-ptp-mode" onchange="settingsMarkDirty()">
-        <option value="auto" ${s.ptp.mode==='auto'?'selected':''}>auto (BMCA)</option>
-        <option value="grandmaster" ${s.ptp.mode==='grandmaster'?'selected':''}>grandmaster (force)</option>
-        <option value="slave" ${s.ptp.mode==='slave'?'selected':''}>slave only</option>
-      </select>
-      <label>Interface</label>
-      <select id="stg-ptp-iface" onchange="settingsMarkDirty()">${ifaceOpts}</select>
-      <label>Profile</label>
-      <select id="stg-ptp-prof" onchange="settingsMarkDirty()">
-        <option value="aes67" ${s.ptp.profile==='aes67'?'selected':''}>aes67 (audio media)</option>
-        <option value="smpte2059-2" ${s.ptp.profile==='smpte2059-2'?'selected':''}>smpte2059-2</option>
-        <option value="default" ${s.ptp.profile==='default'?'selected':''}>default</option>
-      </select>
-      <label>Domain</label>
-      <input type="number" id="stg-ptp-dom" min="0" max="127" value="${s.ptp.domain}" onchange="settingsMarkDirty()">
+    <div class="stg-section" style="color:var(--text-fade)">PTP — moved to its own tab</div>
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:10px">
+      All PTP parameters (28 fields incl. priority1, clockClass, log intervals, DSCP, servo, etc.)
+      now live in the dedicated <strong style="color:var(--cyan)">PTP</strong> tab.
     </div>
 
     <div class="stg-section">AES67 — defaults for new streams</div>
@@ -1855,18 +1868,12 @@ function settingsMarkDirty() { _settingsDirty = true; }
 function settingsReset() { _settingsDirty = false; if (state.settings) renderSettings(state.settings, state.ifaces||[]); }
 
 async function settingsSave() {
+  // PTP fields moved to the dedicated PTP tab — see ptpSettingsSave().
   const body = {
     sap: {
       announce_enabled: document.getElementById('stg-sap-ann').checked,
       announce_interval_s: parseInt(document.getElementById('stg-sap-int').value, 10),
       listen_enabled: document.getElementById('stg-sap-lis').checked,
-    },
-    ptp: {
-      enabled: document.getElementById('stg-ptp-en').checked,
-      mode: document.getElementById('stg-ptp-mode').value,
-      interface: document.getElementById('stg-ptp-iface').value,
-      profile: document.getElementById('stg-ptp-prof').value,
-      domain: parseInt(document.getElementById('stg-ptp-dom').value, 10),
     },
     aes67: {
       multicast_group: document.getElementById('stg-ae-mg').value,
@@ -1883,6 +1890,211 @@ async function settingsSave() {
   const r = await api('/settings', { method: 'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   document.getElementById('stg-status').textContent = r ? 'saved' : 'failed';
   _settingsDirty = false;
+  await refreshAll();
+}
+
+// ── PTP tab — full config form (28 fields) + live status ──────────────────
+let _ptpDirty = false;
+function ptpMarkDirty() { _ptpDirty = true; }
+function ptpReset() { _ptpDirty = false; if (state.settings && state.ptp) renderPtpTab(state.settings.ptp, state.ptp, state.ifaces||[]); }
+
+function renderPtpTab(ptpCfg, ptpLive, ifaces) {
+  if (_ptpDirty) return;
+  const formEl = document.getElementById('ptp-config-form');
+  const statusEl = document.getElementById('ptp-tab-status');
+  if (!formEl || !statusEl) return;
+
+  // ── Live status (top) ──────────────────────────────────────────────
+  let roleLabel, roleColor;
+  if (!ptpLive.available) { roleLabel = 'Not installed'; roleColor = 'var(--text-dim)'; }
+  else if (!ptpLive.running) { roleLabel = 'Not running'; roleColor = 'var(--text-dim)'; }
+  else if (ptpLive.role === 'grandmaster') { roleLabel = 'GRANDMASTER'; roleColor = 'var(--magenta)'; }
+  else if (ptpLive.role === 'slave') { roleLabel = 'SLAVE'; roleColor = 'var(--green)'; }
+  else if (ptpLive.role === 'listening') { roleLabel = 'LISTENING'; roleColor = 'var(--yellow)'; }
+  else { roleLabel = (ptpLive.role||'?').toUpperCase(); roleColor = 'var(--cyan)'; }
+  const offsetTxt = ptpLive.offset_ns !== null && ptpLive.offset_ns !== undefined
+    ? `${ptpLive.offset_ns >= 0 ? '+' : ''}${ptpLive.offset_ns} ns` : '—';
+  const offsetColor = ptpLive.offset_ns === null ? 'var(--text-fade)'
+    : Math.abs(ptpLive.offset_ns) < 1000 ? 'var(--green)'
+    : Math.abs(ptpLive.offset_ns) < 100000 ? 'var(--yellow)' : 'var(--red)';
+  const hwIcon = ptpLive.hw_timestamping_supported
+    ? `<span style="color:var(--green)" title="NIC supports hardware PTP timestamping (PHC + HW TX/RX)">● HW capable</span>`
+    : `<span style="color:var(--yellow)" title="NIC has no PHC — software timestamping only (~50 µs RMS typical)">● SW only</span>`;
+  statusEl.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:var(--font-m);font-size:11px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${roleColor};box-shadow:0 0 8px ${roleColor}"></span>
+        <span style="color:var(--text);font-weight:600">${roleLabel}</span>
+      </div>
+      <div style="color:var(--text-dim)">offset: <span style="color:${offsetColor};font-weight:600">${offsetTxt}</span></div>
+      <div style="color:var(--text-dim)">GM: <span style="color:${ptpLive.grandmaster_label==='self'?'var(--magenta)':ptpLive.grandmaster_label==='—'?'var(--text-fade)':'var(--cyan)'};font-family:var(--font-m);font-weight:600">${ptpLive.grandmaster_label||'—'}</span></div>
+      ${ptpLive.interface ? `<div style="color:var(--text-dim)">iface: ${ptpLive.interface}</div>` : ''}
+      <div style="color:var(--text-dim)">${hwIcon}</div>
+      <div style="color:var(--text-dim)">ts mode: <span style="color:var(--cyan)">${ptpLive.effective_time_stamping||'—'}</span></div>
+      <div style="flex:1"></div>
+      <div style="color:var(--text-fade);font-size:9px;font-style:italic">${ptpLive.note||''}</div>
+    </div>`;
+
+  // ── Config form ─────────────────────────────────────────────────────
+  const ifaceOpts = [{name:'',ip:'auto-pick',kind:''}, ...(ifaces||[])]
+    .map(i => `<option value="${i.name}" ${i.name===ptpCfg.interface?'selected':''}>${i.name||'(auto)'}${i.ip?` — ${i.ip}`:''}${i.kind?` [${i.kind}]`:''}</option>`).join('');
+
+  const tsOpts = [
+    ['auto', 'auto (detect HW, fallback SW)'],
+    ['hardware', 'hardware (requires PHC)'],
+    ['software', 'software'],
+    ['legacy', 'legacy'],
+  ].map(([v,l]) => `<option value="${v}" ${ptpCfg.time_stamping===v?'selected':''}>${l}</option>`).join('');
+
+  formEl.innerHTML = `
+    <style>
+      .ptp-grid { display:grid; grid-template-columns:200px 1fr; gap:6px 12px; align-items:center; font-family:var(--font-m); font-size:10px; }
+      .ptp-grid label { color:var(--text-dim); }
+      .ptp-grid input[type=text], .ptp-grid input[type=number], .ptp-grid select {
+        background:var(--bg-2); color:var(--text); border:1px solid var(--border); border-radius:3px;
+        padding:3px 6px; font-family:var(--font-m); font-size:10px; width:100%; box-sizing:border-box; max-width:340px;
+      }
+      .ptp-grid input[type=checkbox] { accent-color:var(--cyan); justify-self:start; }
+      .ptp-section { font-weight:600; color:var(--cyan); text-transform:uppercase; letter-spacing:1px;
+        font-size:10px; margin:14px 0 6px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+      .ptp-section:first-child { margin-top:0; }
+      .ptp-hint { color:var(--text-fade); font-size:9px; font-style:italic; padding-left:200px; margin-top:-2px; margin-bottom:6px; }
+    </style>
+
+    <div class="ptp-section">Activation</div>
+    <div class="ptp-grid">
+      <label>Enable ptp4l service</label>
+      <input type="checkbox" id="ptpf-enabled" ${ptpCfg.enabled?'checked':''} onchange="ptpMarkDirty()">
+      <label>Companion phc2sys</label>
+      <input type="checkbox" id="ptpf-phc2sys" ${ptpCfg.phc2sys_enabled?'checked':''} onchange="ptpMarkDirty()">
+      <label>Interface</label>
+      <select id="ptpf-iface" onchange="ptpMarkDirty()">${ifaceOpts}</select>
+      <label>Profile</label>
+      <select id="ptpf-profile" onchange="ptpMarkDirty()">
+        ${['aes67','smpte2059-2','default'].map(p => `<option value="${p}" ${ptpCfg.profile===p?'selected':''}>${p}</option>`).join('')}
+      </select>
+      <label>Mode</label>
+      <select id="ptpf-mode" onchange="ptpMarkDirty()">
+        <option value="auto" ${ptpCfg.mode==='auto'?'selected':''}>auto (BMCA election)</option>
+        <option value="grandmaster" ${ptpCfg.mode==='grandmaster'?'selected':''}>grandmaster (force-master, no slave fallback)</option>
+        <option value="slave" ${ptpCfg.mode==='slave'?'selected':''}>slave only (never become master)</option>
+      </select>
+    </div>
+
+    <div class="ptp-section">BMCA — Best Master Clock election</div>
+    <div class="ptp-grid">
+      <label title="Lower wins. Set to 1-10 to force yourself as GM via BMCA without serverOnly.">priority1 (0-255)</label>
+      <input type="number" id="ptpf-pri1" min="0" max="255" value="${ptpCfg.priority1}" onchange="ptpMarkDirty()">
+      <label>priority2 (tiebreaker)</label>
+      <input type="number" id="ptpf-pri2" min="0" max="255" value="${ptpCfg.priority2}" onchange="ptpMarkDirty()">
+      <label title="6 = TAI-synced GPS, 13 = PRC, 248 = default for application">clockClass (0-255)</label>
+      <input type="number" id="ptpf-cclass" min="0" max="255" value="${ptpCfg.clock_class}" onchange="ptpMarkDirty()">
+      <label>clockAccuracy (hex)</label>
+      <input type="text" id="ptpf-cacc" value="${ptpCfg.clock_accuracy}" placeholder="0xFE" onchange="ptpMarkDirty()">
+      <label>offsetScaledLogVariance (hex)</label>
+      <input type="text" id="ptpf-oslv" value="${ptpCfg.offset_scaled_log_variance}" placeholder="0xFFFF" onchange="ptpMarkDirty()">
+      <label>domain (0-127)</label>
+      <input type="number" id="ptpf-domain" min="0" max="127" value="${ptpCfg.domain}" onchange="ptpMarkDirty()">
+    </div>
+
+    <div class="ptp-section">Timing — message intervals (log2 seconds)</div>
+    <div class="ptp-grid">
+      <label title="AES67 §6: -3 (8 Hz). Default profile: 1 (2s).">logAnnounceInterval (-3..4)</label>
+      <input type="number" id="ptpf-lai" min="-3" max="4" value="${ptpCfg.log_announce_interval}" onchange="ptpMarkDirty()">
+      <label title="AES67: -3 (8 Hz sync). Lower = more frequent + more CPU/bandwidth.">logSyncInterval (-7..4)</label>
+      <input type="number" id="ptpf-lsi" min="-7" max="4" value="${ptpCfg.log_sync_interval}" onchange="ptpMarkDirty()">
+      <label>logMinDelayReqInterval (-7..4)</label>
+      <input type="number" id="ptpf-lmdri" min="-7" max="4" value="${ptpCfg.log_min_delay_req_interval}" onchange="ptpMarkDirty()">
+      <label title="Number of missed announce before declaring GM lost.">announceReceiptTimeout (2-10)</label>
+      <input type="number" id="ptpf-art" min="2" max="10" value="${ptpCfg.announce_receipt_timeout}" onchange="ptpMarkDirty()">
+    </div>
+
+    <div class="ptp-section">Transport</div>
+    <div class="ptp-grid">
+      <label>network_transport</label>
+      <select id="ptpf-nt" onchange="ptpMarkDirty()">
+        ${['UDPv4','UDPv6','L2'].map(v => `<option value="${v}" ${ptpCfg.network_transport===v?'selected':''}>${v}</option>`).join('')}
+      </select>
+      <label>delay_mechanism</label>
+      <select id="ptpf-dm" onchange="ptpMarkDirty()">
+        ${['E2E','P2P'].map(v => `<option value="${v}" ${ptpCfg.delay_mechanism===v?'selected':''}>${v}</option>`).join('')}
+      </select>
+      <label title="Hardware = sub-µs sync (needs Intel I210/I225/I226 or similar PHC NIC). Software = ~50 µs RMS, runs on any NIC.">time_stamping</label>
+      <select id="ptpf-ts" onchange="ptpMarkDirty()">${tsOpts}</select>
+      <label>tx_timestamp_timeout (ms)</label>
+      <input type="number" id="ptpf-txto" min="1" max="10000" value="${ptpCfg.tx_timestamp_timeout}" onchange="ptpMarkDirty()">
+      <label>hybrid_e2e</label>
+      <input type="checkbox" id="ptpf-he2e" ${ptpCfg.hybrid_e2e?'checked':''} onchange="ptpMarkDirty()">
+      <label>inhibit_multicast_service</label>
+      <input type="checkbox" id="ptpf-ims" ${ptpCfg.inhibit_multicast_service?'checked':''} onchange="ptpMarkDirty()">
+    </div>
+
+    <div class="ptp-section">QoS — DiffServ Code Point</div>
+    <div class="ptp-grid">
+      <label title="AES67 recommends 46 (Expedited Forwarding).">dscp_event (0-63)</label>
+      <input type="number" id="ptpf-dse" min="0" max="63" value="${ptpCfg.dscp_event}" onchange="ptpMarkDirty()">
+      <label>dscp_general (0-63)</label>
+      <input type="number" id="ptpf-dsg" min="0" max="63" value="${ptpCfg.dscp_general}" onchange="ptpMarkDirty()">
+    </div>
+
+    <div class="ptp-section">Servo — clock adjustment loop</div>
+    <div class="ptp-grid">
+      <label>clock_servo</label>
+      <select id="ptpf-csv" onchange="ptpMarkDirty()">
+        ${['pi','linreg','nullf','refclock_sock'].map(v => `<option value="${v}" ${ptpCfg.clock_servo===v?'selected':''}>${v}</option>`).join('')}
+      </select>
+      <label title="Threshold above which ptp4l does a hard step (jump) instead of slew (gradual).">step_threshold (s)</label>
+      <input type="number" id="ptpf-stt" min="0" step="0.000001" value="${ptpCfg.step_threshold}" onchange="ptpMarkDirty()">
+      <label>first_step_threshold (s)</label>
+      <input type="number" id="ptpf-fstt" min="0" step="0.000001" value="${ptpCfg.first_step_threshold}" onchange="ptpMarkDirty()">
+      <label>max_frequency (ppb)</label>
+      <input type="number" id="ptpf-mxf" min="1" max="1000000000" value="${ptpCfg.max_frequency}" onchange="ptpMarkDirty()">
+    </div>
+
+    <div class="stg-actions" style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" onclick="ptpSettingsSave()">Apply (rewrites conf + restarts ptp4l)</button>
+      <button class="btn" onclick="ptpReset()">Cancel</button>
+      <span id="ptpf-status" class="tb-info">—</span>
+    </div>
+  `;
+}
+
+async function ptpSettingsSave() {
+  const body = {
+    ptp: {
+      enabled: document.getElementById('ptpf-enabled').checked,
+      phc2sys_enabled: document.getElementById('ptpf-phc2sys').checked,
+      interface: document.getElementById('ptpf-iface').value,
+      profile: document.getElementById('ptpf-profile').value,
+      mode: document.getElementById('ptpf-mode').value,
+      priority1: parseInt(document.getElementById('ptpf-pri1').value, 10),
+      priority2: parseInt(document.getElementById('ptpf-pri2').value, 10),
+      clock_class: parseInt(document.getElementById('ptpf-cclass').value, 10),
+      clock_accuracy: document.getElementById('ptpf-cacc').value,
+      offset_scaled_log_variance: document.getElementById('ptpf-oslv').value,
+      domain: parseInt(document.getElementById('ptpf-domain').value, 10),
+      log_announce_interval: parseInt(document.getElementById('ptpf-lai').value, 10),
+      log_sync_interval: parseInt(document.getElementById('ptpf-lsi').value, 10),
+      log_min_delay_req_interval: parseInt(document.getElementById('ptpf-lmdri').value, 10),
+      announce_receipt_timeout: parseInt(document.getElementById('ptpf-art').value, 10),
+      network_transport: document.getElementById('ptpf-nt').value,
+      delay_mechanism: document.getElementById('ptpf-dm').value,
+      time_stamping: document.getElementById('ptpf-ts').value,
+      tx_timestamp_timeout: parseInt(document.getElementById('ptpf-txto').value, 10),
+      hybrid_e2e: document.getElementById('ptpf-he2e').checked,
+      inhibit_multicast_service: document.getElementById('ptpf-ims').checked,
+      dscp_event: parseInt(document.getElementById('ptpf-dse').value, 10),
+      dscp_general: parseInt(document.getElementById('ptpf-dsg').value, 10),
+      clock_servo: document.getElementById('ptpf-csv').value,
+      step_threshold: parseFloat(document.getElementById('ptpf-stt').value),
+      first_step_threshold: parseFloat(document.getElementById('ptpf-fstt').value),
+      max_frequency: parseInt(document.getElementById('ptpf-mxf').value, 10),
+    },
+  };
+  document.getElementById('ptpf-status').textContent = 'applying...';
+  const r = await api('/settings', { method: 'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('ptpf-status').textContent = r ? 'applied — ptp4l restarted' : 'failed';
+  _ptpDirty = false;
   await refreshAll();
 }
 

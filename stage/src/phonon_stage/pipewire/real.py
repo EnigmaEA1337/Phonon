@@ -444,6 +444,9 @@ class RealPipeWireBackend:
                 exc_info=False,
             )
             return {}
+        # Stash raw output on self for the diagnostic endpoint —
+        # otherwise it's only visible by SSH'ing to the host.
+        self._last_filter_dump = out  # type: ignore[attr-defined]
         result: dict[str, float] = {}
         pending: str | None = None
         # Per-line lex. Names can contain spaces / parens (LSP labels).

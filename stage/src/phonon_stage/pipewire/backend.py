@@ -102,6 +102,12 @@ class PipeWireBackend(Protocol):
     # "source=phonon_master.monitor sink=alsa_output.dg60_1 latency_msec=90".
     async def list_loopback_modules(self) -> dict[int, str]: ...
 
+    # Same idea as list_loopback_modules but for module-null-sink.
+    # Returns {module_id: sink_name_argument} so callers can find and
+    # unload duplicate null-sinks (e.g. two `phonon_master` instances
+    # left by a boot-time race).
+    async def list_null_sink_modules(self) -> dict[int, str]: ...
+
     # ── Filter-chain (DSP plugin insert) ──────────────────────────
     #
     # Filter-chains are PipeWire's mechanism for running LADSPA/LV2

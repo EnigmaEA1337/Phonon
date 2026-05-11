@@ -213,14 +213,53 @@ class MixerService:
         as the user's pipewire session is up. We never tear it down
         on disable — destroying the master would invalidate all
         loopbacks and break the audio for one tick on every reconcile.
+
+        Also: if the previous self-heal pass loaded a duplicate
+        (boot-time race with pactl), keep ONE instance and unload
+        the rest. Two null-sinks with the same name confuse PW link
+        routing — sources write to one, filter-chains capture from
+        the other, master appears silent even though audio is being
+        received.
         """
         try:
             nodes = await self._pw.list_nodes()
         except Exception:
             nodes = []
-        if any(n.name == MASTER_SINK_NAME for n in nodes):
+        master_count = sum(1 for n in nodes if n.name == MASTER_SINK_NAME)
+        if master_count == 0:
+            await self._pw.load_null_sink(MASTER_SINK_NAME, MASTER_SINK_DESCRIPTION)
             return
-        await self._pw.load_null_sink(MASTER_SINK_NAME, MASTER_SINK_DESCRIPTION)
+        if master_count == 1:
+            return
+        # Duplicate detected — find pactl module IDs for every
+        # null-sink named `phonon_master` and unload all but the
+        # oldest (lowest module id) so the existing source→master
+        # links stay intact.
+        try:
+            modules = await self._pw.list_null_sink_modules()
+        except Exception:
+            logger.warning("mixer.master_dedupe_list_failed", exc_info=True)
+            return
+        master_mids = sorted(mid for mid, name in modules.items() if name == MASTER_SINK_NAME)
+        if len(master_mids) < 2:
+            # PW sees two nodes but pactl can only attribute one to
+            # us — second instance might be wireplumber-owned or
+            # something we shouldn't touch. Leave it alone.
+            logger.info(
+                "mixer.master_dedupe_skip",
+                pw_count=master_count,
+                pactl_count=len(master_mids),
+            )
+            return
+        keep = master_mids[0]
+        for mid in master_mids[1:]:
+            try:
+                await self._pw.unload_module(mid)
+                logger.info("mixer.master_duplicate_unloaded", module_id=mid, kept=keep)
+            except Exception:
+                logger.warning(
+                    "mixer.master_dedupe_unload_failed", module_id=mid, exc_info=True
+                )
 
     # ── Master mutations ────────────────────────────────────────
 

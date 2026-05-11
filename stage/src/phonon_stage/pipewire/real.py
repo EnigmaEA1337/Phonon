@@ -293,6 +293,33 @@ class RealPipeWireBackend:
             result[mid] = parts[2]
         return result
 
+    async def list_null_sink_modules(self) -> dict[int, str]:
+        """Parse `pactl list short modules` and return module-null-sink
+        entries as {module_id: sink_name}. Caller uses the sink_name
+        to spot duplicates. Empty dict on parse failure — best-effort,
+        same shape as list_loopback_modules."""
+        try:
+            out = await cli.run_command("pactl", "list", "short", "modules")
+        except Exception:
+            logger.info("pipewire.list_modules_failed", exc_info=False)
+            return {}
+        result: dict[int, str] = {}
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or parts[1] != "module-null-sink":
+                continue
+            try:
+                mid = int(parts[0])
+            except ValueError:
+                continue
+            # Extract sink_name=<value> from the args column. Strict
+            # match — anything else is noise we don't classify.
+            for tok in parts[2].split():
+                if tok.startswith("sink_name="):
+                    result[mid] = tok.split("=", 1)[1]
+                    break
+        return result
+
     async def load_null_sink(self, name: str, description: str) -> int | None:
         """Load a pactl module-null-sink. Returns the module id on success,
         None on failure.

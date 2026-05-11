@@ -106,6 +106,10 @@ class FakePipeWireBackend:
         self.loopbacks[mid] = (source, sink, latency_msec)
         return mid
 
+    async def list_null_sink_modules(self) -> dict[int, str]:
+        """Mirror the real backend output for tests — {mid: sink_name}."""
+        return {mid: name for mid, (name, _desc) in self.null_sinks.items()}
+
     async def list_loopback_modules(self) -> dict[int, str]:
         """Mirror the real backend's pactl parser output from the
         in-memory loopbacks dict, so the mixer's orphan-cleanup

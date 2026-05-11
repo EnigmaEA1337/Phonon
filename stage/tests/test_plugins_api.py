@@ -135,32 +135,12 @@ class TestPluginSettings:
 
 class TestPluginPipeWireJoin:
     async def test_pw_node_match_surfaces_in_response(self, client: AsyncClient) -> None:
-        """When shairport-sync is running and pushing into pipewire-pulse,
-        a node matching the plugin's pw_node_pattern shows up. The API
-        joins the runtime PW state with the plugin metadata so the UI
-        can render 'connected, source visible' without a separate call."""
-        from phonon_stage.pipewire.backend import PwNode
-
-        # The fixtures' fake_pw has 3 nodes by default; inject one that
-        # matches the airplay pattern.
-        from tests.conftest import SAMPLE_PW_NODES
-
-        # We can't easily re-construct fixtures inside a test, but the
-        # client uses the same fake_pw object as fake_pw fixture — fetch
-        # it from app.state.
-        app = client._transport.app  # type: ignore[attr-defined]
-        fake_pw = app.state.pw_backend
-        fake_pw.nodes = [
-            *SAMPLE_PW_NODES,
-            PwNode(
-                id=99,
-                name="Shairport Sync",
-                media_class="Stream/Output/Audio",
-                nick="Shairport Sync",
-                state="running",
-            ),
-        ]
-
+        """The plugin owns a dedicated null-sink (airplay_in). When it
+        exists in the PW graph, /plugins/airplay-v1 lists it under
+        pw_node_names so the UI can confirm the routable source is
+        live before the user even opens the patch bay."""
+        # Enable the plugin so it loads the null-sink into fake_pw.
+        await client.post(f"/plugins/{AIRPLAY_NAME}/enable")
         resp = await client.get(f"/plugins/{AIRPLAY_NAME}")
         assert resp.status_code == 200
-        assert "Shairport Sync" in resp.json()["pw_node_names"]
+        assert "airplay_in" in resp.json()["pw_node_names"]

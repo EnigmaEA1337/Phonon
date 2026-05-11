@@ -705,10 +705,7 @@ async function openPluginSettings(name) {
     alert('Failed to load settings: ' + e.message);
     return;
   }
-  const settings = await r.json();
-  // For v1 we hardcode the AirPlay form. When we add Spotify/MPD,
-  // either dispatch on name or derive the form from the OpenAPI
-  // schema — punt until the second plugin exists.
+  const s = await r.json();
   if (name !== 'airplay-v1') {
     alert('Settings UI for "' + name + '" not implemented yet');
     return;
@@ -718,29 +715,71 @@ async function openPluginSettings(name) {
   overlay = document.createElement('div');
   overlay.id = 'plugin-settings-overlay';
   overlay.className = 'modal-overlay open';
-  overlay.innerHTML = `<div class="modal" style="max-width:480px">
+
+  // Field helpers — keep the HTML scaffolding readable as the form grows.
+  const text = (id, val, max, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <input type="text" id="${id}" ${max ? `maxlength="${max}"` : ''} value="${escapeHtml(val ?? '')}"
+      style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px"></label>`;
+  const num = (id, val, step, min, max, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <input type="number" id="${id}" step="${step}" min="${min}" max="${max}" value="${val}"
+      style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px"></label>`;
+  const sel = (id, val, opts, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <select id="${id}" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+      ${opts.map(o => `<option value="${o}" ${String(val) === String(o) ? 'selected' : ''}>${o}</option>`).join('')}
+    </select></label>`;
+  const bool = (id, val, hint) => `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--text-mid)">
+    <input type="checkbox" id="${id}" ${val ? 'checked' : ''}>${escapeHtml(hint)}</label>`;
+  const section = (title, html, opened = true) => `
+    <details ${opened ? 'open' : ''} style="margin-bottom:6px;border:1px solid var(--border);border-radius:3px;background:var(--bg-1)">
+      <summary style="cursor:pointer;padding:6px 10px;font-size:11px;font-weight:600;color:var(--cyan);user-select:none">${escapeHtml(title)}</summary>
+      <div style="padding:8px 10px 4px 10px">${html}</div>
+    </details>`;
+
+  overlay.innerHTML = `<div class="modal" style="max-width:560px;max-height:80vh;overflow:auto">
     <div class="modal-head"><h2>AirPlay (Classic) — Settings</h2></div>
     <div class="modal-body">
-      <label style="display:block;margin-bottom:10px">
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Receiver name (shown in iPhone AirPlay picker)</div>
-        <input type="text" id="ap-name" maxlength="63" value="${escapeHtml(settings.name || '')}"
-          style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
-      </label>
-      <label style="display:block;margin-bottom:10px">
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Password (optional — empty = open)</div>
-        <input type="text" id="ap-password" maxlength="64" value="${escapeHtml(settings.password || '')}"
-          style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
-      </label>
-      <label style="display:block;margin-bottom:10px">
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">Interpolation (soxr = better quality, ~2% more CPU)</div>
-        <select id="ap-interpolation" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
-          <option value="soxr" ${settings.interpolation === 'soxr' ? 'selected' : ''}>soxr</option>
-          <option value="basic" ${settings.interpolation === 'basic' ? 'selected' : ''}>basic</option>
-        </select>
-      </label>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+
+      ${section('Identity', `
+        ${text('ap-name', s.name, 63, 'Receiver name (shown in iPhone AirPlay picker)')}
+        ${text('ap-password', s.password, 64, 'Password (optional — empty = open)')}
+      `)}
+
+      ${section('Audio quality', `
+        ${sel('ap-interpolation', s.interpolation, ['soxr', 'basic'], 'Interpolation — soxr = better quality, ~2% more CPU')}
+        ${sel('ap-output_format', s.output_format, ['auto', 'S16', 'S24', 'S32'], 'Output sample format — auto = match input')}
+        ${sel('ap-playback_mode', s.playback_mode, ['stereo', 'mono', 'reverse_stereo', 'both_left', 'both_right'], 'Channel routing')}
+      `)}
+
+      ${section('Volume', `
+        ${sel('ap-volume_control_profile', s.volume_control_profile, ['standard', 'dasl_tapered', 'flat'], 'Volume curve')}
+        ${num('ap-volume_max_db', s.volume_max_db, 0.5, -30, 0, 'volume_max_db — cap output (0 = no cap)')}
+        ${num('ap-volume_range_db', s.volume_range_db, 1, 0, 120, 'volume_range_db (0 = device default)')}
+        ${bool('ap-ignore_volume_control', s.ignore_volume_control, 'Ignore iOS volume slider (downstream handles it)')}
+      `, false)}
+
+      ${section('Session', `
+        ${bool('ap-allow_session_interruption', s.allow_session_interruption, 'Allow new clients to kick off current session')}
+        ${num('ap-session_timeout', s.session_timeout, 1, 0, 3600, 'session_timeout in seconds (0 = never)')}
+      `, false)}
+
+      ${section('Sync / latency', `
+        ${num('ap-audio_backend_buffer_desired_length_in_seconds', s.audio_backend_buffer_desired_length_in_seconds, 0.01, 0.05, 2, 'audio_backend_buffer_desired_length (s) — backend buffer, higher = more tolerant of jitter')}
+        ${num('ap-audio_backend_latency_offset_in_seconds', s.audio_backend_latency_offset_in_seconds, 0.001, -0.5, 0.5, 'audio_backend_latency_offset (s) — manual fine alignment')}
+        ${num('ap-drift_tolerance_in_seconds', s.drift_tolerance_in_seconds, 0.0001, 0, 0.1, 'drift_tolerance (s) — tighter = more aggressive micro-corrections')}
+        ${num('ap-resync_threshold_in_seconds', s.resync_threshold_in_seconds, 0.001, 0, 1, 'resync_threshold (s) — drift above this triggers a full resync')}
+      `, false)}
+
+      ${section('Diagnostics', `
+        ${sel('ap-log_verbosity', s.log_verbosity, [0, 1, 2, 3], 'log_verbosity — 0 silent, 3 debug')}
+        ${bool('ap-statistics', s.statistics, 'Log periodic playback statistics')}
+      `, false)}
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
         <button class="btn" onclick="document.getElementById('plugin-settings-overlay').remove()">Cancel</button>
-        <button class="btn btn-primary" onclick="savePluginSettings('airplay-v1')">Save & restart</button>
+        <button class="btn btn-primary" onclick="savePluginSettings('airplay-v1')">Save &amp; restart</button>
       </div>
     </div>
   </div>`;
@@ -748,10 +787,25 @@ async function openPluginSettings(name) {
 }
 
 async function savePluginSettings(name) {
+  const v = id => document.getElementById(id);
   const body = {
-    name: document.getElementById('ap-name').value,
-    password: document.getElementById('ap-password').value,
-    interpolation: document.getElementById('ap-interpolation').value,
+    name: v('ap-name').value,
+    password: v('ap-password').value,
+    interpolation: v('ap-interpolation').value,
+    output_format: v('ap-output_format').value,
+    playback_mode: v('ap-playback_mode').value,
+    volume_control_profile: v('ap-volume_control_profile').value,
+    volume_max_db: parseFloat(v('ap-volume_max_db').value),
+    volume_range_db: parseFloat(v('ap-volume_range_db').value),
+    ignore_volume_control: v('ap-ignore_volume_control').checked,
+    allow_session_interruption: v('ap-allow_session_interruption').checked,
+    session_timeout: parseInt(v('ap-session_timeout').value, 10),
+    audio_backend_buffer_desired_length_in_seconds: parseFloat(v('ap-audio_backend_buffer_desired_length_in_seconds').value),
+    audio_backend_latency_offset_in_seconds: parseFloat(v('ap-audio_backend_latency_offset_in_seconds').value),
+    drift_tolerance_in_seconds: parseFloat(v('ap-drift_tolerance_in_seconds').value),
+    resync_threshold_in_seconds: parseFloat(v('ap-resync_threshold_in_seconds').value),
+    log_verbosity: parseInt(v('ap-log_verbosity').value, 10),
+    statistics: v('ap-statistics').checked,
   };
   try {
     const r = await fetch(API + '/plugins/' + encodeURIComponent(name) + '/settings', {

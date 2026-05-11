@@ -32,7 +32,11 @@ class PluginNotFoundError(KeyError):
     """Raised when the API looks up a plugin name we don't know about."""
 
 
-def _build_plugins(system: SystemBackend, plugin_data_root: Path) -> list[SourcePlugin]:
+def _build_plugins(
+    system: SystemBackend,
+    pw_backend: PipeWireBackend,
+    plugin_data_root: Path,
+) -> list[SourcePlugin]:
     """Hardcoded list of known plugins. Adding one means:
       1. write the concrete class
       2. import it here
@@ -41,7 +45,7 @@ def _build_plugins(system: SystemBackend, plugin_data_root: Path) -> list[Source
     plugin gets its own scratch area without colliding."""
     airplay_conf = plugin_data_root / "airplay-v1" / "shairport-sync.conf"
     return [
-        AirplayV1Plugin(system=system, conf_path=airplay_conf),
+        AirplayV1Plugin(system=system, pw_backend=pw_backend, conf_path=airplay_conf),
     ]
 
 
@@ -56,7 +60,7 @@ class PluginRegistry:
     ) -> None:
         self._system = system
         self._pw = pw_backend
-        plugins = _build_plugins(system, plugin_data_root)
+        plugins = _build_plugins(system, pw_backend, plugin_data_root)
         # Index by name for O(1) lookup from the API.
         self._by_name: dict[str, SourcePlugin] = {p.name: p for p in plugins}
 

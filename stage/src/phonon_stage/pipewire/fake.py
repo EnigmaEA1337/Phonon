@@ -23,6 +23,11 @@ class FakePipeWireBackend:
         # value = (source, sink, latency_msec) tuple. Mirrors pactl's
         # module list for tests to inspect.
         self.loopbacks: dict[int, tuple[str, str, int]] = {}
+        # Same idea for null-sinks loaded by source plugins. Loading
+        # one also appends a synthetic node + 4 ports (FL/FR x
+        # input/output) so list_nodes/list_ports see the same shape
+        # as a real PW null-sink.
+        self.null_sinks: dict[int, tuple[str, str]] = {}
         self.unloaded_modules: list[int] = []
         self._next_link_id = 100
         self._next_module_id = 536_870_912  # pactl convention for pulse-compat modules
@@ -67,6 +72,68 @@ class FakePipeWireBackend:
         self.loopbacks[mid] = (source, sink, latency_msec)
         return mid
 
+    async def load_null_sink(self, name: str, description: str) -> int | None:
+        mid = self._next_module_id
+        self._next_module_id += 1
+        # Record both for tests to inspect, and append a synthetic
+        # Audio/Sink node + its monitor ports so list_nodes/list_ports
+        # show the same shape as the real PW backend.
+        self.null_sinks[mid] = (name, description)
+        node_id = max((n.id for n in self.nodes), default=0) + 1
+        self.nodes.append(
+            PwNode(
+                id=node_id,
+                name=name,
+                media_class="Audio/Sink",
+                nick=description,
+                state="suspended",
+            )
+        )
+        # Monitor ports (direction=output → exposed as routable source in
+        # the patch bay) + playback ports (direction=input → where the
+        # source daemon writes its audio).
+        next_port = max((p.id for p in self.ports), default=0) + 1
+        self.ports.extend(
+            [
+                PwPort(
+                    id=next_port,
+                    node_id=node_id,
+                    name="monitor_FL",
+                    direction="output",
+                    alias=f"{description}:monitor_FL",
+                ),
+                PwPort(
+                    id=next_port + 1,
+                    node_id=node_id,
+                    name="monitor_FR",
+                    direction="output",
+                    alias=f"{description}:monitor_FR",
+                ),
+                PwPort(
+                    id=next_port + 2,
+                    node_id=node_id,
+                    name="playback_FL",
+                    direction="input",
+                    alias=f"{description}:playback_FL",
+                ),
+                PwPort(
+                    id=next_port + 3,
+                    node_id=node_id,
+                    name="playback_FR",
+                    direction="input",
+                    alias=f"{description}:playback_FR",
+                ),
+            ]
+        )
+        return mid
+
     async def unload_module(self, module_id: int) -> None:
         self.loopbacks.pop(module_id, None)
+        if module_id in self.null_sinks:
+            name, _ = self.null_sinks.pop(module_id)
+            # Remove the synthetic node + its ports so the graph state
+            # mirrors what `pactl unload-module` would actually do.
+            removed_node_ids = {n.id for n in self.nodes if n.name == name}
+            self.nodes = [n for n in self.nodes if n.name != name]
+            self.ports = [p for p in self.ports if p.node_id not in removed_node_ids]
         self.unloaded_modules.append(module_id)

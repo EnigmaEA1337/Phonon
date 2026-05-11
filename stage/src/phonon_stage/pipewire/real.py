@@ -212,3 +212,41 @@ class RealPipeWireBackend:
             logger.info("pipewire.module_unloaded", module_id=module_id)
         except Exception:
             logger.info("pipewire.module_unload_failed", module_id=module_id, exc_info=False)
+
+    async def load_null_sink(self, name: str, description: str) -> int | None:
+        """Load a pactl module-null-sink. Returns the module id on success,
+        None on failure.
+
+        `name` is the sink_name (used as PW node name too). The
+        sink's monitor_FL/FR ports expose the audio in `direction=output`,
+        which is what surfaces it as a routable source in the patch bay.
+        `description` is the human-readable label (sink_properties =
+        device.description=...) shown in the UI.
+        """
+        try:
+            out = await cli.run_command(
+                "pactl",
+                "load-module",
+                "module-null-sink",
+                f"sink_name={name}",
+                f"sink_properties=device.description={description}",
+            )
+        except Exception:
+            logger.warning(
+                "pipewire.null_sink_load_failed",
+                name=name,
+                description=description,
+                exc_info=True,
+            )
+            return None
+        out = out.strip()
+        if not out.isdigit():
+            logger.warning(
+                "pipewire.null_sink_load_unexpected_output",
+                name=name,
+                output=out,
+            )
+            return None
+        mid = int(out)
+        logger.info("pipewire.null_sink_loaded", module_id=mid, name=name)
+        return mid

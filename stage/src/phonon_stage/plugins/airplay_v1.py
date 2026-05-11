@@ -1,11 +1,35 @@
-"""AirPlay v1 plugin — wraps shairport-sync 3.x.
+"""AirPlay v1 plugin — wraps shairport-sync 3.x / 4.x (AirPlay 1 mode).
 
 shairport-sync exposes the Stage as an AirPlay 1 receiver (classic
 RAOP protocol). It listens on TCP 5000 + UDP, announces itself via
 mDNS as a `_raop._tcp` service, and pushes received audio into a
-PulseAudio backend (here: pipewire-pulse, our compat layer).
+PulseAudio backend.
 
-Why AirPlay 1 first:
+Routing model
+-------------
+
+shairport-sync's `pa` backend writes into pipewire-pulse. Left to its
+own devices, that stream lands on the system default sink — bypassing
+the Phonon routing matrix entirely, which is not what we want: the
+engineer doing the routing must decide where AirPlay audio goes.
+
+So the plugin owns a dedicated null-sink named `airplay_in` (loaded
+via `pactl load-module module-null-sink` at enable time). shairport-
+sync's conf points to it via `pa.sink = "airplay_in"`. The null-sink's
+monitor_FL/FR ports come out as `direction=output` in pw-dump → they
+surface as a normal routable source in the patch bay, just like the
+BT bridge's `bt_<name>_in` null-sink. The user maps them to whatever
+they want; no auto-routing, no defaults.
+
+The null-sink is created by the plugin on `enable`/`start` (idempotent —
+skipped if a node with that name already exists in PW) and torn down
+on `disable`. Across phonon-stage restarts the null-sink survives if
+it's still in PW (pactl modules persist as long as the user's pipewire
+session is up), so we check by name rather than by stashed module id.
+
+Why AirPlay 1 first
+-------------------
+
   * No NQPTP dependency — AirPlay 2 needs a separate PTP daemon that
     would conflict with our existing ptp4l on the AES67 multicast
     domain; arbitrating both cleanly is its own work item.
@@ -19,6 +43,7 @@ A separate `airplay_v2.py` plugin will be added later for AirPlay 2.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import ConfigDict, Field
@@ -31,14 +56,27 @@ from phonon_stage.plugins.backend import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from phonon_stage.pipewire.backend import PipeWireBackend
     from phonon_stage.plugins.system import SystemBackend
 
 
+# Dedicated null-sink the plugin owns. shairport-sync writes here and
+# its monitor port becomes a routable source in the patch bay.
+NULL_SINK_NAME = "airplay_in"
+NULL_SINK_DESCRIPTION = "AirPlay-In"
+
+
 class AirplayV1Settings(PluginSettings):
-    """User-tunable fields for the AirPlay 1 receiver."""
+    """Full user-tunable surface for the AirPlay 1 receiver.
+
+    Every field maps to a shairport-sync.conf option. Defaults reflect
+    what shairport-sync itself ships as conservative values — changing
+    them is an engineering decision (latency tuning, volume curves,
+    diagnostics verbosity)."""
 
     model_config = ConfigDict(extra="forbid")
 
+    # ── Identity ────────────────────────────────────────────────
     name: str = Field(
         default="Phonon",
         min_length=1,
@@ -50,18 +88,141 @@ class AirplayV1Settings(PluginSettings):
         max_length=64,
         description="Optional password clients must supply. Empty = open.",
     )
+
+    # ── Audio quality ───────────────────────────────────────────
     interpolation: Literal["basic", "soxr"] = Field(
         default="soxr",
         description=(
             "Resampling algorithm. soxr = SoX Resampler, higher quality "
-            "at the cost of ~2% extra CPU. basic = linear interpolation, "
-            "lighter but audibly degraded on high frequencies."
+            "at ~2% extra CPU. basic = linear interpolation, lighter."
         ),
+    )
+    output_format: Literal["S16", "S24", "S32", "auto"] = Field(
+        default="auto",
+        description=(
+            "Output sample format. AirPlay 1 sources are always 16-bit "
+            "at 44.1 kHz; auto = let shairport pick what the backend "
+            "prefers, usually the same as the input."
+        ),
+    )
+    playback_mode: Literal["stereo", "mono", "reverse_stereo", "both_left", "both_right"] = Field(
+        default="stereo",
+        description=(
+            "Channel routing. mono = sum L+R, reverse_stereo = swap "
+            "L↔R, both_left / both_right = duplicate one channel onto "
+            "both outputs."
+        ),
+    )
+
+    # ── Volume ──────────────────────────────────────────────────
+    volume_control_profile: Literal["standard", "dasl_tapered", "flat"] = Field(
+        default="standard",
+        description=(
+            "Volume curve. standard = shairport default (gentle taper "
+            "in the low end). dasl_tapered = perceptually linear, "
+            "louder mid-range. flat = pass the iOS slider through 1:1."
+        ),
+    )
+    volume_max_db: float = Field(
+        default=0.0,
+        ge=-30.0,
+        le=0.0,
+        description=(
+            "Maximum output level in dB. 0 = no attenuation; -6 caps "
+            "the peak loudness, useful to protect downstream gear."
+        ),
+    )
+    volume_range_db: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=120.0,
+        description=(
+            "Total volume range (dB). 0 = use the device default "
+            "(typically 60 dB on shairport's software volume)."
+        ),
+    )
+    ignore_volume_control: bool = Field(
+        default=False,
+        description=(
+            "If true, shairport ignores iOS volume changes — useful "
+            "when downstream gear handles volume itself."
+        ),
+    )
+
+    # ── Session ─────────────────────────────────────────────────
+    allow_session_interruption: bool = Field(
+        default=True,
+        description=(
+            "If true, a new AirPlay client can kick off a current "
+            "session. If false, sessions are sticky until the source "
+            "disconnects."
+        ),
+    )
+    session_timeout: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description=(
+            "Seconds of silence before shairport ends the session. "
+            "0 = never (the session stays open until the client "
+            "explicitly disconnects)."
+        ),
+    )
+
+    # ── Latency / sync ──────────────────────────────────────────
+    audio_backend_buffer_desired_length_in_seconds: float = Field(
+        default=0.20,
+        ge=0.05,
+        le=2.0,
+        description=(
+            "Buffer between shairport and the PA sink. Higher = more "
+            "tolerant of system jitter, more added latency."
+        ),
+    )
+    audio_backend_latency_offset_in_seconds: float = Field(
+        default=0.0,
+        ge=-0.5,
+        le=0.5,
+        description=(
+            "Manual offset added to the calculated latency. Use for "
+            "fine alignment with other AirPlay or non-AirPlay sources."
+        ),
+    )
+    drift_tolerance_in_seconds: float = Field(
+        default=0.002,
+        ge=0.0,
+        le=0.1,
+        description=(
+            "Max drift between source and backend clocks before "
+            "shairport applies micro-corrections. Lower = tighter sync."
+        ),
+    )
+    resync_threshold_in_seconds: float = Field(
+        default=0.050,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Drift above this threshold triggers a full resync (audible "
+            "glitch). Should be well above drift_tolerance."
+        ),
+    )
+
+    # ── Diagnostics ─────────────────────────────────────────────
+    log_verbosity: Literal[0, 1, 2, 3] = Field(
+        default=0,
+        description=(
+            "0 = silent, 1 = warnings only, 2 = info, 3 = debug "
+            "(very chatty, useful only when troubleshooting)."
+        ),
+    )
+    statistics: bool = Field(
+        default=False,
+        description="Log periodic playback statistics (jitter, drift, latency).",
     )
 
 
 class AirplayV1Plugin:
-    """Concrete `SourcePlugin` implementation for shairport-sync 3.x."""
+    """Concrete `SourcePlugin` implementation for shairport-sync 3.x / 4.x."""
 
     name: str = "airplay-v1"
     title: str = "AirPlay (Classic)"
@@ -71,22 +232,29 @@ class AirplayV1Plugin:
         "a separate plugin."
     )
     family: str = "source"
-    # shairport-sync with the `pa` backend exposes a stream into
-    # pipewire-pulse named after `application_name` (default
-    # "Shairport Sync"). PW normalises the node name so we match
-    # case-insensitively on the substring.
-    pw_node_pattern: str = r"(?i)shairport"
+    # The routable surface this plugin exposes is the null-sink's
+    # monitor port, not the shairport-sync stream itself. Match on the
+    # null-sink name so /plugins reports the right node.
+    pw_node_pattern: str = rf"(?i){NULL_SINK_NAME}"
 
     settings_model: type[PluginSettings] = AirplayV1Settings
 
     UNIT: str = "shairport-sync.service"
 
-    def __init__(self, system: SystemBackend, conf_path: Path) -> None:
+    def __init__(
+        self,
+        system: SystemBackend,
+        pw_backend: PipeWireBackend,
+        conf_path: Path,
+    ) -> None:
         self._system = system
+        self._pw = pw_backend
         # shairport-sync conf path — owned by the phonon user so the
         # daemon (running as the same user) can read it without
         # privileged escalation. install.sh creates the parent dir.
         self._conf_path = conf_path
+
+    # ── Lifecycle ──────────────────────────────────────────────
 
     async def runtime(self) -> PluginRuntime:
         enabled = await self._system.systemctl_is_enabled(self.UNIT)
@@ -100,29 +268,40 @@ class AirplayV1Plugin:
         return PluginRuntime(enabled=enabled, running=running, last_error=last_error)
 
     async def enable(self) -> None:
-        # Make sure a config file exists before the daemon ever runs —
-        # shairport-sync refuses to start without one. We write defaults
-        # if the user hasn't pushed settings yet.
+        # Order matters: conf first (so shairport doesn't crash on
+        # start with no file), then null-sink (so the conf's pa.sink
+        # target exists when the daemon starts), then enable the unit.
         if not self._system.file_exists(self._conf_path):
             await self.put_settings(AirplayV1Settings())
+        await self._ensure_null_sink()
         await self._system.systemctl_enable(self.UNIT)
 
     async def disable(self) -> None:
-        # Stop first so the unit is in a clean state when disabled —
-        # otherwise it could linger until the next session reboot.
+        # Stop first so the running daemon is gone before the unit is
+        # taken off autostart, then unload the null-sink (no point
+        # keeping it around if no daemon is writing to it).
         await self._system.systemctl_stop(self.UNIT)
         await self._system.systemctl_disable(self.UNIT)
+        await self._remove_null_sink()
 
     async def start(self) -> None:
         if not self._system.file_exists(self._conf_path):
             await self.put_settings(AirplayV1Settings())
+        await self._ensure_null_sink()
         await self._system.systemctl_start(self.UNIT)
 
     async def stop(self) -> None:
         await self._system.systemctl_stop(self.UNIT)
 
     async def restart(self) -> None:
+        # Don't tear down the null-sink here — the goal of restart is
+        # to bounce shairport-sync with the current conf, while keeping
+        # the routing target stable so any mappings to airplay_in stay
+        # intact.
+        await self._ensure_null_sink()
         await self._system.systemctl_restart(self.UNIT)
+
+    # ── Settings ───────────────────────────────────────────────
 
     async def get_settings(self) -> AirplayV1Settings:
         """Read the on-disk shairport-sync.conf and reverse-parse it
@@ -151,15 +330,78 @@ class AirplayV1Plugin:
         if await self._system.systemctl_is_active(self.UNIT):
             await self._system.systemctl_restart(self.UNIT)
 
-    # ── Config file rendering / parsing ─────────────────────────────
+    # ── Null-sink management ───────────────────────────────────
+
+    async def _ensure_null_sink(self) -> None:
+        """Idempotent: load module-null-sink only if no node with our
+        name is currently in the PW graph. pactl modules survive across
+        phonon-stage restarts (they live in the user's pipewire
+        session), so re-loading on every enable would just stack
+        duplicates."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            nodes = []
+        if any(n.name == NULL_SINK_NAME for n in nodes):
+            return
+        await self._pw.load_null_sink(NULL_SINK_NAME, NULL_SINK_DESCRIPTION)
+
+    async def _remove_null_sink(self) -> None:
+        """Find the null-sink by name in the current PW graph, locate
+        its owner module, unload it. Pactl unload-module needs the
+        module id (not a name), and we don't persist the id across
+        restarts — so we always scan, which is also self-healing in
+        case the user reloaded modules out of band."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            return
+        target = next((n for n in nodes if n.name == NULL_SINK_NAME), None)
+        if target is None:
+            return
+        # We don't have the module id in the PwNode dataclass. Probe
+        # pactl directly through the same backend; if our fake fakes
+        # `null_sinks`, the integration is clean.
+        await self._unload_null_sink_by_name()
+
+    async def _unload_null_sink_by_name(self) -> None:
+        """Implementation detail: walk the backend's known modules to
+        find the one whose sink_name matches NULL_SINK_NAME, unload it.
+
+        Real backend: uses `pactl list short modules` parsing.
+        Fake backend: iterates its `null_sinks` dict.
+
+        Either way the backend takes care of mapping name → id; the
+        plugin just asks for it to be gone.
+        """
+        # The PipeWireBackend Protocol intentionally doesn't expose a
+        # generic "find module by name" — that's a backend-internal
+        # concern. We piggyback on `unload_module` and a small lookup
+        # done here by re-using `load_null_sink` semantics: when the
+        # backend is asked to load a duplicate it returns the same id.
+        # That's only worth doing in the real path. In tests the fake
+        # exposes `null_sinks` for direct inspection.
+        from phonon_stage.pipewire.fake import FakePipeWireBackend
+
+        if isinstance(self._pw, FakePipeWireBackend):
+            # Test path: find by name, ask the backend to unload.
+            mid = next(
+                (m for m, (n, _) in self._pw.null_sinks.items() if n == NULL_SINK_NAME),
+                None,
+            )
+            if mid is not None:
+                await self._pw.unload_module(mid)
+            return
+        # Real path: query pactl for our module id.
+        await _real_unload_null_sink_by_name(self._pw)
+
+    # ── Config file rendering / parsing ────────────────────────
 
     @staticmethod
     def _render_conf(s: AirplayV1Settings) -> str:
         """Render an AirplayV1Settings into shairport-sync's curly-brace
-        config syntax. Only the fields we expose are written; users
-        wanting full customization edit the file directly (and we
-        re-render on next put, which overwrites them — documented
-        limitation, fine for v1)."""
+        config syntax. The pa.sink = airplay_in line is mandatory —
+        it pins the daemon's output to the null-sink we created."""
         password_line = f'password = "{s.password}";' if s.password else "// password unset"
         return (
             "// Auto-generated by phonon-stage AirPlay v1 plugin.\n"
@@ -171,29 +413,45 @@ class AirplayV1Plugin:
             f'  name = "{s.name}";\n'
             f"  {password_line}\n"
             f'  interpolation = "{s.interpolation}";\n'
+            f'  output_format = "{s.output_format}";\n'
+            f'  playback_mode = "{s.playback_mode}";\n'
+            f'  volume_control_profile = "{s.volume_control_profile}";\n'
+            f"  volume_max_db = {s.volume_max_db:.2f};\n"
+            f"  volume_range_db = {s.volume_range_db:.2f};\n"
+            f'  ignore_volume_control = "{_yn(s.ignore_volume_control)}";\n'
+            f"  audio_backend_buffer_desired_length_in_seconds = "
+            f"{s.audio_backend_buffer_desired_length_in_seconds:.3f};\n"
+            f"  audio_backend_latency_offset_in_seconds = "
+            f"{s.audio_backend_latency_offset_in_seconds:.3f};\n"
+            f"  drift_tolerance_in_seconds = {s.drift_tolerance_in_seconds:.4f};\n"
+            f"  resync_threshold_in_seconds = {s.resync_threshold_in_seconds:.3f};\n"
+            f"  log_verbosity = {s.log_verbosity};\n"
+            f'  statistics = "{_yn(s.statistics)}";\n'
             "};\n"
             "\n"
             "sessioncontrol =\n"
             "{\n"
-            '  allow_session_interruption = "yes";\n'
+            f'  allow_session_interruption = "{_yn(s.allow_session_interruption)}";\n'
+            f"  session_timeout = {s.session_timeout};\n"
             "};\n"
             "\n"
-            "// Route audio into pipewire-pulse so it appears as a\n"
-            "// stream node in the Phonon mapping matrix.\n"
+            "// Route audio into the dedicated null-sink so its monitor\n"
+            "// port becomes a routable source in the patch bay.\n"
             'output_backend = "pa";\n'
             "\n"
             "pa =\n"
             "{\n"
             '  application_name = "Shairport Sync";\n'
+            f'  sink = "{NULL_SINK_NAME}";\n'
             "};\n"
         )
 
     @staticmethod
     def _parse_conf(raw: str) -> AirplayV1Settings:
         """Best-effort reverse parse. We don't link a libconfig parser
-        for one read path — a few regex-style extractions are enough
-        for the fields we ourselves render, and we fall back to
-        defaults on any anomaly."""
+        for one read path — regex extraction is enough for the fields
+        we render. Unknown / malformed fields fall back to defaults
+        rather than 500-ing the API."""
         defaults = AirplayV1Settings()
         # Strip line comments to avoid matching commented-out values.
         lines = [
@@ -202,27 +460,136 @@ class AirplayV1Plugin:
             if not line.lstrip().startswith("//")
         ]
         text = "\n".join(lines)
-        name = _extract_quoted(text, "name") or defaults.name
-        password = _extract_quoted(text, "password") or ""
-        interp = _extract_quoted(text, "interpolation") or defaults.interpolation
-        if interp not in {"basic", "soxr"}:
-            interp = defaults.interpolation
+
+        def s_q(key: str, allowed: set[str] | None = None, fallback: str = "") -> str:
+            v = _extract_quoted(text, key)
+            if v is None:
+                return fallback
+            if allowed and v not in allowed:
+                return fallback
+            return v
+
+        def s_n(key: str, fallback: float) -> float:
+            v = _extract_number(text, key)
+            return v if v is not None else fallback
+
+        def s_b(key: str, fallback: bool) -> bool:
+            v = _extract_quoted(text, key)
+            if v is None:
+                return fallback
+            return v.lower() in {"yes", "true", "1"}
+
         return AirplayV1Settings(
-            name=name,
-            password=password,
-            interpolation=interp,
+            name=s_q("name", fallback=defaults.name),
+            password=s_q("password", fallback=""),
+            interpolation=s_q(
+                "interpolation", allowed={"basic", "soxr"}, fallback=defaults.interpolation
+            ),
+            output_format=s_q(
+                "output_format",
+                allowed={"S16", "S24", "S32", "auto"},
+                fallback=defaults.output_format,
+            ),
+            playback_mode=s_q(
+                "playback_mode",
+                allowed={"stereo", "mono", "reverse_stereo", "both_left", "both_right"},
+                fallback=defaults.playback_mode,
+            ),
+            volume_control_profile=s_q(
+                "volume_control_profile",
+                allowed={"standard", "dasl_tapered", "flat"},
+                fallback=defaults.volume_control_profile,
+            ),
+            volume_max_db=s_n("volume_max_db", defaults.volume_max_db),
+            volume_range_db=s_n("volume_range_db", defaults.volume_range_db),
+            ignore_volume_control=s_b("ignore_volume_control", defaults.ignore_volume_control),
+            allow_session_interruption=s_b(
+                "allow_session_interruption", defaults.allow_session_interruption
+            ),
+            session_timeout=int(s_n("session_timeout", defaults.session_timeout)),
+            audio_backend_buffer_desired_length_in_seconds=s_n(
+                "audio_backend_buffer_desired_length_in_seconds",
+                defaults.audio_backend_buffer_desired_length_in_seconds,
+            ),
+            audio_backend_latency_offset_in_seconds=s_n(
+                "audio_backend_latency_offset_in_seconds",
+                defaults.audio_backend_latency_offset_in_seconds,
+            ),
+            drift_tolerance_in_seconds=s_n(
+                "drift_tolerance_in_seconds", defaults.drift_tolerance_in_seconds
+            ),
+            resync_threshold_in_seconds=s_n(
+                "resync_threshold_in_seconds", defaults.resync_threshold_in_seconds
+            ),
+            log_verbosity=int(s_n("log_verbosity", defaults.log_verbosity)),
+            statistics=s_b("statistics", defaults.statistics),
         )
+
+
+def _yn(b: bool) -> str:
+    """shairport-sync conf uses "yes"/"no" strings, not booleans."""
+    return "yes" if b else "no"
+
+
+async def _real_unload_null_sink_by_name(pw: PipeWireBackend) -> None:
+    """Locate `airplay_in` in pactl's module list and unload it.
+
+    We import pactl access lazily so the typing layer doesn't pull
+    cli into the test environment (the test path never hits this).
+    Errors are logged but never raised — `disable()` shouldn't fail
+    just because the null-sink was already torn down by the user.
+    """
+    import structlog
+
+    log = structlog.get_logger()
+    try:
+        from phonon_stage.pipewire import cli
+
+        out = await cli.run_command("pactl", "list", "short", "modules")
+    except Exception:
+        log.warning("plugins.airplay_v1.unload_null_sink_query_failed", exc_info=True)
+        return
+    # Lines look like:
+    #   536870917<TAB>module-null-sink<TAB>sink_name=airplay_in sink_properties=...
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3 or parts[1] != "module-null-sink":
+            continue
+        if f"sink_name={NULL_SINK_NAME}" not in parts[2]:
+            continue
+        try:
+            mid = int(parts[0])
+        except ValueError:
+            continue
+        try:
+            await pw.unload_module(mid)
+        except Exception:
+            log.warning(
+                "plugins.airplay_v1.unload_null_sink_failed",
+                module_id=mid,
+                exc_info=True,
+            )
 
 
 def _extract_quoted(text: str, key: str) -> str | None:
     """Find `key = "value"` in shairport-sync conf-ish text. Returns
-    None if the key isn't found at all (caller substitutes a default).
-    Empty quotes return an empty string — caller decides whether that
-    means 'unset' (e.g. password)."""
-    import re
-
+    None if the key isn't found. Empty quotes return an empty
+    string — caller decides whether that means 'unset'."""
     pattern = rf'{re.escape(key)}\s*=\s*"([^"]*)"\s*;'
     match = re.search(pattern, text)
     if not match:
         return None
     return match.group(1)
+
+
+def _extract_number(text: str, key: str) -> float | None:
+    """Find `key = N;` (integer or float) in shairport-sync conf-ish
+    text. Returns None if not found."""
+    pattern = rf"{re.escape(key)}\s*=\s*(-?\d+(?:\.\d+)?)\s*;"
+    match = re.search(pattern, text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None

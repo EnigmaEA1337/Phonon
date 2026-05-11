@@ -76,3 +76,12 @@ class PipeWireBackend(Protocol):
     async def load_loopback(self, source: str, sink: str, latency_msec: int) -> int | None: ...
 
     async def unload_module(self, module_id: int) -> None: ...
+
+    # Module-null-sink management for source plugins. A plugin that
+    # spawns an upstream daemon (shairport-sync, librespot…) wants the
+    # daemon to write into a dedicated null-sink rather than the
+    # default sink — that way the null-sink's monitor port becomes a
+    # routable Audio/Source in the patch bay, and the user keeps full
+    # control over where the audio goes (no auto-routing to the
+    # default destination).
+    async def load_null_sink(self, name: str, description: str) -> int | None: ...

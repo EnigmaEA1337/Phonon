@@ -410,6 +410,23 @@ class RealPipeWireBackend:
         except Exception:
             logger.warning("pipewire.filter_chain_reload_failed", exc_info=True)
 
+    @staticmethod
+    def _resolve_filter_chain_node(
+        nodes: list[PwNode], chain_name: str
+    ) -> PwNode | None:
+        """PW module-filter-chain exposes the plugin's control ports
+        on one of the two streams it creates (`input.<chain>` and
+        `output.<chain>`), not on a node literally named after the
+        chain. Try the chain name first (some PW builds DO expose
+        the wrapper node directly), then fall back to the input
+        stream — that's where the LADSPA plugin's Props live in
+        our build."""
+        for candidate in (chain_name, f"input.{chain_name}", f"output.{chain_name}"):
+            n = next((x for x in nodes if x.name == candidate), None)
+            if n is not None:
+                return n
+        return None
+
     async def read_filter_node_controls(self, node_name: str) -> dict[str, float]:
         """Pull the live control values off a filter-chain node via
         `pw-cli enum-params <id> Props`. Output is SPA-pod text;
@@ -432,7 +449,7 @@ class RealPipeWireBackend:
             nodes = await self.list_nodes()
         except Exception:
             return {}
-        target = next((n for n in nodes if n.name == node_name), None)
+        target = self._resolve_filter_chain_node(nodes, node_name)
         if target is None:
             return {}
         try:
@@ -446,7 +463,9 @@ class RealPipeWireBackend:
             return {}
         # Stash raw output on self for the diagnostic endpoint —
         # otherwise it's only visible by SSH'ing to the host.
-        self._last_filter_dump = out  # type: ignore[attr-defined]
+        self._last_filter_dump = (
+            f"# resolved chain {node_name} → node id {target.id} ({target.name})\n" + out
+        )  # type: ignore[attr-defined]
         result: dict[str, float] = {}
         pending: str | None = None
         # Per-line lex. Names can contain spaces / parens (LSP labels).
@@ -490,7 +509,7 @@ class RealPipeWireBackend:
                 exc_info=True,
             )
             return
-        target = next((n for n in nodes if n.name == node_name), None)
+        target = self._resolve_filter_chain_node(nodes, node_name)
         if target is None:
             logger.info(
                 "pipewire.filter_control_node_missing",

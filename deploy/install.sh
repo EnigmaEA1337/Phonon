@@ -84,6 +84,8 @@ if ! apt-get install -y -qq \
     libdbus-1-dev \
     pkg-config \
     avahi-daemon \
+    bluez \
+    bluez-tools \
     pipewire \
     pipewire-alsa \
     pipewire-pulse \
@@ -140,9 +142,26 @@ echo "[3/11] Creating phonon user..."
 
 if id -u "${PHONON_USER}" &>/dev/null; then
     echo "  User ${PHONON_USER} already exists"
+    # Existing user might have been created with -d /nonexistent (old
+    # install.sh behaviour). WirePlumber refuses to write its state
+    # under /nonexistent, the daemon fails subtly. Force-correct.
+    if [ "$(getent passwd "${PHONON_USER}" | cut -d: -f6)" != "${DATA_DIR}" ]; then
+        # usermod fails if the user has live processes (its pipewire
+        # session via linger). Stop the user instance first.
+        loginctl disable-linger "${PHONON_USER}" 2>/dev/null || true
+        systemctl stop "user@$(id -u "${PHONON_USER}").service" 2>/dev/null || true
+        sleep 1
+        usermod -d "${DATA_DIR}" "${PHONON_USER}" || true
+        echo "  Corrected ${PHONON_USER} home dir to ${DATA_DIR}"
+    fi
 else
-    useradd -r -s /usr/sbin/nologin -d /nonexistent "${PHONON_USER}"
-    echo "  User ${PHONON_USER} created"
+    # -d "${DATA_DIR}" --no-create-home: record home in /etc/passwd as
+    # /var/lib/phonon (so HOME=$DATA_DIR for the user's systemd session
+    # and WirePlumber state lands there), but don't pre-populate
+    # /var/lib/phonon with skeleton files — step 4 creates that dir
+    # with the right perms.
+    useradd -r -s /usr/sbin/nologin -d "${DATA_DIR}" --no-create-home "${PHONON_USER}"
+    echo "  User ${PHONON_USER} created (home=${DATA_DIR})"
 fi
 
 # Add to audio + bluetooth groups, plus systemd-journal so the
@@ -547,30 +566,37 @@ systemctl daemon-reload
 #   masked     -> aggressive form of disabled; same handling as disabled
 case "${BT_AGENT_PREVSTATE}" in
     enabled)
-        systemctl restart phonon-bt-agent.service 2>/dev/null
+        systemctl restart phonon-bt-agent.service 2>/dev/null || true
         echo "  phonon-bt-agent restarted (kept enabled)"
         ;;
     disabled|masked)
         echo "  phonon-bt-agent left ${BT_AGENT_PREVSTATE} (user state preserved)"
         ;;
     *)
-        systemctl enable phonon-bt-agent.service --quiet 2>/dev/null
-        systemctl restart phonon-bt-agent.service 2>/dev/null
+        # `|| true` is critical: under set -e + pipefail, a failed
+        # restart silently aborts the whole install. On a fresh box
+        # bluez/bluetoothd might not be ready yet (the .service depends
+        # on bluetooth.target, which takes a moment to come up). We
+        # don't want install.sh to die at step 8/11 and never reach
+        # the phonon-stage user service setup at step 10.
+        systemctl enable phonon-bt-agent.service --quiet 2>/dev/null || true
+        systemctl restart phonon-bt-agent.service 2>/dev/null || true
         echo "  phonon-bt-agent enabled (first install)"
         ;;
 esac
 
 case "${BT_UNBLOCK_PREVSTATE}" in
     enabled)
-        systemctl restart phonon-bt-unblock.service 2>/dev/null
+        systemctl restart phonon-bt-unblock.service 2>/dev/null || true
         echo "  phonon-bt-unblock restarted (kept enabled)"
         ;;
     disabled|masked)
         echo "  phonon-bt-unblock left ${BT_UNBLOCK_PREVSTATE} (user state preserved)"
         ;;
     *)
-        systemctl enable phonon-bt-unblock.service --quiet 2>/dev/null
-        systemctl start phonon-bt-unblock.service 2>/dev/null
+        # `|| true` for the same reason as the agent block above.
+        systemctl enable phonon-bt-unblock.service --quiet 2>/dev/null || true
+        systemctl start phonon-bt-unblock.service 2>/dev/null || true
         echo "  phonon-bt-unblock enabled (first install)"
         ;;
 esac

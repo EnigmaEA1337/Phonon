@@ -61,6 +61,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border: 1px solid var(--border); border-radius: 3px; font-family: var(--font-m);
   font-size: 9px; color: var(--text-dim); cursor: pointer; transition: color 0.2s, border-color 0.2s; }
 .tb-xrun.warn { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
+/* Kernel badge — green when lowlatency is live, yellow if a generic
+   kernel is running. Visible at-a-glance: did the reboot after
+   install.sh actually pick up linux-lowlatency? */
+.tb-kernel { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+  border: 1px solid var(--border); border-radius: 3px; font-family: var(--font-m);
+  font-size: 9px; color: var(--text-dim); cursor: help; transition: color 0.2s, border-color 0.2s; }
+.tb-kernel.lowlatency { color: var(--green); border-color: rgba(52,211,153,0.4); }
+.tb-kernel.generic { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
 .tb-xrun.danger { color: var(--red); border-color: rgba(248,113,113,0.4);
   animation: pulse 1.5s infinite; }
 /* System dashboard rows */
@@ -336,6 +344,20 @@ body.mode-live .edit-only select { opacity: 0.4; }
       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
     </svg>
     <span id="tb-update-label">UPDATE</span>
+  </span>
+  <span class="tb-kernel" id="tb-kernel" title="Kernel (loading...)">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="2"/>
+      <line x1="9" y1="2" x2="9" y2="6"/>
+      <line x1="15" y1="2" x2="15" y2="6"/>
+      <line x1="9" y1="18" x2="9" y2="22"/>
+      <line x1="15" y1="18" x2="15" y2="22"/>
+      <line x1="2" y1="9" x2="6" y2="9"/>
+      <line x1="2" y1="15" x2="6" y2="15"/>
+      <line x1="18" y1="9" x2="22" y2="9"/>
+      <line x1="18" y1="15" x2="22" y2="15"/>
+    </svg>
+    <span id="tb-kernel-label">—</span>
   </span>
   <span class="tb-ptp" id="tb-ptp" title="PTP status (loading...)">
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -665,6 +687,18 @@ async function refreshAll() {
     document.getElementById('stage-id').textContent = health.stage_id;
     document.getElementById('uptime').textContent = `uptime ${Math.floor(health.uptime_seconds)}s`;
   }
+
+  // Kernel info is static across daemon lifetime — fetch once and cache.
+  // /system/status is more expensive than the lightweight endpoints in
+  // refreshAll (it runs CPU /proc/stat sampling), so we don't poll it
+  // every cycle for free.
+  if (!state.kernelInfo) {
+    const sys = await api('/system/status');
+    if (sys) {
+      state.kernelInfo = { kernel: sys.kernel, lowlatency: sys.kernel_lowlatency };
+    }
+  }
+  if (state.kernelInfo) renderTopbarKernel(state.kernelInfo);
 
   if (caps) {
     state.btControllers = caps.bluetooth_controllers || [];
@@ -2034,6 +2068,22 @@ function renderTopbarXruns(x) {
   el.title = offenders.length
     ? 'XRUN total ' + total + ' — ' + offenders.map(n => `${n.name}:${n.err}`).join(', ')
     : 'XRUN: 0 — clean run';
+}
+
+function renderTopbarKernel(k) {
+  const el = document.getElementById('tb-kernel');
+  const lab = document.getElementById('tb-kernel-label');
+  if (!el || !lab) return;
+  el.classList.remove('lowlatency', 'generic');
+  if (k.lowlatency) {
+    el.classList.add('lowlatency');
+    lab.textContent = 'LL';
+    el.title = `Kernel ${k.kernel} — low-latency variant active (CONFIG_PREEMPT + HZ=1000 typical). Audio xrun risk roughly halved vs generic.`;
+  } else {
+    el.classList.add('generic');
+    lab.textContent = 'GEN';
+    el.title = `Kernel ${k.kernel} — generic kernel running. Phonon works but audio is more xrun-prone under load. Install linux-lowlatency + reboot to switch.`;
+  }
 }
 
 function renderTopbarPtp(p) {

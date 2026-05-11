@@ -41,6 +41,11 @@ class SystemStatusResponse(BaseModel):
     os_name: str
     arch: str
     kernel: str
+    # True iff `uname -r` contains "lowlatency" or the kernel is a real-time
+    # variant (PREEMPT_RT). Surfaced for the UI badge — install.sh installs
+    # linux-lowlatency but a reboot is needed to actually switch over, so
+    # the user wants visual confirmation that the new kernel is live.
+    kernel_lowlatency: bool = False
     python_version: str
     memory_total_mb: int
     memory_used_mb: int
@@ -210,13 +215,21 @@ async def system_status(request: Request) -> SystemStatusResponse:
         except ValueError:
             pass
 
+    kernel_release = platform.release()
+    # Two signals trigger "lowlatency": the Ubuntu/Debian convention of
+    # naming the package's kernel image `*-lowlatency`, and the
+    # PREEMPT_RT variant (full real-time, used by audio-pro distros).
+    # Both deliver the scheduling guarantees Phonon benefits from.
+    kernel_ll = "lowlatency" in kernel_release.lower() or "preempt_rt" in kernel_release.lower()
+
     result = SystemStatusResponse(
         agent_version=__version__,
         hostname=platform.node(),
         os_name=await _run("cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'")
         or platform.platform(),
         arch=platform.machine(),
-        kernel=platform.release(),
+        kernel=kernel_release,
+        kernel_lowlatency=kernel_ll,
         python_version=platform.python_version(),
         memory_total_mb=mem_total,
         memory_used_mb=mem_used,

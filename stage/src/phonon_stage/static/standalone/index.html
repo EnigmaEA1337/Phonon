@@ -1223,10 +1223,24 @@ function faderDbToY(db) {
 }
 
 function setupFaderDrag(faderEl) {
+  // DAW-style gain fader:
+  //   * drag         : 1 px = 1 % of fader range (normal sensitivity)
+  //   * shift+drag   : 5× slower (precision adjustments)
+  //   * scroll wheel : 1 dB / cran (0.1 dB with shift)
+  //   * double-click : reset to 0 dB (unity gain)
   const mid = faderEl.dataset.mapping;
   let dragging = false, startY = 0, startVal = 0;
   const handle = faderEl.querySelector('.fader-handle');
   const fill = faderEl.querySelector('.fader-fill');
+
+  const setDb = (db) => {
+    const pct = faderDbToY(db);
+    handle.style.top = pct + '%';
+    fill.style.top = pct + '%';
+    const dbEl = document.getElementById('gv-' + mid);
+    if (dbEl) dbEl.textContent = db.toFixed(1) + ' dB';
+    updateGain(mid, db.toFixed(1));
+  };
 
   const onDown = (e) => {
     dragging = true;
@@ -1238,7 +1252,8 @@ function setupFaderDrag(faderEl) {
     if (!dragging) return;
     const y = e.touches ? e.touches[0].clientY : e.clientY;
     const rect = faderEl.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(100, startVal + ((y - startY) / rect.height) * 100));
+    const fineFactor = (e.shiftKey ? 0.2 : 1.0);
+    const pct = Math.max(0, Math.min(100, startVal + ((y - startY) / rect.height) * 100 * fineFactor));
     handle.style.top = pct + '%';
     fill.style.top = pct + '%';
     const db = faderYToDb(pct);
@@ -1248,55 +1263,85 @@ function setupFaderDrag(faderEl) {
     e.preventDefault();
   };
   const onUp = () => { dragging = false; };
-  // Double-click resets to 0 dB (unity gain) — DAW convention.
-  const onDouble = (e) => {
-    const pct = faderDbToY(0);
-    handle.style.top = pct + '%';
-    fill.style.top = pct + '%';
-    const dbEl = document.getElementById('gv-' + mid);
-    if (dbEl) dbEl.textContent = '0.0 dB';
-    updateGain(mid, '0');
+  const onDouble = (e) => { e.preventDefault(); setDb(0); };
+  const onWheel = (e) => {
     e.preventDefault();
+    const step = e.shiftKey ? 0.1 : 1.0;
+    // dBEl reads the current displayed value; cheaper than reverse-converting
+    // the handle's % position back to dB on every wheel tick.
+    const dbEl = document.getElementById('gv-' + mid);
+    const cur = dbEl ? parseFloat(dbEl.textContent) : faderYToDb(parseFloat(handle.style.top) || 50);
+    const next = Math.max(-90, Math.min(12, cur + (e.deltaY < 0 ? step : -step)));
+    setDb(next);
   };
 
   handle.addEventListener('mousedown', onDown);
   handle.addEventListener('touchstart', onDown, {passive: false});
   faderEl.addEventListener('dblclick', onDouble);
+  faderEl.addEventListener('wheel', onWheel, {passive: false});
   window.addEventListener('mousemove', onMove);
   window.addEventListener('touchmove', onMove, {passive: false});
   window.addEventListener('mouseup', onUp);
   window.addEventListener('touchend', onUp);
+  faderEl.title = 'Gain (dB) — drag, scroll, shift+drag for fine, double-click for 0 dB';
 }
 
 function setupKnobDrag(knobEl) {
+  // DAW-style knob:
+  //   * drag vertical : 0.1 ms / px (range 0-50 = 500 px → précis)
+  //   * shift+drag    : 0.02 ms / px (fine, 2500 px pour la course)
+  //   * scroll wheel  : 0.5 ms / cran  (shift+wheel = 0.1 ms / cran)
+  //   * double-click  : reset à 0 ms
+  //   * range et step quantifié à 0.1 ms
   const mid = knobEl.dataset.mapping;
-  let dragging = false, startY = 0, startVal = 0;
+  const MIN = 0, MAX = 50;
+  let dragging = false, startY = 0, startVal = 0, shiftHeld = false;
+
+  const clamp = (v) => Math.round(Math.max(MIN, Math.min(MAX, v)) * 10) / 10;
+  const apply = (val) => {
+    val = clamp(val);
+    knobEl.dataset.value = val.toFixed(1);
+    const dvEl = document.getElementById('dv-' + mid);
+    if (dvEl) dvEl.textContent = val.toFixed(1) + ' ms';
+    updateDelay(mid, val.toFixed(1));
+  };
 
   const onDown = (e) => {
     dragging = true;
     startY = e.touches ? e.touches[0].clientY : e.clientY;
     startVal = parseFloat(knobEl.dataset.value) || 0;
+    shiftHeld = !!(e.shiftKey);
     e.preventDefault();
   };
   const onMove = (e) => {
     if (!dragging) return;
     const y = e.touches ? e.touches[0].clientY : e.clientY;
-    const delta = (startY - y) * 0.3;
-    const val = Math.max(0, Math.min(50, startVal + delta));
-    knobEl.dataset.value = val.toFixed(1);
-    const dvEl = document.getElementById('dv-' + mid);
-    if (dvEl) dvEl.textContent = val.toFixed(1) + 'ms';
-    updateDelay(mid, val.toFixed(1));
+    const sensitivity = (e.shiftKey || shiftHeld) ? 0.02 : 0.1;
+    const delta = (startY - y) * sensitivity;
+    apply(startVal + delta);
     e.preventDefault();
   };
   const onUp = () => { dragging = false; };
+  const onWheel = (e) => {
+    e.preventDefault();
+    const step = e.shiftKey ? 0.1 : 0.5;
+    const cur = parseFloat(knobEl.dataset.value) || 0;
+    apply(cur + (e.deltaY < 0 ? step : -step));
+  };
+  const onDblClick = (e) => {
+    e.preventDefault();
+    apply(0);
+  };
 
   knobEl.addEventListener('mousedown', onDown);
   knobEl.addEventListener('touchstart', onDown, {passive: false});
+  knobEl.addEventListener('wheel', onWheel, {passive: false});
+  knobEl.addEventListener('dblclick', onDblClick);
   window.addEventListener('mousemove', onMove);
   window.addEventListener('touchmove', onMove, {passive: false});
   window.addEventListener('mouseup', onUp);
   window.addEventListener('touchend', onUp);
+  knobEl.title = 'Delay (ms) — drag, scroll, shift+drag for fine, double-click to reset';
 }
 
 let gainTimeout = {};

@@ -531,11 +531,10 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
     <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
-    <div class="tab" data-tab="mix" onclick="switchTab('mix')">MIX</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
-  <!-- ─── Tab: General (default) ─── -->
+  <!-- ─── Tab: General (default) — Monitoring + Mix Console ─── -->
   <div class="tab-pane active" data-tab-pane="general">
     <!-- Monitoring: resource gauges (services live in the Services tab) -->
     <div class="section edit-only">
@@ -548,50 +547,40 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
-    <!-- Patch Bay -->
-    <div class="section edit-only">
-      <div class="section-head">Patch Bay <span style="font-weight:400;color:var(--text-dim);font-size:10px">(max 8 mappings)</span></div>
-      <div class="section-body">
-        <div class="patch-grid">
-          <svg class="patch-links-svg" id="patch-links"></svg>
-          <div class="patch-col">
-            <div class="patch-col-head">Sources (output ports)</div>
-            <div id="patch-sources"></div>
-          </div>
-          <div class="patch-col">
-            <div class="patch-col-head">Sinks (input ports)</div>
-            <div id="patch-sinks"></div>
-          </div>
-        </div>
-        <div class="patch-hint" id="patch-hint">Select a source, then a sink to create a mapping</div>
-      </div>
-    </div>
-
-    <!-- Mixer (active mappings only) -->
+    <!-- Mix Console — strip-based router (Sources / Master / Outputs).
+         Replaces the legacy Patch Bay + per-mapping Mixer that used to
+         live here; the legacy /mappings system is still on the server
+         side but no UI surface points at it any more. -->
     <div class="section">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
-        Mixer
-        <span id="mapping-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
+        Mix Console
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
         <span style="flex:1"></span>
-        <button class="btn edit-only" style="font-size:9px;padding:2px 8px"
-          onclick="resyncMappings()" title="Re-resolve mapped nodes by name and recreate PW links — useful after a PipeWire restart">Resync</button>
-        <span class="tb-info edit-only" id="resync-status" style="font-size:9px"></span>
+        <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
+        <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="fetchMixer()" title="Refresh from server">Refresh</button>
       </div>
-      <div class="section-body" id="mappings-list">
-        <div class="mapping-empty">No active mappings</div>
+      <div class="section-body">
+        <div class="mix-console">
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:var(--green)">
+              SOURCES
+              <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddSource()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-sources"></div>
+          </div>
+          <div class="mix-col mix-col-master">
+            <div class="mix-col-head" style="color:var(--red)">MASTER</div>
+            <div class="mix-col-body" id="mix-master"></div>
+          </div>
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:var(--magenta)">
+              OUTPUTS
+              <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddOutput()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-outputs"></div>
+          </div>
+        </div>
       </div>
-    </div>
-
-    <!-- Orphan mappings (only shown when there are some) -->
-    <div class="section edit-only" id="orphan-section" style="display:none">
-      <div class="section-head" style="display:flex;align-items:center;gap:8px;color:var(--yellow)">
-        ⚠ Orphan Mappings
-        <span id="orphan-count" style="font-weight:400;color:var(--text-dim);font-size:10px"></span>
-        <span style="font-weight:400;color:var(--text-fade);font-size:10px;margin-left:auto">
-          Pick replacement endpoints or delete
-        </span>
-      </div>
-      <div class="section-body" id="orphan-list"></div>
     </div>
   </div>
 
@@ -722,44 +711,6 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
-  <!-- ─── Tab: MIX (console) ─── -->
-  <div class="tab-pane edit-only" data-tab-pane="mix">
-    <div class="section">
-      <div class="section-head" style="display:flex;align-items:center;gap:8px">
-        Mix Console
-        <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
-        <span style="flex:1"></span>
-        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
-        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchMixer()" title="Refresh from server">Refresh</button>
-      </div>
-      <div class="section-body">
-        <div class="mix-console">
-          <!-- Sources column -->
-          <div class="mix-col">
-            <div class="mix-col-head" style="color:var(--green)">
-              SOURCES
-              <button class="btn" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddSource()">+ Add</button>
-            </div>
-            <div class="mix-col-body" id="mix-sources"></div>
-          </div>
-          <!-- Master column (middle) -->
-          <div class="mix-col mix-col-master">
-            <div class="mix-col-head" style="color:var(--red)">MASTER</div>
-            <div class="mix-col-body" id="mix-master"></div>
-          </div>
-          <!-- Outputs column -->
-          <div class="mix-col">
-            <div class="mix-col-head" style="color:var(--magenta)">
-              OUTPUTS
-              <button class="btn" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddOutput()">+ Add</button>
-            </div>
-            <div class="mix-col-body" id="mix-outputs"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- ─── Tab: Settings ─── -->
   <div class="tab-pane edit-only" data-tab-pane="settings">
     <div class="section">
@@ -793,13 +744,10 @@ function switchTab(name) {
   document.querySelectorAll('.tab-pane').forEach(p => {
     p.classList.toggle('active', p.dataset.tabPane === name);
   });
-  // Mappings panel SVG positions are wrong if its container was hidden
-  // when we drew them. Force a redraw whenever a tab becomes visible.
-  setTimeout(drawPatchLinks, 0);
-  // Plugins tab fetches lazily on first open so we don't query
-  // /plugins on every refresh tick when the user isn't looking.
+  // The mixer + plugin views fetch lazily when their host tab opens
+  // to avoid background work for views the user isn't looking at.
+  if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
-  if (name === 'mix') fetchMixer();
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -1812,6 +1760,9 @@ async function refreshAll() {
     state.ports = ports;
   }
   if (mappings) { state.mappings = mappings; renderMappings(mappings); }
+  // Mix Console state lives on its own endpoint and is always
+  // refreshed alongside the rest of the General tab content.
+  fetchMixer().catch(() => {});
   if (stages) renderStages(stages);
   if (aes67) { state.aes67 = aes67; renderAes67(aes67); }
   if (aes67d) renderAes67Discovered(aes67d);
@@ -1977,12 +1928,17 @@ function nodeInfoBadge(n) {
 }
 
 function renderPatchNodes(nodes, ports) {
+  // Legacy Patch Bay renderer — the host DOM (#patch-sources /
+  // #patch-sinks) was removed when the Mix Console replaced this
+  // surface. Keep the function around for now in case a future
+  // diagnostic surfaces wants it, but make it a safe no-op when
+  // its target elements are absent.
+  const srcEl = document.getElementById('patch-sources');
+  if (!srcEl) return;
   // BT-In null sinks (phone capture) should appear as sources, not sinks
   const isBtInput = (n) => n.nick?.includes('-BT-In') || n.name?.includes('_in');
   const sources = nodes.filter(n => n.media_class.includes('Source') || n.media_class.includes('Duplex') || (n.media_class.includes('Sink') && isBtInput(n)));
   const sinks = nodes.filter(n => (n.media_class.includes('Sink') || n.media_class.includes('Duplex')) && !isBtInput(n));
-
-  const srcEl = document.getElementById('patch-sources');
   srcEl.innerHTML = sources.length ? sources.map(n =>
     `<div class="patch-item${state.selectedSource?.id === n.id ? ' selected' : ''}"
       data-source-id="${n.id}"
@@ -2172,6 +2128,10 @@ function renderOrphanSection(orphans) {
 
 function renderMappings(mappings) {
   const el = document.getElementById('mappings-list');
+  // Legacy renderer — its host (#mappings-list) was removed when the
+  // Mix Console took over. Make it a safe no-op when the target is
+  // missing so refreshAll() doesn't crash on the next tick.
+  if (!el) return;
 
   // Refresh patch-bay links whenever mappings change
   setTimeout(drawPatchLinks, 0);

@@ -273,6 +273,22 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .dsp-control .dsp-ctl-value { font-family: var(--font-m); font-size: 11px;
   color: var(--cyan); font-weight: 700; }
 .dsp-control input[type=range] { width: 100%; }
+
+/* SVG rotary knob — drag vertical (or wheel) to change the value.
+   Style: dark hub with a colored arc indicating position, a small
+   tick at the current angle, value text below. The arc spans -135°
+   to +135° (270° total) — DAW convention; the user can see at a
+   glance whether the knob is near min, center or max. */
+.knob { display: block; margin: 2px auto 0; cursor: ns-resize;
+  user-select: none; touch-action: none; }
+.knob .knob-track  { fill: none; stroke: var(--bg-1); stroke-width: 4; }
+.knob .knob-fill   { fill: none; stroke: var(--cyan); stroke-width: 4;
+  stroke-linecap: round; transition: stroke 0.08s; }
+.knob .knob-hub    { fill: var(--bg-3); stroke: var(--border); stroke-width: 1; }
+.knob .knob-tick   { stroke: var(--text-hi); stroke-width: 2; stroke-linecap: round; }
+.knob.dragging .knob-fill { stroke: var(--green); }
+.dsp-control .knob-readout { font-family: var(--font-m); font-size: 10px;
+  color: var(--cyan); font-weight: 700; text-align: center; }
 .dsp-control input[type=number] { width: 70px; background: var(--bg-1); color: var(--text-hi);
   border: 1px solid var(--border); border-radius: 2px; padding: 1px 4px;
   font-family: var(--font-m); font-size: 10px; }
@@ -1334,19 +1350,216 @@ function renderDspControl(outputId, c, currentValue) {
       </select>
     </div>`;
   }
-  // Default: range slider + numeric readout. Range comes from LADSPA
-  // hints when present; otherwise sensible v±100 around current value.
-  const min = c.minimum ?? (v - 100);
-  const max = c.maximum ?? (v + 100);
-  const step = c.integer ? 1 : (max - min < 10 ? 0.01 : 0.5);
-  const fmt = c.integer ? String(Math.round(v)) : Number(v).toFixed(2);
+  // Default: rotary knob — DAW-style, drag vertical to change. The
+  // value's normalised position drives a 270° SVG arc; the readout
+  // sits below the knob. Range comes from LADSPA hints when present;
+  // when LSP omits them (Bypass, Ramping, Phase Invert — no
+  // PORT_HINT_TOGGLED, no range either) we fall back to [0, 1]: the
+  // de-facto convention for those "0/1" controls. Logarithmic hint
+  // → log curve for the mapping (LSP "Wet amount" / "Output gain").
+  const min = c.minimum ?? 0;
+  const max = c.maximum ?? 1;
   return `<div class="dsp-control">
     <div class="dsp-ctl-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
-    <div class="dsp-ctl-value" data-ctl-readout="${encodeURIComponent(c.name)}">${fmt}</div>
-    <input type="range" min="${min}" max="${max}" step="${step}" value="${v}"
-      oninput="dspDragControl('${outputId}', '${encodeURIComponent(c.name)}', this.value)"
-      onchange="dspSetControl('${outputId}', '${encodeURIComponent(c.name)}', this.value)">
+    ${renderKnob(outputId, c.name, v, min, max, c.integer, c.logarithmic)}
   </div>`;
+}
+
+// Build the SVG for one rotary knob. 36×36 viewport; the arc lives
+// in a 28-radius circle, indicator tick from the hub to the rim.
+// `data-*` attrs carry everything the drag/wheel handlers need so
+// the markup is self-contained — no JS-side closure per knob.
+function renderKnob(outputId, name, value, min, max, integer, logarithmic) {
+  const norm = knobNormalise(value, min, max, logarithmic);   // 0..1
+  const arc = knobArcPath(norm);                              // svg `d` string
+  const tickAngle = -135 + 270 * norm;                        // degrees
+  const fmt = integer ? String(Math.round(value)) : Number(value).toFixed(2);
+  return `<div>
+    <svg class="knob" width="42" height="42" viewBox="0 0 42 42"
+         data-knob-output="${outputId}"
+         data-knob-name="${encodeURIComponent(name)}"
+         data-knob-min="${min}" data-knob-max="${max}"
+         data-knob-integer="${integer ? 1 : 0}"
+         data-knob-log="${logarithmic ? 1 : 0}"
+         data-knob-value="${value}"
+         onmousedown="knobStart(event, this)"
+         onwheel="knobWheel(event, this)"
+         ondblclick="knobReset(event, this)">
+      <circle class="knob-track" cx="21" cy="21" r="17"
+              stroke-dasharray="${0.75 * 2 * Math.PI * 17} ${2 * Math.PI * 17}"
+              transform="rotate(135 21 21)"></circle>
+      <path class="knob-fill" d="${arc}"></path>
+      <circle class="knob-hub" cx="21" cy="21" r="9"></circle>
+      <line class="knob-tick" x1="21" y1="21" x2="21" y2="14"
+            transform="rotate(${tickAngle} 21 21)"></line>
+    </svg>
+    <div class="knob-readout" data-ctl-readout="${encodeURIComponent(name)}">${fmt}</div>
+  </div>`;
+}
+
+// Convert a value to normalised [0..1] position on the knob arc.
+// Log hint → log-scaled mapping (treats min==0 as a small epsilon so
+// log() is defined). LSP "Output gain (G)" sweeps 0..1000 log, an
+// audio fader feel.
+function knobNormalise(value, min, max, logarithmic) {
+  if (max === min) return 0;
+  if (logarithmic) {
+    const lmin = Math.log(Math.max(min, 1e-6));
+    const lmax = Math.log(Math.max(max, 1e-6));
+    const lv   = Math.log(Math.max(value, 1e-6));
+    return Math.max(0, Math.min(1, (lv - lmin) / (lmax - lmin)));
+  }
+  return Math.max(0, Math.min(1, (value - min) / (max - min)));
+}
+
+// Inverse of knobNormalise — used by the drag handler to turn the
+// updated arc position back into a value to PATCH.
+function knobDenormalise(norm, min, max, logarithmic, integer) {
+  let v;
+  if (logarithmic) {
+    const lmin = Math.log(Math.max(min, 1e-6));
+    const lmax = Math.log(Math.max(max, 1e-6));
+    v = Math.exp(lmin + (lmax - lmin) * norm);
+  } else {
+    v = min + (max - min) * norm;
+  }
+  return integer ? Math.round(v) : v;
+}
+
+// Compute the SVG `d` for the filled-arc portion of the knob. The
+// arc starts at -135° (lower-left) and sweeps through `norm * 270°`
+// going clockwise.
+function knobArcPath(norm) {
+  if (norm <= 0) return '';
+  const cx = 21, cy = 21, r = 17;
+  const startA = -135 * Math.PI / 180;
+  const endA   = (-135 + 270 * norm) * Math.PI / 180;
+  const x1 = cx + r * Math.cos(startA);
+  const y1 = cy + r * Math.sin(startA);
+  const x2 = cx + r * Math.cos(endA);
+  const y2 = cy + r * Math.sin(endA);
+  const large = norm > 0.5 ? 1 : 0;
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+}
+
+// Drag state — only one knob is being dragged at a time, so a single
+// module-level record is enough. `startNorm` is the position when the
+// drag began; we add (-deltaY / pixelsPerFullSwing) on every move.
+let knobDrag = null;
+
+function knobStart(ev, svg) {
+  ev.preventDefault();
+  const min = parseFloat(svg.dataset.knobMin);
+  const max = parseFloat(svg.dataset.knobMax);
+  const log = svg.dataset.knobLog === '1';
+  const value = parseFloat(svg.dataset.knobValue);
+  knobDrag = {
+    svg,
+    startY: ev.clientY,
+    startNorm: knobNormalise(value, min, max, log),
+    min, max, log,
+    integer: svg.dataset.knobInteger === '1',
+  };
+  svg.classList.add('dragging');
+  document.addEventListener('mousemove', knobMove);
+  document.addEventListener('mouseup',   knobEnd);
+}
+
+function knobMove(ev) {
+  if (!knobDrag) return;
+  ev.preventDefault();
+  // 200 px of vertical drag = full 0→1 sweep. Shift-drag = fine
+  // (4× slower). Up moves the value up, down moves it down.
+  const sensitivity = ev.shiftKey ? 800 : 200;
+  const dy = knobDrag.startY - ev.clientY;
+  const norm = Math.max(0, Math.min(1, knobDrag.startNorm + dy / sensitivity));
+  const value = knobDenormalise(norm, knobDrag.min, knobDrag.max, knobDrag.log, knobDrag.integer);
+  knobApplyVisual(knobDrag.svg, norm, value);
+}
+
+function knobEnd(ev) {
+  if (!knobDrag) return;
+  document.removeEventListener('mousemove', knobMove);
+  document.removeEventListener('mouseup',   knobEnd);
+  const svg = knobDrag.svg;
+  svg.classList.remove('dragging');
+  const value = parseFloat(svg.dataset.knobValue);
+  const outputId = svg.dataset.knobOutput;
+  const name = decodeURIComponent(svg.dataset.knobName);
+  knobDrag = null;
+  // Commit on release — same PATCH path as the slider used. With
+  // LSP Ramping=1 the chain interpolates so even big jumps don't
+  // click.
+  dspSetControl(outputId, encodeURIComponent(name), value);
+}
+
+// Wheel-tweak — quick fine adjustments without entering drag mode.
+// Same sensitivity model: ev.deltaY > 0 (scroll down) decreases the
+// value; Shift makes it slow. PATCH fires for each notch.
+function knobWheel(ev, svg) {
+  ev.preventDefault();
+  const min = parseFloat(svg.dataset.knobMin);
+  const max = parseFloat(svg.dataset.knobMax);
+  const log = svg.dataset.knobLog === '1';
+  const integer = svg.dataset.knobInteger === '1';
+  const value = parseFloat(svg.dataset.knobValue);
+  const norm = knobNormalise(value, min, max, log);
+  const step = ev.shiftKey ? 0.005 : 0.02;
+  const sign = ev.deltaY > 0 ? -1 : 1;
+  const newNorm = Math.max(0, Math.min(1, norm + sign * step));
+  const newValue = knobDenormalise(newNorm, min, max, log, integer);
+  knobApplyVisual(svg, newNorm, newValue);
+  // Debounce wheel PATCHes — only fire once the user stops scrolling
+  // for 120ms so a fast scroll doesn't flood the server.
+  clearTimeout(knobWheelTimer);
+  knobWheelTimer = setTimeout(() => {
+    dspSetControl(
+      svg.dataset.knobOutput,
+      svg.dataset.knobName,                // already URL-encoded
+      newValue
+    );
+  }, 120);
+}
+let knobWheelTimer = null;
+
+// Double-click → snap back to the LADSPA-declared default. Falls
+// back to mid-range when no default was declared.
+function knobReset(ev, svg) {
+  ev.preventDefault();
+  // Look up the control's schema default from the cached descriptor.
+  const outputId = svg.dataset.knobOutput;
+  const name = decodeURIComponent(svg.dataset.knobName);
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !out.insert) return;
+  const key = out.insert.library + '' + out.insert.label;
+  const schema = dspState.schemas[key];
+  const ctl = schema?.controls.find(c => c.name === name);
+  const min = parseFloat(svg.dataset.knobMin);
+  const max = parseFloat(svg.dataset.knobMax);
+  const log = svg.dataset.knobLog === '1';
+  const integer = svg.dataset.knobInteger === '1';
+  const def = (ctl && ctl.default !== null) ? ctl.default : (min + max) / 2;
+  const norm = knobNormalise(def, min, max, log);
+  knobApplyVisual(svg, norm, def);
+  dspSetControl(outputId, encodeURIComponent(name), def);
+}
+
+// Repaint a knob in-place — updates the arc path, tick angle, value
+// readout, and the data-knob-value attr so the next interaction
+// starts from the new value. No re-render of the whole panel.
+function knobApplyVisual(svg, norm, value) {
+  svg.dataset.knobValue = String(value);
+  const arc = svg.querySelector('.knob-fill');
+  if (arc) arc.setAttribute('d', knobArcPath(norm));
+  const tick = svg.querySelector('.knob-tick');
+  if (tick) tick.setAttribute('transform', `rotate(${-135 + 270 * norm} 21 21)`);
+  const name = svg.dataset.knobName;
+  const panel = document.getElementById('dsp-panel');
+  const readout = panel?.querySelector(`[data-ctl-readout="${name}"]`);
+  if (readout) {
+    const integer = svg.dataset.knobInteger === '1';
+    readout.textContent = integer ? String(Math.round(value)) : Number(value).toFixed(2);
+  }
 }
 
 // During a slider drag we just update the readout — the actual PATCH

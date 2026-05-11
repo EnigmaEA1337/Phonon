@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import TYPE_CHECKING
 
@@ -301,6 +302,23 @@ class MappingService:
                 src = next((n for n in nodes if n.id == src_node_id), None)
                 src_is_sink = bool(src and "Sink" in src.media_class)
 
+                # Tear down whatever was running before — a previously
+                # loaded loopback module (from a prior boot or a prior
+                # resync) survives the daemon restart, so we MUST unload
+                # it before loading a fresh one. Otherwise two modules
+                # buffer the same path in parallel → comb filter /
+                # metallic sound. Stale link ids from before the PW
+                # restart are gone with the graph, so don't fight them.
+                if mapping.loopback_module_id is not None:
+                    try:
+                        await self._pw.unload_module(mapping.loopback_module_id)
+                    except Exception:
+                        logger.info(
+                            "mapping.restore_stale_loopback_unload_failed",
+                            module_id=mapping.loopback_module_id,
+                            exc_info=False,
+                        )
+
                 new_link_ids: list[int] = []
                 new_loopback_id: int | None = None
                 if mapping.delay_ms > 0 and mapping.source_node_name and mapping.sink_node_name:
@@ -353,6 +371,23 @@ class MappingService:
                 nodes = await self._pw.list_nodes()
                 src = next((n for n in nodes if n.id == src_node_id), None)
                 src_is_sink = bool(src and "Sink" in src.media_class)
+
+                # Unload the previous loopback (if any) before loading a
+                # new one — otherwise two modules buffer the same path
+                # in parallel and the audio combs into a metallic mess.
+                if mapping.loopback_module_id is not None:
+                    try:
+                        await self._pw.unload_module(mapping.loopback_module_id)
+                    except Exception:
+                        logger.info(
+                            "mapping.resync_stale_loopback_unload_failed",
+                            module_id=mapping.loopback_module_id,
+                            exc_info=False,
+                        )
+                # Same for direct links — clean slate before rebuild.
+                for link_id in mapping.link_ids:
+                    with contextlib.suppress(Exception):
+                        await self._pw.destroy_link(link_id)
 
                 new_link_ids: list[int] = []
                 new_loopback_id: int | None = None

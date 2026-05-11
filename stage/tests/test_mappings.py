@@ -279,3 +279,57 @@ class TestMappingLoopbackDelay:
         )
         (src, _sink, _lat) = next(iter(fake_pw.loopbacks.values()))
         assert src == "alsa_output.bcm2835.monitor"
+
+    async def test_resync_unloads_stale_loopback_before_reloading(
+        self, mapping_service: MappingService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Regression: a mapping carrying a stale loopback_module_id from
+        a previous session/restore must have that module unloaded before
+        a new one is loaded. Otherwise two modules buffer the same path
+        in parallel and the audio combs into a metallic mess. Witnessed
+        on the 3070 — keep this test green."""
+        m = await mapping_service.create_mapping(
+            source_node_id=31,
+            source_port_ids=[42],
+            sink_node_id=32,
+            sink_port_ids=[44],
+            delay_ms=60.0,
+        )
+        first_module = m.loopback_module_id
+        assert first_module is not None
+        assert len(fake_pw.loopbacks) == 1
+
+        # Resync MUST unload first_module, then create exactly one new
+        # loopback — never end with two.
+        result = await mapping_service.resync_mappings()
+        assert result["ok"] == 1
+        assert first_module in fake_pw.unloaded_modules
+        assert len(fake_pw.loopbacks) == 1
+
+    async def test_restore_unloads_stale_loopback_before_reloading(
+        self,
+        mapping_service: MappingService,
+        mapping_store: MappingStore,
+        fake_pw: FakePipeWireBackend,
+    ) -> None:
+        """Same guarantee on the boot-time restore path: the
+        loopback_module_id persisted to disk from the previous session
+        gets unloaded before the new module is loaded."""
+        m = await mapping_service.create_mapping(
+            source_node_id=31,
+            source_port_ids=[42],
+            sink_node_id=32,
+            sink_port_ids=[44],
+            delay_ms=80.0,
+        )
+        stale_module = m.loopback_module_id
+        assert stale_module is not None
+
+        # Simulate a daemon restart: the on-disk mapping still references
+        # the stale module id (which `pactl` would normally have killed
+        # along with the PW user session, but in-tests it lingers in
+        # fake_pw.loopbacks).
+        await mapping_service.restore_mappings()
+        assert stale_module in fake_pw.unloaded_modules
+        # And we end up with exactly one live loopback, not two.
+        assert len(fake_pw.loopbacks) == 1

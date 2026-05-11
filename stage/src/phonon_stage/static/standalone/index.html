@@ -170,19 +170,21 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    Both kept compact and ellipsised so a long PW node name doesn't
    blow out the strip width. */
 .strip-io { font-family: var(--font-m); font-size: 8px; text-align: center;
-  line-height: 1.2; width: 100%; overflow: hidden; white-space: nowrap;
-  text-overflow: ellipsis; opacity: 0.85; padding: 1px 2px; }
+  line-height: 14px; height: 16px; box-sizing: border-box;
+  width: 100%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; opacity: 0.85; padding: 0 2px;
+  display: flex; align-items: center; justify-content: center; }
 .strip-io.input  { color: var(--green); border-bottom: 1px dashed rgba(52,211,153,0.25); }
 .strip-io.output { color: var(--magenta); border-top: 1px dashed rgba(232,121,249,0.25); margin-top: 2px; }
 .strip-io.master { color: var(--cyan); }
-/* Pre-fader head — fixed min-height so faders align horizontally
-   across every strip kind (Source/Master/Output) regardless of how
-   much variable content sits above. justify-content:flex-end keeps
-   the content pinned to the bottom so the fader always starts at
-   the same Y. Sized to fit the tallest combo: action bar (~18) +
-   IO-in (~14) + routing (~22) + delay (~28) + HW (~16) ≈ 100 px. */
+/* Pre-fader head — fixed HEIGHT (not min-height) so faders align
+   horizontally across every strip kind regardless of what's above.
+   Anything that doesn't fit gets clipped (overflow:hidden) rather
+   than push the fader down. Sized for the tallest combo: action bar
+   (~18) + IO-in (16) + routing (~22) + delay (~28) + HW (~18). */
 .strip-head { display: flex; flex-direction: column; gap: 4px; width: 100%;
-  justify-content: flex-end; align-items: stretch; min-height: 110px; }
+  justify-content: flex-end; align-items: stretch;
+  height: 140px; box-sizing: border-box; overflow: hidden; }
 /* Click-to-edit "scotch tape" label — slightly off-axis, cream
    background with hand-drawn-feeling stroke. Visible at all times
    so the operator can read it at a glance from across the room. */
@@ -192,7 +194,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   font-size: 11px; font-weight: 700; text-align: center;
   padding: 4px 6px; border-radius: 1px;
   box-shadow: 0 1px 0 rgba(0,0,0,0.3), inset 0 0 8px rgba(180,140,40,0.18);
-  transform: rotate(-1.2deg); cursor: text; min-height: 16px;
+  transform: rotate(-1.2deg); cursor: text;
+  height: 24px; line-height: 16px; box-sizing: border-box;
   border-left: 1px dashed rgba(0,0,0,0.18); border-right: 1px dashed rgba(0,0,0,0.18);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip-scotch:hover { background: linear-gradient(180deg, #f9f0c8 0%, #f0e5af 50%, #dccd8e 100%); }

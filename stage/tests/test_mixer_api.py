@@ -13,7 +13,12 @@ class TestSnapshot:
         resp = await client.get("/mixer")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["master"] == {"gain_db": 0.0, "mute": False}
+        assert body["master"] == {
+            "gain_db": 0.0,
+            "mute": False,
+            "mute_left": False,
+            "mute_right": False,
+        }
         assert body["outputs"] == []
         assert body["sources"] == []
 

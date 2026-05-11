@@ -59,15 +59,27 @@ MAX_OUTPUTS = 16
 class MasterBus:
     gain_db: float = 0.0
     mute: bool = False
+    # Per-channel mutes — applied as zero volume on the corresponding
+    # channel of the master sink. Independent of `mute` (which tears
+    # down link topology entirely). The master has no solo by spec.
+    mute_left: bool = False
+    mute_right: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"gain_db": self.gain_db, "mute": self.mute}
+        return {
+            "gain_db": self.gain_db,
+            "mute": self.mute,
+            "mute_left": self.mute_left,
+            "mute_right": self.mute_right,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MasterBus:
         return cls(
             gain_db=float(data.get("gain_db", 0.0)),
             mute=bool(data.get("mute", False)),
+            mute_left=bool(data.get("mute_left", False)),
+            mute_right=bool(data.get("mute_right", False)),
         )
 
 
@@ -78,6 +90,12 @@ class Output:
     label: str  # user-facing name, free-form
     gain_db: float = 0.0
     mute: bool = False
+    mute_left: bool = False
+    mute_right: bool = False
+    # Solo: when any output has solo=True, every other output (without
+    # solo) is silenced at reconcile time. Lets the engineer audition
+    # a single destination without manually muting the others.
+    solo: bool = False
     delay_ms: float = 0.0
     receives_master: bool = True
 
@@ -88,6 +106,9 @@ class Output:
             "label": self.label,
             "gain_db": self.gain_db,
             "mute": self.mute,
+            "mute_left": self.mute_left,
+            "mute_right": self.mute_right,
+            "solo": self.solo,
             "delay_ms": self.delay_ms,
             "receives_master": self.receives_master,
         }
@@ -100,6 +121,9 @@ class Output:
             label=str(data.get("label", "")),
             gain_db=float(data.get("gain_db", 0.0)),
             mute=bool(data.get("mute", False)),
+            mute_left=bool(data.get("mute_left", False)),
+            mute_right=bool(data.get("mute_right", False)),
+            solo=bool(data.get("solo", False)),
             delay_ms=float(data.get("delay_ms", 0.0)),
             receives_master=bool(data.get("receives_master", True)),
         )
@@ -116,6 +140,13 @@ class Source:
     label: str
     gain_db: float = 0.0
     mute: bool = False
+    mute_left: bool = False
+    mute_right: bool = False
+    # Solo: when any source has solo=True, every other source (without
+    # solo) gets its outbound links suppressed at reconcile, so only
+    # the solo'd source(s) feed downstream. Multiple solos work as a
+    # group (all solo'd sources play).
+    solo: bool = False
     to_master: bool = True
     direct_outputs: tuple[str, ...] = ()
 
@@ -127,6 +158,9 @@ class Source:
             "label": self.label,
             "gain_db": self.gain_db,
             "mute": self.mute,
+            "mute_left": self.mute_left,
+            "mute_right": self.mute_right,
+            "solo": self.solo,
             "to_master": self.to_master,
             "direct_outputs": list(self.direct_outputs),
         }
@@ -141,6 +175,9 @@ class Source:
             label=str(data.get("label", "")),
             gain_db=float(data.get("gain_db", 0.0)),
             mute=bool(data.get("mute", False)),
+            mute_left=bool(data.get("mute_left", False)),
+            mute_right=bool(data.get("mute_right", False)),
+            solo=bool(data.get("solo", False)),
             to_master=bool(data.get("to_master", True)),
             direct_outputs=tuple(str(x) for x in direct_raw),
         )

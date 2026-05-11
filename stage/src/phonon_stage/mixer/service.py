@@ -168,6 +168,8 @@ class MixerService:
         self,
         gain_db: float | None = None,
         mute: bool | None = None,
+        mute_left: bool | None = None,
+        mute_right: bool | None = None,
     ) -> MasterBus:
         m = self._store.state.master
         if gain_db is not None:
@@ -175,6 +177,10 @@ class MixerService:
             m = replace(m, gain_db=gain_db)
         if mute is not None:
             m = replace(m, mute=mute)
+        if mute_left is not None:
+            m = replace(m, mute_left=mute_left)
+        if mute_right is not None:
+            m = replace(m, mute_right=mute_right)
         self._store.replace_state(replace(self._store.state, master=m))
         await self._reconcile()
         return m
@@ -216,6 +222,9 @@ class MixerService:
         label: str | None = None,
         gain_db: float | None = None,
         mute: bool | None = None,
+        mute_left: bool | None = None,
+        mute_right: bool | None = None,
+        solo: bool | None = None,
         delay_ms: float | None = None,
         receives_master: bool | None = None,
     ) -> Output:
@@ -228,6 +237,12 @@ class MixerService:
             new = replace(new, gain_db=gain_db)
         if mute is not None:
             new = replace(new, mute=mute)
+        if mute_left is not None:
+            new = replace(new, mute_left=mute_left)
+        if mute_right is not None:
+            new = replace(new, mute_right=mute_right)
+        if solo is not None:
+            new = replace(new, solo=solo)
         if delay_ms is not None:
             validate_delay_ms(delay_ms)
             new = replace(new, delay_ms=delay_ms)
@@ -301,6 +316,9 @@ class MixerService:
         label: str | None = None,
         gain_db: float | None = None,
         mute: bool | None = None,
+        mute_left: bool | None = None,
+        mute_right: bool | None = None,
+        solo: bool | None = None,
         to_master: bool | None = None,
         direct_outputs: list[str] | None = None,
     ) -> Source:
@@ -313,6 +331,12 @@ class MixerService:
             new = replace(new, gain_db=gain_db)
         if mute is not None:
             new = replace(new, mute=mute)
+        if mute_left is not None:
+            new = replace(new, mute_left=mute_left)
+        if mute_right is not None:
+            new = replace(new, mute_right=mute_right)
+        if solo is not None:
+            new = replace(new, solo=solo)
         if to_master is not None:
             new = replace(new, to_master=to_master)
         if direct_outputs is not None:
@@ -364,15 +388,33 @@ class MixerService:
             logger.info("mixer.reconcile_skip_no_master")
             return
 
-        # 3. Master volume / mute applied on its sink.
+        # 3. Determine solo state up front. A "solo group" is any
+        #    set of strips with solo=True and mute=False — muting a
+        #    solo'd strip cancels its solo intent (intuitive: the
+        #    operator doesn't want silence everywhere just because
+        #    they muted a solo'd strip). When the group is non-empty
+        #    on a given side (sources / outputs), every non-member
+        #    of that side gets silenced via link suppression.
+        src_solo_active = any(s.solo and not s.mute for s in self._store.state.sources)
+        out_solo_active = any(o.solo and not o.mute for o in self._store.state.outputs)
+
+        # 4. Master volume (per-channel for L/R mutes) + global mute.
+        master_lin = self._db_to_linear(self.master.gain_db)
         try:
-            await self._pw.set_node_volume(master_node.id, self._db_to_linear(self.master.gain_db))
+            await self._pw.set_node_channel_volumes(
+                master_node.id,
+                [
+                    0.0 if self.master.mute_left else master_lin,
+                    0.0 if self.master.mute_right else master_lin,
+                ],
+            )
             await self._pw.set_node_mute(master_node.id, self.master.mute)
         except Exception:
             logger.warning("mixer.master_apply_failed", exc_info=True)
 
-        # 4. For each output: loopback master.monitor → output (with
-        #    delay), and the output's own gain/mute on its sink.
+        # 5. For each output: per-channel volume on the sink, then
+        #    the master→output loopback (skipped on mute / solo
+        #    suppression / receives_master=False).
         for o in self._store.state.outputs:
             sink_node = next((n for n in nodes if n.name == o.sink_node_name), None)
             if sink_node is None:
@@ -382,11 +424,25 @@ class MixerService:
                     sink_node_name=o.sink_node_name,
                 )
                 continue
+            o_lin = self._db_to_linear(o.gain_db)
             try:
-                await self._pw.set_node_volume(sink_node.id, self._db_to_linear(o.gain_db))
+                await self._pw.set_node_channel_volumes(
+                    sink_node.id,
+                    [
+                        0.0 if o.mute_left else o_lin,
+                        0.0 if o.mute_right else o_lin,
+                    ],
+                )
             except Exception:
                 logger.warning("mixer.output_volume_failed", output_id=o.id, exc_info=True)
-            if o.receives_master and not o.mute and not self.master.mute:
+            # Solo gating on the output side: when any output is
+            # solo'd (and not muted), only the solo group keeps its
+            # master loopback and its receive of direct sends. The
+            # rest are silenced structurally (no link).
+            output_silenced = out_solo_active and not o.solo
+            if o.mute or self.master.mute or output_silenced:
+                continue
+            if o.receives_master:
                 mid = await self._pw.load_loopback(
                     f"{MASTER_SINK_NAME}.monitor",
                     o.sink_node_name,
@@ -395,7 +451,7 @@ class MixerService:
                 if mid is not None:
                     self._owned_loopbacks.append(mid)
 
-        # 5. For each source: gain on its node + outbound links.
+        # 6. For each source: per-channel volume + outbound links.
         for s in self._store.state.sources:
             src_node = next((n for n in nodes if n.name == s.source_node_name), None)
             if src_node is None:
@@ -405,11 +461,21 @@ class MixerService:
                     source_node_name=s.source_node_name,
                 )
                 continue
+            s_lin = self._db_to_linear(s.gain_db)
             try:
-                await self._pw.set_node_volume(src_node.id, self._db_to_linear(s.gain_db))
+                await self._pw.set_node_channel_volumes(
+                    src_node.id,
+                    [
+                        0.0 if s.mute_left else s_lin,
+                        0.0 if s.mute_right else s_lin,
+                    ],
+                )
             except Exception:
                 logger.warning("mixer.source_volume_failed", source_id=s.id, exc_info=True)
-            if s.mute:
+            # Mute or solo gating: skip link creation entirely so
+            # the audio doesn't even reach the destination.
+            source_silenced = src_solo_active and not s.solo
+            if s.mute or source_silenced:
                 continue
             # Output ports of the source — for a null-sink that's its
             # monitor_FL/FR (direction=output); for a real Audio/Source
@@ -425,6 +491,11 @@ class MixerService:
             for output_id in s.direct_outputs:
                 output = next((o for o in self._store.state.outputs if o.id == output_id), None)
                 if output is None or output.mute:
+                    continue
+                # Direct sends are also suppressed when the target
+                # output is solo-silenced — keeps the solo invariant
+                # consistent across both routing paths.
+                if out_solo_active and not output.solo:
                     continue
                 output_sink = next((n for n in nodes if n.name == output.sink_node_name), None)
                 if output_sink is None:

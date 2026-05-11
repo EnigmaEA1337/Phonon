@@ -28,6 +28,8 @@ class MasterResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gain_db: float
     mute: bool
+    mute_left: bool
+    mute_right: bool
 
 
 class OutputResponse(BaseModel):
@@ -37,6 +39,9 @@ class OutputResponse(BaseModel):
     label: str
     gain_db: float
     mute: bool
+    mute_left: bool
+    mute_right: bool
+    solo: bool
     delay_ms: float
     receives_master: bool
 
@@ -49,6 +54,9 @@ class SourceResponse(BaseModel):
     label: str
     gain_db: float
     mute: bool
+    mute_left: bool
+    mute_right: bool
+    solo: bool
     to_master: bool
     direct_outputs: list[str]
 
@@ -67,6 +75,8 @@ class MasterUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
     mute: bool | None = None
+    mute_left: bool | None = None
+    mute_right: bool | None = None
 
 
 class OutputCreate(BaseModel):
@@ -83,6 +93,9 @@ class OutputUpdate(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=128)
     gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
     mute: bool | None = None
+    mute_left: bool | None = None
+    mute_right: bool | None = None
+    solo: bool | None = None
     delay_ms: float | None = Field(default=None, ge=0.0, le=MAX_DELAY_MS)
     receives_master: bool | None = None
 
@@ -102,6 +115,9 @@ class SourceUpdate(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=128)
     gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
     mute: bool | None = None
+    mute_left: bool | None = None
+    mute_right: bool | None = None
+    solo: bool | None = None
     to_master: bool | None = None
     direct_outputs: list[str] | None = None
 
@@ -110,7 +126,12 @@ class SourceUpdate(BaseModel):
 
 
 def _to_master_resp(m: MasterBus) -> MasterResponse:
-    return MasterResponse(gain_db=m.gain_db, mute=m.mute)
+    return MasterResponse(
+        gain_db=m.gain_db,
+        mute=m.mute,
+        mute_left=m.mute_left,
+        mute_right=m.mute_right,
+    )
 
 
 def _to_output_resp(o: Output) -> OutputResponse:
@@ -120,6 +141,9 @@ def _to_output_resp(o: Output) -> OutputResponse:
         label=o.label,
         gain_db=o.gain_db,
         mute=o.mute,
+        mute_left=o.mute_left,
+        mute_right=o.mute_right,
+        solo=o.solo,
         delay_ms=o.delay_ms,
         receives_master=o.receives_master,
     )
@@ -133,6 +157,9 @@ def _to_source_resp(s: Source) -> SourceResponse:
         label=s.label,
         gain_db=s.gain_db,
         mute=s.mute,
+        mute_left=s.mute_left,
+        mute_right=s.mute_right,
+        solo=s.solo,
         to_master=s.to_master,
         direct_outputs=list(s.direct_outputs),
     )
@@ -164,7 +191,12 @@ async def get_snapshot(request: Request) -> MixerSnapshot:
 async def patch_master(request: Request, body: MasterUpdate) -> MasterResponse:
     svc = _service(request)
     try:
-        m = await svc.update_master(gain_db=body.gain_db, mute=body.mute)
+        m = await svc.update_master(
+            gain_db=body.gain_db,
+            mute=body.mute,
+            mute_left=body.mute_left,
+            mute_right=body.mute_right,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _to_master_resp(m)
@@ -197,6 +229,9 @@ async def patch_output(request: Request, output_id: str, body: OutputUpdate) -> 
             label=body.label,
             gain_db=body.gain_db,
             mute=body.mute,
+            mute_left=body.mute_left,
+            mute_right=body.mute_right,
+            solo=body.solo,
             delay_ms=body.delay_ms,
             receives_master=body.receives_master,
         )
@@ -246,6 +281,9 @@ async def patch_source(request: Request, source_id: str, body: SourceUpdate) -> 
             label=body.label,
             gain_db=body.gain_db,
             mute=body.mute,
+            mute_left=body.mute_left,
+            mute_right=body.mute_right,
+            solo=body.solo,
             to_master=body.to_master,
             direct_outputs=body.direct_outputs,
         )

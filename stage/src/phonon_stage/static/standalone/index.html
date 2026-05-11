@@ -1064,17 +1064,31 @@ const MIX_VU_TICKS = `<div class="vu-ticks">
   <span>0</span><span>-6</span><span>-12</span><span>-20</span><span>-40</span><span>-60</span>
 </div>`;
 
-// 4-button channel-mute / solo row (M / R / L / S). Master gets
-// the 3-button variant (no Solo). M is wired to the existing
-// mute-everything endpoint; R/L/S land in a follow-up commit
-// (need backend per-channel volume / solo bookkeeping).
-function mrlsRow(kind, id, muted, hasSolo) {
+// 4-button channel-mute / solo row (M / R / L / S). Master gets the
+// 3-button variant (no Solo per spec — the master is a bus, soloing
+// it would be redundant with muting every other source).
+//
+// Semantics:
+//   M = full mute (links torn down, no audio reaches downstream)
+//   R = mute right channel only (left still plays at gain)
+//   L = mute left channel only  (right still plays at gain)
+//   S = solo  → silences every OTHER strip on the same side
+//       (other sources if S is on a source; other outputs if on
+//       an output). Multiple S's = solo group, all of them play.
+function mrlsRow(kind, id, state) {
+  const muted = state.mute;
+  const ml = state.mute_left;
+  const mr = state.mute_right;
+  const solo = state.solo;
   const buttons = [
     `<button class="${muted ? 'active' : ''}" onclick="mixToggleMute('${kind}','${id}')" title="Mute">M</button>`,
-    `<button onclick="mixChannelMute('${kind}','${id}','R')" title="Mute right channel (coming soon)">R</button>`,
-    `<button onclick="mixChannelMute('${kind}','${id}','L')" title="Mute left channel (coming soon)">L</button>`,
+    `<button class="${mr ? 'active' : ''}" onclick="mixToggleChannelMute('${kind}','${id}','right')" title="Mute right channel">R</button>`,
+    `<button class="${ml ? 'active' : ''}" onclick="mixToggleChannelMute('${kind}','${id}','left')" title="Mute left channel">L</button>`,
   ];
-  if (hasSolo) buttons.push(`<button class="solo" onclick="mixToggleSolo('${kind}','${id}')" title="Solo (coming soon)">S</button>`);
+  // Master has no solo (spec).
+  if (kind !== 'mix-master') {
+    buttons.push(`<button class="solo ${solo ? 'active' : ''}" onclick="mixToggleSolo('${kind}','${id}')" title="Solo — silence every other ${kind === 'mix-src' ? 'source' : 'output'}">S</button>`);
+  }
   return `<div class="row-mrls">${buttons.join('')}</div>`;
 }
 
@@ -1105,7 +1119,7 @@ function renderMixSources() {
       </div>
       ${directChips}
       <div class="row-extra2"></div>
-      ${mrlsRow('mix-src', s.id, s.mute, true)}
+      ${mrlsRow('mix-src', s.id, s)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(s.source_node_name)}">${MIX_VU_SEGS}</div>
@@ -1136,7 +1150,7 @@ function renderMixMaster() {
     <div class="row-route mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="row-extra1"></div>
     <div class="row-extra2"></div>
-    ${mrlsRow('mix-master', '', m.mute, false)}
+    ${mrlsRow('mix-master', '', m)}
     <div class="row-fader fader-area">
       ${MIX_VU_TICKS}
       <div class="vu-bar" data-ch="L" data-vu-source="phonon_master">${MIX_VU_SEGS}</div>
@@ -1185,7 +1199,7 @@ function renderMixOutputs() {
         <span class="delay-unit">ms</span>
       </div>
       <div class="row-extra2">${hw}</div>
-      ${mrlsRow('mix-out', o.id, o.mute, true)}
+      ${mrlsRow('mix-out', o.id, o)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
         <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(o.sink_node_name)}">${MIX_VU_SEGS}</div>
@@ -1239,15 +1253,52 @@ async function mixToggleMute(kind, id) {
   if (kind === 'mix-out')    return mixOutputToggleMute(id);
 }
 
-// Placeholder handlers for R/L/S buttons — UI is ready but the
-// backend doesn't track per-channel mute / solo yet. Stub today,
-// implement in a follow-up that adds {mute_left, mute_right, solo}
-// to the model + per-channel pactl volume in the reconcile loop.
-async function mixChannelMute(_kind, _id, _channel) {
-  alert('Per-channel mute (R/L) coming in the next iteration — model + reconcile wiring needed first.');
+// Toggle the left or right channel mute on the relevant strip. The
+// server applies it as a zero on the corresponding channel of the
+// node's per-channel volume — independent of the global mute. M+R+L
+// can coexist (M wins, but the R/L state is preserved across mute
+// cycles so unmute-then-remute behaves predictably).
+async function mixToggleChannelMute(kind, id, channel) {
+  const cur = _mixCurrentStrip(kind, id);
+  const field = channel === 'left' ? 'mute_left' : 'mute_right';
+  const body = { [field]: !cur[field] };
+  const url = kind === 'mix-master'
+    ? `/mixer/master`
+    : kind === 'mix-src'
+      ? `/mixer/sources/${id}`
+      : `/mixer/outputs/${id}`;
+  await fetch(API + url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await fetchMixer();
 }
-async function mixToggleSolo(_kind, _id) {
-  alert('Solo coming in the next iteration — needs cross-strip muting logic in the service.');
+
+// Toggle solo on a source or output. Master has no solo (UI never
+// shows the button there). The server's _reconcile resolves the
+// silencing: any source with solo=True suppresses other sources;
+// any output with solo=True suppresses other outputs.
+async function mixToggleSolo(kind, id) {
+  if (kind === 'mix-master') return;
+  const cur = _mixCurrentStrip(kind, id);
+  const url = kind === 'mix-src' ? `/mixer/sources/${id}` : `/mixer/outputs/${id}`;
+  await fetch(API + url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ solo: !cur.solo }),
+  });
+  await fetchMixer();
+}
+
+// Helper: get the current dict for a strip from local state. Returns
+// {} as a safe default so callers can use `cur.mute_left` without
+// guarding against undefined.
+function _mixCurrentStrip(kind, id) {
+  if (kind === 'mix-master') return mixerState.master || {};
+  if (kind === 'mix-src') return mixerState.sources.find(s => s.id === id) || {};
+  if (kind === 'mix-out') return mixerState.outputs.find(o => o.id === id) || {};
+  return {};
 }
 
 function mixScotchEdit(el, kind, id) {

@@ -17,6 +17,9 @@ class FakePipeWireBackend:
         self.ports = list(ports or [])
         self.links: list[PwLink] = []
         self.volumes: dict[int, float] = {}
+        # Per-channel volumes used by the mixer for L/R mutes.
+        # Keyed by node id, value is [left, right] (or any length).
+        self.channel_volumes: dict[int, list[float]] = {}
         self.mutes: dict[int, bool] = {}
         self.latency_offsets: dict[int, int] = {}
         # In-memory tracking of loaded modules. Key = synthetic module id,
@@ -59,6 +62,18 @@ class FakePipeWireBackend:
 
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
         self.volumes[node_id] = volume_linear
+        # Mirror to channel_volumes as a 2-channel (mono-equivalent)
+        # set so the mixer tests can read either field uniformly.
+        self.channel_volumes[node_id] = [volume_linear, volume_linear]
+
+    async def set_node_channel_volumes(
+        self, node_id: int, channels: list[float]
+    ) -> None:
+        self.channel_volumes[node_id] = list(channels)
+        # Also write the average to `volumes` so legacy single-value
+        # consumers (set_node_volume readers) still get something.
+        if channels:
+            self.volumes[node_id] = sum(channels) / len(channels)
 
     async def set_node_mute(self, node_id: int, muted: bool) -> None:
         self.mutes[node_id] = muted

@@ -420,6 +420,136 @@ class TestSources:
 # ── End-to-end realistic scenario ─────────────────────────────────────
 
 
+class TestPerChannelMutes:
+    """L/R mutes apply as zero on the corresponding channel of the
+    node's per-channel volume. The global mute remains independent
+    (still tears down link topology). These tests pin the channel
+    semantics so a future refactor doesn't silently invert L/R or
+    forget the gain factor."""
+
+    async def test_source_mute_left_zeroes_only_left_channel(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        s = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AP",
+            gain_db=0.0,
+        )
+        await service.update_source(s.id, mute_left=True)
+        ap_node = next(n for n in fake_pw.nodes if n.name == "airplay_in")
+        vols = fake_pw.channel_volumes[ap_node.id]
+        # Left channel silenced, right at unity (gain_db=0 → linear 1.0).
+        assert vols[0] == 0.0
+        assert abs(vols[1] - 1.0) < 1e-6
+
+    async def test_master_mute_right_zeroes_only_right_channel(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        await service.update_master(gain_db=-6.0, mute_right=True)
+        master_node = next(n for n in fake_pw.nodes if n.name == MASTER_SINK_NAME)
+        vols = fake_pw.channel_volumes[master_node.id]
+        # Left at -6 dB linear ≈ 0.501, right at zero.
+        assert abs(vols[0] - 0.501) < 0.01
+        assert vols[1] == 0.0
+
+    async def test_output_mute_both_channels_via_lr(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Toggling BOTH L and R on the same strip is equivalent to a
+        full mute on the channel-volume side — but the master loopback
+        is still created (mute_l/r doesn't affect topology, only
+        volume). That matches DAW intuition: channel mutes are an
+        attenuation layer, not a routing layer."""
+        o = await service.add_output(
+            sink_node_name="alsa_output.dg60_1",
+            label="DG60",
+            gain_db=0.0,
+        )
+        await service.update_output(o.id, mute_left=True, mute_right=True)
+        sink_node = next(n for n in fake_pw.nodes if n.name == "alsa_output.dg60_1")
+        assert fake_pw.channel_volumes[sink_node.id] == [0.0, 0.0]
+        # Loopback is still created because mute (global) is False.
+        assert len(fake_pw.loopbacks) == 1
+
+
+class TestSolo:
+    """Solo gates link creation. When any source/output has solo=True
+    (and isn't muted), every non-solo'd entity on that side gets its
+    routing suppressed. Muting a solo'd entity cancels its solo
+    intent (matches operator expectation: mute always wins)."""
+
+    async def test_source_solo_suppresses_other_sources_to_master(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        s_a = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        s_b = await service.add_source(
+            source_node_name="bt_phone_in", source_is_sink=True, label="BT"
+        )
+        # Before solo: both sources → master, so 2x2 = 4 links.
+        assert len(fake_pw.links) == 4
+
+        await service.update_source(s_a.id, solo=True)
+        # Only A still routes. B's links are gone.
+        assert len(fake_pw.links) == 2
+        assert s_b.id  # quiet pylint
+
+    async def test_solo_then_mute_solo_cancels_silencing(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """A solo'd-but-muted source must NOT trigger solo behavior —
+        otherwise muting the solo'd strip would silence everyone, which
+        is a footgun. Mute wins, solo is treated as inactive."""
+        s_a = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        await service.add_source(
+            source_node_name="bt_phone_in", source_is_sink=True, label="BT"
+        )
+        # Solo A, then mute A → both must continue routing (solo gone).
+        await service.update_source(s_a.id, solo=True)
+        assert len(fake_pw.links) == 2  # only A
+        await service.update_source(s_a.id, mute=True)
+        # A is muted (its links gone), but B is back (no active solo).
+        assert len(fake_pw.links) == 2  # only B now
+
+    async def test_output_solo_suppresses_others(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        o_a = await service.add_output(
+            sink_node_name="alsa_output.dg60_1", label="A"
+        )
+        o_b = await service.add_output(
+            sink_node_name="alsa_output.dg60_2", label="B"
+        )
+        # Both receive master → 2 loopbacks.
+        assert len(fake_pw.loopbacks) == 2
+
+        await service.update_output(o_a.id, solo=True)
+        # Only A's loopback survives.
+        assert len(fake_pw.loopbacks) == 1
+        assert o_b.id  # quiet
+
+    async def test_solo_group_multiple_solos_all_play(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Solo'ing two outputs means both stay live — solo is a group,
+        not a singleton. Useful when auditioning a stereo pair while
+        muting other zones."""
+        o_a = await service.add_output(
+            sink_node_name="alsa_output.dg60_1", label="A"
+        )
+        o_b = await service.add_output(
+            sink_node_name="alsa_output.dg60_2", label="B"
+        )
+        await service.update_output(o_a.id, solo=True)
+        await service.update_output(o_b.id, solo=True)
+        # Both solos active → both loopbacks survive.
+        assert len(fake_pw.loopbacks) == 2
+
+
 class TestProductionScenario:
     async def test_two_dg60_outputs_two_sources_via_master(
         self, service: MixerService, fake_pw: FakePipeWireBackend

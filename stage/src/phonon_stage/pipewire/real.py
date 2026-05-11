@@ -130,6 +130,46 @@ class RealPipeWireBackend:
             except Exception:
                 logger.warning("pipewire.volume_set_failed", node_id=node_id, exc_info=True)
 
+    async def set_node_channel_volumes(
+        self, node_id: int, channels: list[float]
+    ) -> None:
+        """Set per-channel volumes on a PW node. Uses pactl's multi-
+        argument set-sink-volume / set-source-volume because wpctl
+        doesn't expose per-channel control. Falls back gracefully if
+        the node isn't a PA-visible sink/source."""
+        if not channels:
+            return
+        pcts = [f"{int(max(0.0, min(2.0, v)) * 100)}%" for v in channels]
+        # Try sink first (covers airplay_in null-sink, phonon_master,
+        # all alsa_output.* sinks). If that fails it's likely a real
+        # source — retry as source.
+        try:
+            await cli.run_command("pactl", "set-sink-volume", str(node_id), *pcts)
+            logger.info(
+                "pipewire.channel_volume_set",
+                node_id=node_id,
+                channels=pcts,
+                kind="sink",
+            )
+            return
+        except Exception:
+            pass
+        try:
+            await cli.run_command("pactl", "set-source-volume", str(node_id), *pcts)
+            logger.info(
+                "pipewire.channel_volume_set",
+                node_id=node_id,
+                channels=pcts,
+                kind="source",
+            )
+        except Exception:
+            logger.warning(
+                "pipewire.channel_volume_failed",
+                node_id=node_id,
+                channels=pcts,
+                exc_info=True,
+            )
+
     async def set_node_mute(self, node_id: int, muted: bool) -> None:
         # WirePlumber starts every fresh playback sink in MUTED state
         # (security default — avoids blasting audio at full volume the

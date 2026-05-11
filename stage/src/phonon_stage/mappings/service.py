@@ -80,6 +80,15 @@ class MappingService:
         sink_name = sink_node.name if sink_node else ""
         src_is_sink = bool(src_node and "Sink" in src_node.media_class)
 
+        # Normalise port order by name (FL before FR) so the zip-pair in
+        # _create_links always wires straight channels even if the caller
+        # passed them in graph-id order (which PW assigns by arrival,
+        # not by L/R convention). Caught after a user routing two BT
+        # paths in parallel for codec-latency compensation heard a
+        # metallic comb filter caused by the second path being swapped.
+        source_port_ids = self._order_ports_by_name(source_port_ids, await self._pw.list_ports())
+        sink_port_ids = self._order_ports_by_name(sink_port_ids, await self._pw.list_ports())
+
         if not mute:
             if delay_ms > 0 and src_name and sink_name:
                 loopback_id = await self._load_loopback_for(
@@ -447,11 +456,44 @@ class MappingService:
             )
             return None
         ports = await self._pw.list_ports()
-        src_outs = sorted(p.id for p in ports if p.node_id == src.id and p.direction == "output")
-        sink_ins = sorted(p.id for p in ports if p.node_id == sink.id and p.direction == "input")
+        # Order ports by name (capture_FL/monitor_FL/playback_FL before
+        # *_FR) so the zip in _create_links pairs channels straight —
+        # not by raw id, which PipeWire assigns in graph-arrival order
+        # and can land FR before FL → audible channel swap between two
+        # parallel mappings, killing phase coherence when the user
+        # tries to align them for codec-latency compensation.
+        src_outs = [
+            p.id
+            for p in sorted(
+                (p for p in ports if p.node_id == src.id and p.direction == "output"),
+                key=lambda p: p.name,
+            )
+        ]
+        sink_ins = [
+            p.id
+            for p in sorted(
+                (p for p in ports if p.node_id == sink.id and p.direction == "input"),
+                key=lambda p: p.name,
+            )
+        ]
         if not src_outs or not sink_ins:
             return None
         return (src.id, src_outs, sink.id, sink_ins)
+
+    @staticmethod
+    def _order_ports_by_name(port_ids: list[int], all_ports: list) -> list[int]:  # type: ignore[type-arg]
+        """Re-order port_ids so they appear in name order (FL before FR
+        for stereo ports). PipeWire assigns port ids by arrival order
+        which can land FR before FL — without this normalisation the
+        zip-pair in _create_links would wire straight channels into
+        crossed ones, audible as L/R inversion between two parallel
+        mappings."""
+        by_id = {p.id: p for p in all_ports}
+        present = [pid for pid in port_ids if pid in by_id]
+        if len(present) != len(port_ids):
+            # Unknown id (port disappeared) — leave the original order.
+            return list(port_ids)
+        return sorted(present, key=lambda pid: by_id[pid].name)
 
     async def _create_links(
         self, source_port_ids: list[int], sink_port_ids: list[int]

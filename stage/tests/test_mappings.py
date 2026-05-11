@@ -306,6 +306,29 @@ class TestMappingLoopbackDelay:
         assert first_module in fake_pw.unloaded_modules
         assert len(fake_pw.loopbacks) == 1
 
+    async def test_create_normalises_swapped_stereo_ports(
+        self, mapping_service: MappingService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Caller passing source/sink port ids in FR-before-FL order
+        (PW assigns ids by graph arrival, not by L/R convention) must
+        not produce crossed links. Regression for the codec-latency
+        compensation scenario where two parallel BT mappings need
+        identical channel ordering to align — a swap on one path
+        causes a perceptible comb filter even at zero delay."""
+        # Fixtures: node 32's ports are id 44 (playback_FL) and 45
+        # (playback_FR), so passing [45, 44] simulates swapped order.
+        await mapping_service.create_mapping(
+            source_node_id=31,
+            source_port_ids=[43, 42],  # FR-before-FL
+            sink_node_id=32,
+            sink_port_ids=[45, 44],  # FR-before-FL
+        )
+        # After normalisation we expect link pairs (42→44) and (43→45),
+        # i.e. FL→FL and FR→FR.
+        assert len(fake_pw.links) == 2
+        pairs = {(lk.output_port_id, lk.input_port_id) for lk in fake_pw.links}
+        assert pairs == {(42, 44), (43, 45)}, f"Channels crossed: {pairs}"
+
     async def test_restore_unloads_stale_loopback_before_reloading(
         self,
         mapping_service: MappingService,

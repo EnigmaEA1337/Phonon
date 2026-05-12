@@ -705,6 +705,10 @@ async def restart_audio_stack() -> dict[str, Any]:
     bridge). All three are user services so no sudo needed."""
     seq = ["pipewire", "wireplumber", "pipewire-pulse"]
     results: list[str] = []
+    # Gate on each step's exit code — restarting wireplumber against
+    # a dead pipewire just queues errors. Stop at the first failure
+    # and report what happened so the UI can show actionable info
+    # instead of returning "ok" with a hidden failure.
     for name in seq:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
@@ -712,10 +716,19 @@ async def restart_audio_stack() -> dict[str, Any]:
             "restart",
             f"{name}.service",
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        rc = await proc.wait()
+        _, err_b = await proc.communicate()
+        rc = proc.returncode or 0
         results.append(f"{name}={rc}")
+        if rc != 0:
+            return {
+                "status": "failed",
+                "service": name,
+                "rc": rc,
+                "error": err_b.decode("utf-8", errors="replace")[:200],
+                "sequence": " ".join(results),
+            }
         await asyncio.sleep(0.5)
 
     from phonon_stage.api.aes67 import replay_audio_state

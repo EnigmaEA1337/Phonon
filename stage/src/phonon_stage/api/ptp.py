@@ -509,8 +509,13 @@ async def apply_settings() -> None:
             else:
                 rc2, e2 = await _systemctl("stop", PHC2SYS_SERVICE)
                 rc2b, e2b = await _systemctl("disable", PHC2SYS_SERVICE)
-            logger.info(
-                "ptp.services_enabled",
+            # Loud failure if any of the 4 systemctl calls returned
+            # non-zero. Previously we logged INFO regardless, so a
+            # sudoers-blocked or unit-failed enable produced the same
+            # journal line as a successful one — drift was invisible.
+            any_fail = rc1 != 0 or rc1b != 0 or rc2 != 0 or rc2b != 0
+            (logger.error if any_fail else logger.info)(
+                "ptp.services_enabled" if not any_fail else "ptp.services_enable_failed",
                 ptp4l_rc=rc1, ptp4l_start_rc=rc1b,
                 phc2sys_rc=rc2, phc2sys_2_rc=rc2b,
                 ptp4l_err=(e1 + " " + e1b).strip(),
@@ -524,8 +529,9 @@ async def apply_settings() -> None:
         rc1b, e1b = await _systemctl("disable", PTP4L_SERVICE)
         rc2a, e2a = await _systemctl("stop", PHC2SYS_SERVICE)
         rc2b, e2b = await _systemctl("disable", PHC2SYS_SERVICE)
-        logger.info(
-            "ptp.services_disabled",
+        any_fail = rc1a != 0 or rc1b != 0 or rc2a != 0 or rc2b != 0
+        (logger.error if any_fail else logger.info)(
+            "ptp.services_disabled" if not any_fail else "ptp.services_disable_failed",
             ptp4l_stop_rc=rc1a, ptp4l_disable_rc=rc1b,
             phc2sys_stop_rc=rc2a, phc2sys_disable_rc=rc2b,
             ptp4l_err=(e1a + " " + e1b).strip(),

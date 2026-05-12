@@ -60,6 +60,7 @@ from phonon_stage.plugins.backend import (
     PluginRuntime,
     PluginSettings,
 )
+from phonon_stage.plugins.system import SystemBackendError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -395,14 +396,37 @@ class AirplayV1Plugin:
                 )
             _, err_b = await asyncio.wait_for(proc.communicate(), timeout=8.0)
             if proc.returncode != 0:
-                log.warning(
-                    "plugins.airplay.nqptp_iface_apply_failed",
-                    rc=proc.returncode,
-                    err=err_b.decode("utf-8", errors="replace")[:200],
+                err = err_b.decode("utf-8", errors="replace")[:200]
+                # Distinguish "helper not deployable" (sudo not
+                # granted / missing) from "helper ran and rejected
+                # the request". The former is benign on AP1-only or
+                # dev hosts — skip silently. The latter is a real
+                # config bug → raise so the UI surfaces the failure
+                # instead of pretending the iface was bound.
+                sudo_blocked = (
+                    err.startswith("sudo:")
+                    or "password is required" in err
+                    or "no tty present" in err
                 )
-        except Exception:
-            # Helper missing on AP1-only hosts is benign.
-            log.info("plugins.airplay.nqptp_iface_helper_unavailable", exc_info=False)
+                if sudo_blocked:
+                    log.info(
+                        "plugins.airplay.nqptp_iface_helper_unavailable",
+                        reason="sudo_blocked",
+                        err=err,
+                    )
+                else:
+                    msg = f"phonon-nqptp returned rc={proc.returncode}: {err}"
+                    log.error(
+                        "plugins.airplay.nqptp_iface_apply_failed",
+                        rc=proc.returncode,
+                        err=err,
+                    )
+                    raise SystemBackendError(msg)
+        except FileNotFoundError:
+            # Helper symlink missing — AP1-only host (the build script
+            # wasn't run or PHONON_SKIP_AP2_BUILD=1). Benign: skip the
+            # iface binding, the daemon still listens-all by default.
+            log.info("plugins.airplay.nqptp_iface_helper_unavailable")
 
     async def _stop_nqptp_quiet(self) -> None:
         try:

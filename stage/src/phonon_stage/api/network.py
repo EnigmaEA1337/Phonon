@@ -1106,10 +1106,26 @@ async def get_pending_apply() -> PendingApply:
             backup_dir=str(data.get("backup_dir", "")),
             seconds_remaining=max(0, expires - int(time.time())),
         )
-    except Exception:
-        # Corrupt pending file — report as pending so the UI shows
-        # an indeterminate countdown rather than hiding the timer.
-        return PendingApply(pending=True)
+    except (json.JSONDecodeError, ValueError) as exc:
+        # Corrupt pending file — log loudly so the operator sees it
+        # and report pending=False. Earlier this returned pending=True
+        # which painted a phantom countdown the UI couldn't tied to a
+        # real systemd-run timer; better to undercount than overcount.
+        logger.error(
+            "network.pending_state_corrupt",
+            path=_PENDING_STATE_FILE,
+            err=str(exc),
+            exc_info=True,
+        )
+        return PendingApply(pending=False)
+    except OSError as exc:
+        # Permission denied / fs error — same conservative default.
+        logger.warning(
+            "network.pending_state_read_failed",
+            path=_PENDING_STATE_FILE,
+            err=str(exc),
+        )
+        return PendingApply(pending=False)
 
 
 async def _apply_state(timeout_s: int) -> ApplyResult:

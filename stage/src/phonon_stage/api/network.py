@@ -835,14 +835,28 @@ def init(data_dir: Path) -> None:
 
 
 def _save_state() -> None:
+    """Persist the in-memory NetworkState. Failures are logged as
+    ERROR but not raised — every call site has its own roll-back
+    sequence that would otherwise double-fault. Worst case: in-memory
+    state drifts from disk for one apply cycle; the next successful
+    save reconverges them."""
     if _state_path is None:
         return
     import contextlib
-    _state_path.parent.mkdir(parents=True, exist_ok=True)
-    _state_path.write_text(_state.model_dump_json(indent=2))
-    with contextlib.suppress(OSError):
-        _state_path.chmod(0o600)
-    logger.info("network.state_saved", path=str(_state_path))
+    try:
+        _state_path.parent.mkdir(parents=True, exist_ok=True)
+        _state_path.write_text(_state.model_dump_json(indent=2))
+        with contextlib.suppress(OSError):
+            _state_path.chmod(0o600)
+        logger.info("network.state_saved", path=str(_state_path))
+    except OSError as exc:
+        # disk full, permission denied, FS in read-only mount, etc.
+        logger.error(
+            "network.state_save_failed",
+            path=str(_state_path),
+            err=str(exc),
+            exc_info=True,
+        )
 
 
 class ApplyResult(BaseModel):

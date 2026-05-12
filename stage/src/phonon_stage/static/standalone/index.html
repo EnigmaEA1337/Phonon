@@ -5583,12 +5583,30 @@ function renderIfaces(list) {
     const editBtn = editable
       ? `<button class="btn" style="font-size:9px;padding:2px 8px" onclick="openIfaceEditModal('${escapeHtml(i.name)}')">Edit</button>`
       : '';
+    // PTP / timestamping badge in the header row. Three states:
+    //   HW-PTP  — full hardware path available (sub-µs sync possible)
+    //   SW only — software timestamping only (~50µs RMS at best)
+    //   n/a     — ethtool unavailable for this iface (vlan child,
+    //             virtual device) — the parent's caps still apply.
+    const e = i.ethtool;
+    let ptpBadge = '';
+    if (e) {
+      if (!e.raw_available) {
+        ptpBadge = `<span title="ethtool -T unavailable for this iface" style="color:var(--text-fade);font-family:var(--font-m);font-size:9px;padding:1px 6px;border:1px solid var(--text-fade);border-radius:3px">PTP n/a</span>`;
+      } else if (e.hw_ptp_capable) {
+        ptpBadge = `<span title="Hardware PTP timestamping supported · PHC index ${e.phc_index}" style="color:var(--green);font-family:var(--font-m);font-size:9px;font-weight:700;padding:1px 6px;border:1px solid var(--green);border-radius:3px">HW-PTP</span>`;
+      } else {
+        const reason = !e.hw_transmit ? 'no TX hw' : !e.hw_receive ? 'no RX hw' : !e.hw_raw_clock ? 'no raw clock' : 'no PHC';
+        ptpBadge = `<span title="Software timestamping only — ${reason}" style="color:var(--yellow);font-family:var(--font-m);font-size:9px;padding:1px 6px;border:1px solid var(--yellow);border-radius:3px">SW only</span>`;
+      }
+    }
     return `
       <div style="background:var(--bg-1);padding:10px 12px;border-radius:4px;${border};margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
           <div style="font-family:var(--font-d);font-size:14px;font-weight:600">${escapeHtml(i.name)}</div>
           ${_ifaceTypeBadge(i.type)}
           ${_operstateBadge(i.operstate)}
+          ${ptpBadge}
           ${mgmt}
           <span style="flex:1"></span>
           <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${escapeHtml(i.mac)} · MTU ${i.mtu} · ${speed}${i.duplex ? ' / ' + escapeHtml(i.duplex) : ''}</span>

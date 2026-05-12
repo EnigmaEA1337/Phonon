@@ -19,6 +19,7 @@ from phonon_stage.api.network import (
     _valid_ipv4_cidr,
     _validate_iface_cfg,
     _validate_vlan_cfg,
+    parse_ethtool_T,
     render_netplan_yaml,
 )
 
@@ -297,3 +298,110 @@ def test_render_empty_state():
     # No section headers without content
     assert "ethernets:" not in yaml
     assert "vlans:" not in yaml
+
+
+# ─── ethtool -T parser ───────────────────────────────────
+
+# Full HW-capable NIC — Intel I210/I350 typical output. Has all three
+# hardware flags + a real PHC index.
+ETHTOOL_HW_CAPABLE = """\
+Time stamping parameters for enp1s0:
+Capabilities:
+        hardware-transmit
+        software-transmit
+        hardware-receive
+        software-receive
+        software-system-clock
+        hardware-raw-clock
+PTP Hardware Clock: 0
+Hardware Transmit Timestamp Modes:
+        off                   (HWTSTAMP_TX_OFF)
+        on                    (HWTSTAMP_TX_ON)
+Hardware Receive Filter Modes:
+        none                  (HWTSTAMP_FILTER_NONE)
+        all                   (HWTSTAMP_FILTER_ALL)
+"""
+
+# Software-only NIC — typical Realtek r8169 (the Pi's enp1s0 on the
+# 3070, USB-Eth dongles). No hardware flags, no PHC.
+ETHTOOL_SW_ONLY = """\
+Time stamping parameters for enp1s0:
+Capabilities:
+        software-transmit
+        software-receive
+        software-system-clock
+PTP Hardware Clock: none
+Hardware Transmit Timestamp Modes:
+        off                   (HWTSTAMP_TX_OFF)
+Hardware Receive Filter Modes:
+        none                  (HWTSTAMP_FILTER_NONE)
+"""
+
+# Legacy ethtool — uses SOF_TIMESTAMPING_* constants instead of the
+# keyword form. Same NIC semantics as HW_CAPABLE above.
+ETHTOOL_LEGACY_FLAGS = """\
+Time stamping parameters for eth0:
+Capabilities:
+        SOF_TIMESTAMPING_TX_HARDWARE
+        SOF_TIMESTAMPING_TX_SOFTWARE
+        SOF_TIMESTAMPING_RX_HARDWARE
+        SOF_TIMESTAMPING_RX_SOFTWARE
+        SOF_TIMESTAMPING_RAW_HARDWARE
+        SOF_TIMESTAMPING_SOFTWARE
+PTP Hardware Clock: 2
+"""
+
+
+def test_ethtool_parses_hw_capable_nic():
+    c = parse_ethtool_T(ETHTOOL_HW_CAPABLE)
+    assert c.hw_transmit
+    assert c.hw_receive
+    assert c.hw_raw_clock
+    assert c.sw_transmit
+    assert c.sw_receive
+    assert c.sw_system_clock
+    assert c.phc_index == 0
+    assert c.hw_ptp_capable is True
+    assert c.raw_available is True
+
+
+def test_ethtool_parses_sw_only_nic():
+    c = parse_ethtool_T(ETHTOOL_SW_ONLY)
+    assert not c.hw_transmit
+    assert not c.hw_receive
+    assert not c.hw_raw_clock
+    assert c.sw_transmit
+    assert c.sw_receive
+    assert c.sw_system_clock
+    # "none" → -1
+    assert c.phc_index == -1
+    assert c.hw_ptp_capable is False
+
+
+def test_ethtool_accepts_legacy_sof_flags():
+    c = parse_ethtool_T(ETHTOOL_LEGACY_FLAGS)
+    assert c.hw_transmit
+    assert c.hw_receive
+    assert c.hw_raw_clock
+    # phc_index=2 — confirms we parse beyond just "0"
+    assert c.phc_index == 2
+    assert c.hw_ptp_capable is True
+
+
+def test_ethtool_empty_input_flags_unavailable():
+    c = parse_ethtool_T("")
+    assert c.raw_available is False
+    assert c.hw_ptp_capable is False
+    assert c.phc_index == -1
+
+
+def test_ethtool_hw_ptp_requires_phc_not_just_caps():
+    # NIC reports HW-capable flags but no PHC — happens on weird
+    # drivers that lie about caps. We must reject it for the
+    # hw_ptp_capable badge so ptp4l isn't pointed at a bogus iface.
+    fake = ETHTOOL_HW_CAPABLE.replace("PTP Hardware Clock: 0", "PTP Hardware Clock: none")
+    c = parse_ethtool_T(fake)
+    assert c.hw_transmit
+    assert c.hw_receive
+    assert c.phc_index == -1
+    assert c.hw_ptp_capable is False

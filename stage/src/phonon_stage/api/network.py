@@ -443,6 +443,35 @@ class IfAddress(BaseModel):
     label: str = ""   # for IP aliases, e.g. "enp1s0:0"
 
 
+class EthtoolCaps(BaseModel):
+    """Subset of `ethtool -T <iface>` output that matters for PTP /
+    AES67 — namely whether the NIC owns a hardware clock and the
+    timestamping flags ptp4l checks. The remaining ethtool surface
+    (filter modes, driver caps) lives in the helper's verbose path
+    if we ever need it."""
+
+    model_config = ConfigDict(extra="forbid")
+    # Capability flags from the "Capabilities:" block. Names mirror
+    # ethtool's keyword form ("hardware-transmit") so the UI can show
+    # exactly what the operator would see at the shell.
+    hw_transmit: bool = False
+    hw_receive: bool = False
+    hw_raw_clock: bool = False
+    sw_transmit: bool = False
+    sw_receive: bool = False
+    sw_system_clock: bool = False
+    # PHC index — -1 means no PTP hardware clock. ptp4l's hardware
+    # timestamping path needs phc_index >= 0 AND all three hw_* flags.
+    phc_index: int = -1
+    # Computed: True iff this NIC can give ptp4l a real hardware
+    # timestamp (sub-microsecond). Drives the "HW-PTP" badge.
+    hw_ptp_capable: bool = False
+    # Best-effort driver name (from `ethtool -i` second-best — we
+    # already capture this via networkctl status, but ethtool -T
+    # surfaces it too).
+    raw_available: bool = True  # False iff ethtool -T failed for this iface
+
+
 class IfaceInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -461,6 +490,9 @@ class IfaceInfo(BaseModel):
     # systemd-networkd / netplan-applied state
     networkd_setup: str = ""     # "configured" | "configuring" | "unmanaged"
     online: bool = False         # `networkctl` reports it as online
+    # PTP / timestamping capability (None when ethtool isn't applicable
+    # — loopback, virtual ifaces, or ethtool unavailable on this host).
+    ethtool: EthtoolCaps | None = None
 
 
 async def _ip_addr_json() -> list[dict]:
@@ -481,6 +513,67 @@ async def _ip_route_json() -> list[dict]:
         return json.loads(out)
     except json.JSONDecodeError:
         return []
+
+
+def parse_ethtool_T(text: str) -> EthtoolCaps:
+    """Parse `ethtool -T <iface>` output into our EthtoolCaps model.
+
+    Sample input:
+      Time stamping parameters for enp1s0:
+      Capabilities:
+              hardware-transmit
+              software-transmit
+              hardware-receive
+              software-receive
+              software-system-clock
+              hardware-raw-clock
+      PTP Hardware Clock: 0
+      Hardware Transmit Timestamp Modes: ...
+      Hardware Receive Filter Modes: ...
+
+    Older ethtool builds and some drivers use the SOF_TIMESTAMPING_*
+    constants instead of the keyword form — we accept either.
+    """
+    caps = EthtoolCaps()
+    if not text:
+        caps.raw_available = False
+        return caps
+    # Capability flags — both spelling families
+    caps.hw_transmit = ("hardware-transmit" in text) or ("SOF_TIMESTAMPING_TX_HARDWARE" in text)
+    caps.hw_receive = ("hardware-receive" in text) or ("SOF_TIMESTAMPING_RX_HARDWARE" in text)
+    caps.hw_raw_clock = ("hardware-raw-clock" in text) or ("SOF_TIMESTAMPING_RAW_HARDWARE" in text)
+    caps.sw_transmit = ("software-transmit" in text) or ("SOF_TIMESTAMPING_TX_SOFTWARE" in text)
+    caps.sw_receive = ("software-receive" in text) or ("SOF_TIMESTAMPING_RX_SOFTWARE" in text)
+    caps.sw_system_clock = ("software-system-clock" in text) or ("SOF_TIMESTAMPING_SOFTWARE" in text)
+    # PHC line. "PTP Hardware Clock: <n>" with n a non-negative int, or
+    # "none"/absent when the NIC has no PHC.
+    m = re.search(r"PTP Hardware Clock:\s*(\S+)", text)
+    if m:
+        v = m.group(1)
+        caps.phc_index = int(v) if v.isdigit() else -1
+    # Computed: ptp4l hardware path needs the trifecta + a real PHC.
+    caps.hw_ptp_capable = (
+        caps.hw_transmit and caps.hw_receive and caps.hw_raw_clock and caps.phc_index >= 0
+    )
+    return caps
+
+
+async def _get_ethtool_caps(iface: str) -> EthtoolCaps | None:
+    """Run `ethtool -T <iface>` and parse. Returns None when ethtool
+    isn't applicable (loopback, virtual ifaces) or unavailable on
+    the host."""
+    if not iface:
+        return None
+    rc, out, err = await _run(["ethtool", "-T", iface], timeout=2.5)
+    if rc != 0:
+        # ethtool says "No such device" on virtual / loopback / bridge
+        # ifaces, "Operation not supported" on some USB-Eth chips.
+        # Return a caps object marked raw_available=False so the UI
+        # can show "ethtool: n/a" rather than dropping the iface entirely.
+        caps = EthtoolCaps()
+        caps.raw_available = False
+        return caps
+    return parse_ethtool_T(out)
 
 
 async def _networkctl_status(iface: str) -> dict[str, str]:
@@ -599,6 +692,11 @@ async def _build_iface_info(nd: dict, routes: list[dict], mgmt: str) -> IfaceInf
         vlan_parent=vlan_parent,
         vlan_id=vlan_id,
     )
+
+    # ethtool -T capabilities — only meaningful for ether / vlan
+    # ifaces; loopback and wifi rarely report useful timestamping data.
+    if iface_type in ("ether", "vlan"):
+        info.ethtool = await _get_ethtool_caps(name)
 
     # Enrich with networkctl-only fields (speed, duplex, dns, setup state).
     extra = await _networkctl_status(name)

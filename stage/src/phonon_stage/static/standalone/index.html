@@ -5276,7 +5276,7 @@ async function showModal(type) {
 ───────────────────────────────────────────────────────── */
 
 const GRAPH_NODE_W = 220;
-const GRAPH_TITLE_H = 24;
+const GRAPH_TITLE_H = 38;   // taller — room for title + info subline
 const GRAPH_PORT_H = 16;
 const GRAPH_LANE_X = {
   daemon:    60,
@@ -5441,6 +5441,50 @@ function _buildPortRows(node, ports) {
 function _nodeHeightFor(portRows) {
   const rows = Math.max(portRows.ins.length, portRows.outs.length, 1);
   return GRAPH_TITLE_H + rows * GRAPH_PORT_H + 10;
+}
+
+// Build a compact one-liner with the audio params PW exposes for
+// this group. Skips empty fields so dotted ALSA sinks don't pad the
+// line with "0k · 0ch".
+function _audioParamsLine(members) {
+  // Pick the first member that has each field. Real Sinks usually
+  // have rate + channels; Stream halves often have 0 — falling back
+  // across members keeps the line informative.
+  const pickFirst = (key) => {
+    for (const m of members) if (m[key]) return m[key];
+    return null;
+  };
+  const rate = pickFirst('sample_rate');
+  const ch = pickFirst('channels');
+  const lat = pickFirst('latency_ms');
+  const btCodec = pickFirst('bt_codec');
+  const btProfile = pickFirst('bt_profile');
+  const bits = [];
+  if (rate)  bits.push(`${(rate / 1000).toFixed(rate >= 100000 ? 0 : 1)}k`);
+  if (ch)    bits.push(`${ch}ch`);
+  if (lat && lat > 0.05) bits.push(`${lat.toFixed(1)}ms`);
+  if (btCodec) bits.push(btCodec);
+  if (btProfile && btProfile !== btCodec) bits.push(btProfile);
+  return bits.join(' · ');
+}
+
+// Full multi-line tooltip — everything we know about this box.
+function _tooltipText(box) {
+  const lines = [];
+  for (const m of box.members) {
+    const head = m.nick ? `${m.name}  (${m.nick})` : m.name;
+    lines.push(`#${m.id}  ${head}  [${m.media_class}]  state=${m.state}`);
+    const sub = [];
+    if (m.sample_rate) sub.push(`rate=${m.sample_rate}`);
+    if (m.channels)    sub.push(`ch=${m.channels}`);
+    if (m.latency_ms)  sub.push(`latency=${m.latency_ms}ms`);
+    if (m.bt_codec)    sub.push(`bt_codec=${m.bt_codec}`);
+    if (m.bt_address)  sub.push(`bt_addr=${m.bt_address}`);
+    if (m.bt_profile)  sub.push(`bt_profile=${m.bt_profile}`);
+    if (m.alsa_card)   sub.push(`alsa=${m.alsa_card}`);
+    if (sub.length) lines.push('  ' + sub.join('  '));
+  }
+  return lines.join('\n');
 }
 
 function _shortPortName(name) {
@@ -5624,11 +5668,19 @@ function renderGraph() {
     const b = _portCoords(inBox,  inPort.id,  'in',  inBox.ports.ins);
     if (!a || !b) continue;
     const path = _bezierPath(a, b);
+    // Group wraps path + tooltip so the user can hover any cable to
+    // see what's actually wired through it (port-to-port, link state).
+    const cableG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     const cable = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     cable.setAttribute('class', 'g-cable' + (lk.state && lk.state !== 'active' ? ' idle' : ''));
     cable.setAttribute('d', path);
     cable.setAttribute('data-link-id', String(lk.id));
-    gLinks.appendChild(cable);
+    cableG.appendChild(cable);
+    const cTip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    cTip.textContent =
+      `${outBox.representative.name}:${outPort.name}\n→ ${inBox.representative.name}:${inPort.name}\nlink #${lk.id}  state=${lk.state}`;
+    cableG.appendChild(cTip);
+    gLinks.appendChild(cableG);
     cableCount++;
   }
 
@@ -5660,15 +5712,16 @@ function renderGraph() {
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     title.setAttribute('class', 'g-node-title');
     title.setAttribute('x', '8');
-    title.setAttribute('y', '16');
+    title.setAttribute('y', '14');
     const baseLabel = _nodeShortLabel(box.representative);
     title.textContent = box.members.length > 1
       ? `${baseLabel} ×${box.members.length}`
       : baseLabel;
     g.appendChild(title);
 
-    // Subtitle: worst-case state across members so SUSPENDED on any
-    // side surfaces as the visible state, not RUNNING from the other.
+    // Subtitle row 1 (right of title): worst-case state across
+    // members so SUSPENDED on any side surfaces as the visible
+    // state, not RUNNING from the other.
     const stateOrder = ['error', 'suspended', 'idle', 'running'];
     let worst = 'running';
     for (const m of box.members) {
@@ -5678,10 +5731,26 @@ function renderGraph() {
     const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     sub.setAttribute('class', 'g-node-sub');
     sub.setAttribute('x', String(box.w - 6));
-    sub.setAttribute('y', '16');
+    sub.setAttribute('y', '14');
     sub.setAttribute('text-anchor', 'end');
     sub.textContent = worst.slice(0, 4);
     g.appendChild(sub);
+
+    // Subtitle row 2: audio params (rate · channels · latency · BT codec).
+    const params = _audioParamsLine(box.members);
+    if (params) {
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      p.setAttribute('class', 'g-node-sub');
+      p.setAttribute('x', '8');
+      p.setAttribute('y', '30');
+      p.textContent = params;
+      g.appendChild(p);
+    }
+
+    // Native SVG <title> tooltip — full per-member dump on hover.
+    const tip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    tip.textContent = _tooltipText(box);
+    g.appendChild(tip);
 
     // Drag handle = the title bar area
     const handle = document.createElementNS('http://www.w3.org/2000/svg', 'rect');

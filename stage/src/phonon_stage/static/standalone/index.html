@@ -2858,11 +2858,12 @@ async function api(path, opts) {
 
 // ── Refresh all ──────────────────────────────────────
 async function refreshAll() {
-  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, xruns, updateStatus, alsaCards] = await Promise.all([
+  const [health, caps, nodes, ports, mappings, stages, aes67, aes67d, ptp, settings, ifaces, ifacesRich, xruns, updateStatus, alsaCards] = await Promise.all([
     api('/health'), api('/capabilities'), api('/pipewire/nodes'),
     api('/pipewire/ports'), api('/mappings'), api('/browse/stages?timeout=1'),
     api('/aes67/streams'), api('/aes67/discovered'), api('/ptp/status'),
     api('/settings'), api('/settings/network-interfaces'),
+    api('/network/interfaces'),     // rich ifaces (with ethtool caps) for PTP picker
     api('/pipewire/xruns'),
     api('/system/update/status'),
     api('/audio/alsa/cards'),
@@ -2933,16 +2934,19 @@ async function refreshAll() {
     renderPtpStatus(ptp);
     renderTopbarPtp(ptp);
     // Render PTP tab too (config form + live status), if settings are loaded
-    if (state.settings) renderPtpTab(state.settings.ptp, ptp, state.ifaces || []);
+    if (state.settings) renderPtpTab(state.settings.ptp, ptp, (state.ifacesRich && state.ifacesRich.length) ? state.ifacesRich : (state.ifaces || []));
   }
   if (xruns) { state.xruns = xruns; renderTopbarXruns(xruns); }
   if (updateStatus) { state.updateStatus = updateStatus; renderTopbarUpdate(updateStatus); }
   if (settings) {
     state.settings = settings;
     state.ifaces = ifaces || [];
+    // Rich ifaces (with ethtool / PTP capability) for the PTP picker
+    state.ifacesRich = ifacesRich || [];
     renderSettings(settings, ifaces || []);
-    // Re-render PTP tab now that we have both ptp live status and settings
-    if (state.ptp) renderPtpTab(settings.ptp, state.ptp, ifaces || []);
+    // Re-render PTP tab now that we have both ptp live status and settings.
+    // Prefer the rich iface list so the dropdown can flag HW-PTP capability.
+    if (state.ptp) renderPtpTab(settings.ptp, state.ptp, state.ifacesRich.length ? state.ifacesRich : (ifaces || []));
   }
   // MESH badge: STANDALONE + at least one AES67 stream OR another Stage seen
   updateModeBadge(stages || [], aes67 || []);
@@ -4079,7 +4083,13 @@ async function settingsSave() {
 // ── PTP tab — full config form (28 fields) + live status ──────────────────
 let _ptpDirty = false;
 function ptpMarkDirty() { _ptpDirty = true; }
-function ptpReset() { _ptpDirty = false; if (state.settings && state.ptp) renderPtpTab(state.settings.ptp, state.ptp, state.ifaces||[]); }
+function ptpReset() {
+  _ptpDirty = false;
+  if (state.settings && state.ptp) {
+    const ifs = (state.ifacesRich && state.ifacesRich.length) ? state.ifacesRich : (state.ifaces || []);
+    renderPtpTab(state.settings.ptp, state.ptp, ifs);
+  }
+}
 
 function renderPtpTab(ptpCfg, ptpLive, ifaces) {
   if (_ptpDirty) return;
@@ -4119,8 +4129,43 @@ function renderPtpTab(ptpCfg, ptpLive, ifaces) {
     </div>`;
 
   // ── Config form ─────────────────────────────────────────────────────
-  const ifaceOpts = [{name:'',ip:'auto-pick',kind:''}, ...(ifaces||[])]
-    .map(i => `<option value="${i.name}" ${i.name===ptpCfg.interface?'selected':''}>${i.name||'(auto)'}${i.ip?` — ${i.ip}`:''}${i.kind?` [${i.kind}]`:''}</option>`).join('');
+  // The iface picker accepts both the slim /settings/network-interfaces
+  // shape (name/ip/kind) and the rich /network/interfaces shape (full
+  // IfaceInfo with ethtool caps). We detect by checking for the
+  // ethtool field — when present, decorate each option with HW-PTP/SW
+  // so the operator picks the right NIC for sub-µs sync.
+  const _ifLabel = (i) => {
+    if (!i.name) return '(auto)';
+    let label = i.name;
+    // Slim shape (settings endpoint) — ip + kind only.
+    if (!('ethtool' in i)) {
+      if (i.ip) label += ` — ${i.ip}`;
+      if (i.kind) label += ` [${i.kind}]`;
+      return label;
+    }
+    // Rich shape (/network/interfaces).
+    const v4 = (i.addresses||[]).find(a => a.family === 'inet' && a.scope === 'global');
+    if (v4) label += ` — ${v4.address}`;
+    const e = i.ethtool;
+    if (e) {
+      if (e.hw_ptp_capable) label += ` · HW-PTP (PHC ${e.phc_index})`;
+      else if (e.raw_available) label += ` · SW only`;
+      else label += ` · ts n/a`;
+    }
+    return label;
+  };
+  const ifaceOpts = [{name:'',ip:'auto-pick'}, ...(ifaces||[])]
+    .map(i => `<option value="${i.name}" ${i.name===ptpCfg.interface?'selected':''}>${_ifLabel(i)}</option>`).join('');
+
+  // Detect mismatch: HW timestamping requested but the chosen iface
+  // has no PHC. Surfaces as a yellow inline hint under the iface row.
+  let ifaceWarn = '';
+  const chosen = (ifaces||[]).find(i => i.name === ptpCfg.interface);
+  if (chosen && chosen.ethtool && ptpCfg.time_stamping === 'hardware' && !chosen.ethtool.hw_ptp_capable) {
+    ifaceWarn = `<span style="color:var(--yellow);font-family:var(--font-m);font-size:9px">⚠ ${chosen.name} doesn't have a PTP hardware clock — ptp4l will fail to start in hardware mode. Switch time_stamping to "auto" or "software".</span>`;
+  } else if (chosen && chosen.ethtool && chosen.ethtool.hw_ptp_capable && ptpCfg.time_stamping === 'software') {
+    ifaceWarn = `<span style="color:var(--text-fade);font-family:var(--font-m);font-size:9px">💡 ${chosen.name} supports hardware PTP — switch time_stamping to "auto" or "hardware" for sub-µs sync.</span>`;
+  }
 
   const tsOpts = [
     ['auto', 'auto (detect HW, fallback SW)'],
@@ -4152,6 +4197,7 @@ function renderPtpTab(ptpCfg, ptpLive, ifaces) {
       <input type="checkbox" id="ptpf-phc2sys" ${ptpCfg.phc2sys_enabled?'checked':''} onchange="ptpMarkDirty()">
       <label>Interface</label>
       <select id="ptpf-iface" onchange="ptpMarkDirty()">${ifaceOpts}</select>
+      ${ifaceWarn ? `<div></div><div>${ifaceWarn}</div>` : ''}
       <label>Profile</label>
       <select id="ptpf-profile" onchange="ptpMarkDirty()">
         ${['aes67','smpte2059-2','default'].map(p => `<option value="${p}" ${ptpCfg.profile===p?'selected':''}>${p}</option>`).join('')}

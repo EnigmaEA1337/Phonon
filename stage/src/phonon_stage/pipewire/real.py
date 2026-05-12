@@ -217,7 +217,9 @@ class RealPipeWireBackend:
                 "stdout": stdout_b.decode("utf-8", errors="replace"),
                 "stderr": stderr_b.decode("utf-8", errors="replace"),
             })
-            self._last_set_mute = last  # type: ignore[attr-defined]
+            if not hasattr(self, "_set_mute_log"):
+                self._set_mute_log: dict[int, dict] = {}  # type: ignore[attr-defined]
+            self._set_mute_log[node_id] = last  # type: ignore[attr-defined]
             if proc.returncode == 0:
                 logger.info("pipewire.mute_set", node_id=node_id, muted=muted)
                 return
@@ -227,7 +229,9 @@ class RealPipeWireBackend:
             )
         except Exception:
             logger.warning("pipewire.mute_set_exception", node_id=node_id, exc_info=True)
-            self._last_set_mute = {**last, "error": "wpctl exception"}  # type: ignore[attr-defined]
+            if not hasattr(self, "_set_mute_log"):
+                self._set_mute_log: dict[int, dict] = {}  # type: ignore[attr-defined]
+            self._set_mute_log[node_id] = {**last, "error": "wpctl exception"}  # type: ignore[attr-defined]
 
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
         try:

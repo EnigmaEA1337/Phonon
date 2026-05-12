@@ -342,12 +342,12 @@ async def get_output_insert_monitoring(
         backend = getattr(request.app.state, "pw_backend", None)
         raw = getattr(backend, "_last_filter_dump", "") or ""
         last_set = getattr(backend, "_last_set_param", None)
-        last_mute = getattr(backend, "_last_set_mute", None)
+        mute_log = getattr(backend, "_set_mute_log", {}) or {}
         return {
             "values": values,
             "raw_pw_cli_output": raw,
             "last_set_param": last_set,
-            "last_set_mute": last_mute,
+            "set_mute_log": {str(k): v for k, v in mute_log.items()},
         }
     return values
 

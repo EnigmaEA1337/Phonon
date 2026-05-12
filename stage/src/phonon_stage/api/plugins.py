@@ -360,7 +360,14 @@ async def get_airplay_version() -> dict[str, Any]:
         if info:
             installed.append(info)
 
-    # Running binary: find the pid, dereference /proc/<pid>/exe.
+    # Running binary: find the pid, then resolve the exe.
+    # /proc/<pid>/exe is a symlink readable only by the process
+    # owner (or root). The phonon-stage daemon runs as `phonon`,
+    # shairport-sync runs as `shairport-sync` user — so readlink
+    # fails with EACCES here. /proc/<pid>/cmdline is world-readable
+    # and gives us argv[0] which is the absolute path systemd
+    # passed to execve (matches the ExecStart line). Good enough
+    # to identify which binary is live.
     running: dict[str, Any] = {"pid": 0, "exe": "", "ap2_active": False}
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -371,11 +378,19 @@ async def get_airplay_version() -> dict[str, Any]:
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
         pids = out_b.decode().strip().split()
         if pids:
-            running["pid"] = int(pids[0])
+            pid = int(pids[0])
+            running["pid"] = pid
+            # Try readlink first (works if we have permission, e.g.
+            # both processes are root). Fall back to cmdline parse.
             try:
-                running["exe"] = os.readlink(f"/proc/{pids[0]}/exe")
+                running["exe"] = os.readlink(f"/proc/{pid}/exe")
             except OSError:
-                pass
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                        argv0 = fh.read().split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                    running["exe"] = argv0
+                except Exception:
+                    pass
     except Exception:
         pass
 

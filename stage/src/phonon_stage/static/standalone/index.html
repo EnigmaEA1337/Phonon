@@ -599,6 +599,43 @@ body.mode-live .edit-only button,
 body.mode-live .edit-only input,
 body.mode-live .edit-only select { opacity: 0.4; }
 
+/* ── Graph (Carla-style patchbay) ──────────────────── */
+.graph-legend {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  background: var(--bg-1); border-bottom: 1px solid var(--border);
+  font-family: var(--font-m); font-size: 10px; color: var(--text-dim);
+}
+.leg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+#graph-canvas-wrap { width: 100%; height: 720px; overflow: auto; background: var(--bg-0); position: relative; }
+#graph-svg { width: 2400px; height: 1400px; display: block; user-select: none; }
+.g-node-rect { fill: var(--bg-2); stroke: var(--border); stroke-width: 1; }
+.g-node-rect.role-daemon  { stroke: #34d399; }
+.g-node-rect.role-srcsink { stroke: #22d3ee; }
+.g-node-rect.role-source  { stroke: #fbbf24; }
+.g-node-rect.role-master  { stroke: #f87171; }
+.g-node-rect.role-fx      { stroke: #a855f7; }
+.g-node-rect.role-output  { stroke: #e879f9; }
+.g-node-rect.role-other   { stroke: #6a8294; }
+.g-node-rect.dragging { stroke-width: 2; filter: drop-shadow(0 0 6px rgba(34,211,238,0.45)); }
+.g-node-titlebar { fill: var(--bg-3); }
+.g-node-titlebar.role-daemon  { fill: rgba(52,211,153,0.18); }
+.g-node-titlebar.role-srcsink { fill: rgba(34,211,238,0.18); }
+.g-node-titlebar.role-source  { fill: rgba(251,191,36,0.18); }
+.g-node-titlebar.role-master  { fill: rgba(248,113,113,0.22); }
+.g-node-titlebar.role-fx      { fill: rgba(168,85,247,0.18); }
+.g-node-titlebar.role-output  { fill: rgba(232,121,249,0.18); }
+.g-node-title { font-family: var(--font-d); font-size: 12px; font-weight: 600; fill: var(--text); pointer-events: none; }
+.g-node-sub   { font-family: var(--font-m); font-size: 9px; fill: var(--text-dim); pointer-events: none; }
+.g-node-handle { fill: transparent; cursor: grab; }
+.g-node-handle:active { cursor: grabbing; }
+.g-port-dot { fill: var(--bg-3); stroke: var(--text-dim); stroke-width: 1; }
+.g-port-dot.dir-in  { stroke: #22d3ee; }
+.g-port-dot.dir-out { stroke: #fbbf24; }
+.g-port-label { font-family: var(--font-m); font-size: 9px; fill: var(--text-mid); pointer-events: none; }
+.g-cable { fill: none; stroke: #22d3ee; stroke-width: 1.6; opacity: 0.85; }
+.g-cable.midi  { stroke: #f87171; }
+.g-cable.idle  { stroke: #4a5568; stroke-dasharray: 4 3; opacity: 0.6; }
+
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 640px) {
   .patch-grid { grid-template-columns: 1fr; }
@@ -676,6 +713,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
     <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
+    <div class="tab" data-tab="graph" onclick="switchTab('graph')">GRAPH</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
@@ -871,6 +909,49 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
+  <!-- ─── Tab: Graph (Carla-style patchbay) ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="graph">
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Audio Graph
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          Daemons → Source-sinks → Sources → Master → FX → Outputs · drag boxes · cables = live PW links
+        </span>
+        <span style="flex:1"></span>
+        <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="graph-show-all" onchange="renderGraph()"> show all PW nodes
+        </label>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="graphAutoLayout()" title="Reset positions to auto-layout">Auto-layout</button>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchGraph()" title="Refresh from server">Refresh</button>
+      </div>
+      <div class="section-body" style="padding:0">
+        <div class="graph-legend">
+          <span class="leg-dot" style="background:#34d399"></span>Source daemon
+          <span class="leg-dot" style="background:#22d3ee"></span>Source sink
+          <span class="leg-dot" style="background:#fbbf24"></span>Source (mixer)
+          <span class="leg-dot" style="background:#f87171"></span>Master
+          <span class="leg-dot" style="background:#a855f7"></span>FX
+          <span class="leg-dot" style="background:#e879f9"></span>Output
+          <span class="leg-dot" style="background:#6a8294"></span>Other
+          <span style="flex:1"></span>
+          <span id="graph-status" style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)">—</span>
+        </div>
+        <div id="graph-canvas-wrap">
+          <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="graph-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1a2230" stroke-width="0.5"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#graph-grid)"/>
+            <g id="graph-links"></g>
+            <g id="graph-nodes"></g>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Tab: Settings ─── -->
   <div class="tab-pane edit-only" data-tab-pane="settings">
     <div class="section">
@@ -908,6 +989,7 @@ function switchTab(name) {
   // to avoid background work for views the user isn't looking at.
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
+  if (name === 'graph') fetchGraph();
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -5169,6 +5251,481 @@ async function showModal(type) {
     }
   }
   overlay.classList.add('open');
+}
+
+/* ─────────────────────────────────────────────────────────
+   Graph view — Carla-style patchbay.
+
+   What it shows by default (mixer-relevant audio path):
+     • source-plugin daemon clients writing into airplay_in/spotify_in
+     • source-plugin null-sinks (airplay_in, spotify_in)
+     • mixer Sources (not already in lane above)
+     • phonon_master null-sink
+     • phonon_fx_<output-id> filter-chain nodes (LSP DSP)
+     • mixer Outputs (real ALSA/BT sinks)
+
+   "show all PW nodes" checkbox falls back to every node + every link
+   from /pipewire/* — full Carla-style PW patchbay, useful when the
+   chain breaks somewhere outside the mixer's expectations.
+
+   Node positions persist to localStorage keyed by node.name so the
+   operator's layout survives reloads. "Auto-layout" wipes those.
+───────────────────────────────────────────────────────── */
+
+const GRAPH_NODE_W = 220;
+const GRAPH_TITLE_H = 24;
+const GRAPH_PORT_H = 16;
+const GRAPH_LANE_X = {
+  daemon:   60,
+  srcsink:  340,
+  source:   620,
+  master:   900,
+  fx:      1180,
+  output:  1460,
+  other:   1740,
+};
+
+let graphData = {
+  nodes: [],          // PwNode[]
+  ports: [],          // PwPort[]
+  links: [],          // PwLink[]
+  mixer: null,
+  plugins: [],
+};
+let graphPositions = {};   // { nodeName: {x,y} }
+let graphRoles = {};       // { nodeName: role }  cached for cable styling
+
+function _loadGraphPositions() {
+  try {
+    graphPositions = JSON.parse(localStorage.getItem('phonon.graph.positions') || '{}');
+  } catch { graphPositions = {}; }
+}
+function _saveGraphPositions() {
+  try { localStorage.setItem('phonon.graph.positions', JSON.stringify(graphPositions)); }
+  catch { /* quota or disabled — non-fatal */ }
+}
+_loadGraphPositions();
+
+async function fetchGraph() {
+  const status = document.getElementById('graph-status');
+  if (status) status.textContent = 'loading…';
+  try {
+    const [nodesR, portsR, linksR, mixerR, pluginsR] = await Promise.all([
+      fetch(API + '/pipewire/nodes'),
+      fetch(API + '/pipewire/ports'),
+      fetch(API + '/pipewire/links'),
+      fetch(API + '/mixer').catch(() => null),
+      fetch(API + '/plugins').catch(() => null),
+    ]);
+    if (!nodesR.ok || !portsR.ok || !linksR.ok) {
+      throw new Error(`PW endpoints: nodes=${nodesR.status} ports=${portsR.status} links=${linksR.status}`);
+    }
+    graphData.nodes   = await nodesR.json();
+    graphData.ports   = await portsR.json();
+    graphData.links   = await linksR.json();
+    graphData.mixer   = mixerR && mixerR.ok ? await mixerR.json() : null;
+    graphData.plugins = pluginsR && pluginsR.ok ? await pluginsR.json() : [];
+    renderGraph();
+  } catch (e) {
+    if (status) status.textContent = 'error: ' + e.message;
+    console.error('[Phonon] fetchGraph failed', e);
+  }
+}
+
+// Pretty short label for a node — keeps the box title readable when
+// the PW name is an alsa_output.usb-...-00.analog-stereo monstrosity.
+function _nodeShortLabel(n) {
+  if (!n) return '';
+  if (n.nick && n.nick.length <= 28) return n.nick;
+  const m = (n.name || '').match(/alsa_(?:output|input)\..*?([A-Za-z0-9_]+)\.(?:analog-stereo|iec958|mono|hifi.*)/);
+  if (m) return m[1];
+  if (n.name && n.name.length > 28) return n.name.slice(0, 26) + '…';
+  return n.name || ('node#' + n.id);
+}
+
+// Classify a node into a lane. Order of checks matters — the most
+// specific role wins (master before generic source, etc.).
+function _classifyNode(node, mixer, plugins, daemonNodeIds) {
+  const name = node.name || '';
+  if (name === 'phonon_master') return 'master';
+  if (name.startsWith('phonon_fx_')) return 'fx';
+  // Source-plugin null-sinks: airplay_in, spotify_in, ...
+  for (const p of plugins || []) {
+    if ((p.pw_node_names || []).includes(name)) return 'srcsink';
+  }
+  if (mixer) {
+    for (const o of mixer.outputs || []) {
+      if (o.sink_node_name === name) return 'output';
+    }
+    for (const s of mixer.sources || []) {
+      if (s.source_node_name === name) {
+        // Already-tagged srcsink wins above; remaining mixer sources
+        // are real captures (mic, line-in) or BT sources.
+        return 'source';
+      }
+    }
+  }
+  if (daemonNodeIds.has(node.id)) return 'daemon';
+  return 'other';
+}
+
+// Find sink-input clients writing into a relevant null-sink. PA / PW
+// represents these as Stream/Output Audio nodes whose output ports
+// are linked into the sink's input ports. We walk the links graph
+// to discover the writer node ids.
+function _findSinkInputDaemons(targetNodeIds, ports, links) {
+  // Map port_id → node_id for fast lookup.
+  const portToNode = new Map();
+  for (const p of ports) portToNode.set(p.id, p.node_id);
+  // Map node_id → [input port ids]
+  const inputsByNode = new Map();
+  for (const p of ports) {
+    if (p.direction === 'in' || p.direction === 'input') {
+      if (!inputsByNode.has(p.node_id)) inputsByNode.set(p.node_id, []);
+      inputsByNode.get(p.node_id).push(p.id);
+    }
+  }
+  // For each target, find every link landing on its inputs; the
+  // owner of the link's output port is a daemon-writer.
+  const daemons = new Set();
+  for (const tgtId of targetNodeIds) {
+    const inputPorts = new Set(inputsByNode.get(tgtId) || []);
+    for (const lk of links) {
+      if (inputPorts.has(lk.input_port_id)) {
+        const writer = portToNode.get(lk.output_port_id);
+        if (writer != null && writer !== tgtId) daemons.add(writer);
+      }
+    }
+  }
+  return daemons;
+}
+
+function _autoPositionLane(role, slot) {
+  return {
+    x: GRAPH_LANE_X[role] ?? GRAPH_LANE_X.other,
+    y: 60 + slot * 180,
+  };
+}
+
+function graphAutoLayout() {
+  graphPositions = {};
+  _saveGraphPositions();
+  renderGraph();
+}
+
+function _buildPortRows(node, ports) {
+  // Inputs go on the left, outputs on the right. Sort by name so the
+  // layout is stable across refreshes.
+  const ins = ports.filter(p => p.node_id === node.id && (p.direction === 'in' || p.direction === 'input'))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const outs = ports.filter(p => p.node_id === node.id && (p.direction === 'out' || p.direction === 'output'))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return { ins, outs };
+}
+
+function _nodeHeightFor(portRows) {
+  const rows = Math.max(portRows.ins.length, portRows.outs.length, 1);
+  return GRAPH_TITLE_H + rows * GRAPH_PORT_H + 10;
+}
+
+function _shortPortName(name) {
+  if (!name) return '';
+  // PW ports usually like "monitor_FL", "playback_FL", "input_FL"
+  return name.replace(/^(monitor|playback|capture|input|output)_/, '').slice(0, 14);
+}
+
+function _portCoords(nodeBox, portId, side, portsOfSide) {
+  const idx = portsOfSide.findIndex(p => p.id === portId);
+  if (idx < 0) return null;
+  const y = nodeBox.y + GRAPH_TITLE_H + idx * GRAPH_PORT_H + GRAPH_PORT_H / 2;
+  const x = side === 'in' ? nodeBox.x : nodeBox.x + GRAPH_NODE_W;
+  return { x, y };
+}
+
+function _bezierPath(a, b) {
+  if (!a || !b) return '';
+  const dx = Math.max(40, Math.abs(b.x - a.x) * 0.5);
+  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+}
+
+function renderGraph() {
+  const showAll = document.getElementById('graph-show-all')?.checked === true;
+  const svg = document.getElementById('graph-svg');
+  const gNodes = document.getElementById('graph-nodes');
+  const gLinks = document.getElementById('graph-links');
+  if (!svg || !gNodes || !gLinks) return;
+  gNodes.innerHTML = '';
+  gLinks.innerHTML = '';
+
+  const allNodes = graphData.nodes || [];
+  const allPorts = graphData.ports || [];
+  const allLinks = graphData.links || [];
+  const mixer = graphData.mixer;
+  const plugins = graphData.plugins || [];
+
+  // ── Build the set of mixer-relevant node names + ids ──
+  const relevantNames = new Set();
+  if (mixer) {
+    relevantNames.add('phonon_master');
+    for (const o of mixer.outputs || []) {
+      if (o.sink_node_name) relevantNames.add(o.sink_node_name);
+      if (o.insert && o.insert.enabled) relevantNames.add(`phonon_fx_${o.id}`);
+    }
+    for (const s of mixer.sources || []) {
+      if (s.source_node_name) relevantNames.add(s.source_node_name);
+    }
+  }
+  for (const p of plugins) {
+    for (const n of (p.pw_node_names || [])) relevantNames.add(n);
+  }
+
+  const nameToNode = new Map();
+  for (const n of allNodes) nameToNode.set(n.name, n);
+
+  // Source-plugin null-sink node ids — used to discover the daemons
+  // writing into them (lane 0).
+  const srcSinkIds = new Set();
+  for (const p of plugins) {
+    for (const n of (p.pw_node_names || [])) {
+      const nd = nameToNode.get(n);
+      if (nd) srcSinkIds.add(nd.id);
+    }
+  }
+  const daemonIds = _findSinkInputDaemons(srcSinkIds, allPorts, allLinks);
+  // Also pull the daemon node names into the relevant set so they
+  // get rendered + classified properly.
+  for (const id of daemonIds) {
+    const nd = allNodes.find(x => x.id === id);
+    if (nd) relevantNames.add(nd.name);
+  }
+
+  // ── Pick the nodes to render ──
+  const visibleNodes = showAll ? allNodes.slice() : allNodes.filter(n => relevantNames.has(n.name));
+
+  // ── Classify each visible node into a lane ──
+  const roleByNode = {};
+  graphRoles = {};
+  for (const n of visibleNodes) {
+    const role = _classifyNode(n, mixer, plugins, daemonIds);
+    roleByNode[n.id] = role;
+    graphRoles[n.name] = role;
+  }
+
+  // ── Layout: assign positions to nodes that don't have saved ones ──
+  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, output: 0, other: 0 };
+  const nodeBoxes = {};
+  for (const n of visibleNodes) {
+    const role = roleByNode[n.id];
+    let pos = graphPositions[n.name];
+    if (!pos) {
+      pos = _autoPositionLane(role, laneSlots[role]++);
+      // Don't persist auto positions — only user drags get saved.
+    } else {
+      // Still bump the lane slot so unsaved nodes don't collide.
+      laneSlots[role]++;
+    }
+    const portRows = _buildPortRows(n, allPorts);
+    nodeBoxes[n.id] = {
+      x: pos.x, y: pos.y,
+      w: GRAPH_NODE_W,
+      h: _nodeHeightFor(portRows),
+      role, node: n, ports: portRows,
+    };
+  }
+
+  // ── Render cables FIRST so node boxes sit on top ──
+  let cableCount = 0;
+  for (const lk of allLinks) {
+    // Resolve port → node.
+    const outPort = allPorts.find(p => p.id === lk.output_port_id);
+    const inPort  = allPorts.find(p => p.id === lk.input_port_id);
+    if (!outPort || !inPort) continue;
+    const outBox = nodeBoxes[outPort.node_id];
+    const inBox  = nodeBoxes[inPort.node_id];
+    if (!outBox || !inBox) continue;   // either endpoint is filtered out
+    const a = _portCoords(outBox, outPort.id, 'out', outBox.ports.outs);
+    const b = _portCoords(inBox,  inPort.id,  'in',  inBox.ports.ins);
+    if (!a || !b) continue;
+    const path = _bezierPath(a, b);
+    const cable = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    cable.setAttribute('class', 'g-cable' + (lk.state && lk.state !== 'active' ? ' idle' : ''));
+    cable.setAttribute('d', path);
+    cable.setAttribute('data-link-id', String(lk.id));
+    gLinks.appendChild(cable);
+    cableCount++;
+  }
+
+  // ── Render node boxes ──
+  for (const id in nodeBoxes) {
+    const box = nodeBoxes[id];
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'g-node');
+    g.setAttribute('data-node-id', String(box.node.id));
+    g.setAttribute('data-node-name', box.node.name);
+    g.setAttribute('transform', `translate(${box.x}, ${box.y})`);
+
+    // Outer rect
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('class', `g-node-rect role-${box.role}`);
+    rect.setAttribute('width', String(box.w));
+    rect.setAttribute('height', String(box.h));
+    rect.setAttribute('rx', '4');
+    g.appendChild(rect);
+
+    // Title bar
+    const tb = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    tb.setAttribute('class', `g-node-titlebar role-${box.role}`);
+    tb.setAttribute('width', String(box.w));
+    tb.setAttribute('height', String(GRAPH_TITLE_H));
+    tb.setAttribute('rx', '4');
+    g.appendChild(tb);
+
+    // Title text
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    title.setAttribute('class', 'g-node-title');
+    title.setAttribute('x', '8');
+    title.setAttribute('y', '16');
+    title.textContent = _nodeShortLabel(box.node);
+    g.appendChild(title);
+
+    // Subtitle (media_class + state)
+    const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    sub.setAttribute('class', 'g-node-sub');
+    sub.setAttribute('x', String(box.w - 6));
+    sub.setAttribute('y', '16');
+    sub.setAttribute('text-anchor', 'end');
+    sub.textContent = (box.node.state || '?').slice(0, 4);
+    g.appendChild(sub);
+
+    // Drag handle = the title bar area
+    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    handle.setAttribute('class', 'g-node-handle');
+    handle.setAttribute('width', String(box.w));
+    handle.setAttribute('height', String(GRAPH_TITLE_H));
+    g.appendChild(handle);
+
+    // Ports
+    box.ports.ins.forEach((p, i) => {
+      const cy = GRAPH_TITLE_H + i * GRAPH_PORT_H + GRAPH_PORT_H / 2;
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('class', 'g-port-dot dir-in');
+      dot.setAttribute('cx', '0');
+      dot.setAttribute('cy', String(cy));
+      dot.setAttribute('r', '4');
+      dot.setAttribute('data-port-id', String(p.id));
+      g.appendChild(dot);
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('class', 'g-port-label');
+      lbl.setAttribute('x', '8');
+      lbl.setAttribute('y', String(cy + 3));
+      lbl.textContent = _shortPortName(p.name);
+      g.appendChild(lbl);
+    });
+    box.ports.outs.forEach((p, i) => {
+      const cy = GRAPH_TITLE_H + i * GRAPH_PORT_H + GRAPH_PORT_H / 2;
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('class', 'g-port-dot dir-out');
+      dot.setAttribute('cx', String(box.w));
+      dot.setAttribute('cy', String(cy));
+      dot.setAttribute('r', '4');
+      dot.setAttribute('data-port-id', String(p.id));
+      g.appendChild(dot);
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('class', 'g-port-label');
+      lbl.setAttribute('x', String(box.w - 8));
+      lbl.setAttribute('y', String(cy + 3));
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.textContent = _shortPortName(p.name);
+      g.appendChild(lbl);
+    });
+
+    // Drag wiring on the title-bar handle
+    _attachDrag(handle, g, box, nodeBoxes);
+    gNodes.appendChild(g);
+  }
+
+  // Status line
+  const status = document.getElementById('graph-status');
+  if (status) {
+    status.textContent = `${Object.keys(nodeBoxes).length} nodes · ${cableCount} cables`
+      + (showAll ? '' : ` · mixer-relevant only`);
+  }
+}
+
+function _attachDrag(handleEl, groupEl, box, nodeBoxes) {
+  let dragging = false;
+  let dx = 0, dy = 0;
+  let svgPt;
+  const svg = document.getElementById('graph-svg');
+
+  function clientToSvg(evt) {
+    // Page coordinates → SVG user units. The SVG sits inside a
+    // scrolling wrapper, so we need the inverse CTM.
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: evt.clientX, y: evt.clientY };
+    const inv = ctm.inverse();
+    const p = svg.createSVGPoint();
+    p.x = evt.clientX; p.y = evt.clientY;
+    const m = p.matrixTransform(inv);
+    return { x: m.x, y: m.y };
+  }
+
+  handleEl.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    svgPt = clientToSvg(e);
+    dx = svgPt.x - box.x;
+    dy = svgPt.y - box.y;
+    groupEl.querySelector('.g-node-rect')?.classList.add('dragging');
+  });
+
+  function onMove(e) {
+    if (!dragging) return;
+    const p = clientToSvg(e);
+    box.x = Math.max(0, p.x - dx);
+    box.y = Math.max(0, p.y - dy);
+    groupEl.setAttribute('transform', `translate(${box.x}, ${box.y})`);
+    // Live-update cables tied to this node — cheap walk since the
+    // SVG link group is shallow.
+    _redrawCablesForNode(box, nodeBoxes);
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    groupEl.querySelector('.g-node-rect')?.classList.remove('dragging');
+    graphPositions[box.node.name] = { x: box.x, y: box.y };
+    _saveGraphPositions();
+  }
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+function _redrawCablesForNode(movedBox, nodeBoxes) {
+  const allPorts = graphData.ports || [];
+  const allLinks = graphData.links || [];
+  const movedPortIds = new Set([
+    ...movedBox.ports.ins.map(p => p.id),
+    ...movedBox.ports.outs.map(p => p.id),
+  ]);
+  const gLinks = document.getElementById('graph-links');
+  if (!gLinks) return;
+  for (const cable of gLinks.querySelectorAll('path.g-cable')) {
+    const linkId = parseInt(cable.getAttribute('data-link-id'), 10);
+    const lk = allLinks.find(x => x.id === linkId);
+    if (!lk) continue;
+    if (!movedPortIds.has(lk.input_port_id) && !movedPortIds.has(lk.output_port_id)) continue;
+    const outPort = allPorts.find(p => p.id === lk.output_port_id);
+    const inPort  = allPorts.find(p => p.id === lk.input_port_id);
+    if (!outPort || !inPort) continue;
+    const outBox = nodeBoxes[outPort.node_id];
+    const inBox  = nodeBoxes[inPort.node_id];
+    if (!outBox || !inBox) continue;
+    const a = _portCoords(outBox, outPort.id, 'out', outBox.ports.outs);
+    const b = _portCoords(inBox,  inPort.id,  'in',  inBox.ports.ins);
+    cable.setAttribute('d', _bezierPath(a, b));
+  }
 }
 </script>
 

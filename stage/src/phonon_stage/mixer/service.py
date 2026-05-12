@@ -867,17 +867,34 @@ class MixerService:
             # operator unloaded the module by accident...). Recreate
             # it inline rather than bail — self-healing is cheaper
             # than waiting for the next daemon restart.
+            #
+            # On Pi (slower CPU, USB-shared Ethernet bus) pactl
+            # load-module returns before pw-dump reflects the new
+            # node. Poll a few times before giving up — a 50ms
+            # backoff up to 1s catches every case we've seen in
+            # practice.
             logger.warning("mixer.reconcile_master_missing_recreating")
             try:
                 await self._ensure_master_null_sink()
-                nodes = await self._pw.list_nodes()
-                ports = await self._pw.list_ports()
             except Exception:
                 logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
                 return
-            master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
+            import asyncio as _asyncio
+            for attempt in range(20):  # 20 × 50ms = 1s budget
+                try:
+                    nodes = await self._pw.list_nodes()
+                    ports = await self._pw.list_ports()
+                except Exception:
+                    logger.warning("mixer.reconcile_master_recreate_listfailed", exc_info=True)
+                    return
+                master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
+                if master_node is not None:
+                    if attempt > 0:
+                        logger.info("mixer.reconcile_master_visible", attempts=attempt + 1)
+                    break
+                await _asyncio.sleep(0.05)
             if master_node is None:
-                logger.warning("mixer.reconcile_skip_no_master")
+                logger.warning("mixer.reconcile_skip_no_master", attempted=20)
                 return
 
         # 3. Determine solo state up front. A "solo group" is any

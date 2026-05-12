@@ -27,6 +27,14 @@ def _prop(props: Any, key: str, default: Any = "") -> Any:
 class RealBluetoothBackend:
     """Manage BT controllers and devices via BlueZ D-Bus."""
 
+    # Negative-cache the "no BlueZ on this host" condition so we don't
+    # log a WARNING for every list_controllers() call when bluetoothd
+    # isn't running (typical on Pi 3 with `dtoverlay=disable-bt`).
+    # Cleared after 60s so a freshly-started bluetoothd is picked up
+    # within a minute.
+    _bluez_unavailable_until: float = 0.0
+    _BLUEZ_NEGATIVE_TTL_S = 60.0
+
     async def _get_bus(self):  # type: ignore[no-untyped-def]  # dbus-fast dynamic types
         from dbus_fast.aio import MessageBus
         from dbus_fast.constants import BusType
@@ -97,10 +105,18 @@ class RealBluetoothBackend:
         return hw_map
 
     async def list_controllers(self) -> list[BluetoothController]:
+        import time
+
+        # Negative cache: skip the whole DBus dance if we already
+        # established that BlueZ isn't installed/active on this host.
+        # Avoids a WARNING per UI poll on Pi 3 with internal BT disabled.
+        if time.monotonic() < type(self)._bluez_unavailable_until:
+            return []
+
         try:
             bus = await self._get_bus()
-        except Exception:
-            logger.warning("bluetooth.dbus_connection_failed", exc_info=True)
+        except Exception as exc:
+            self._mark_bluez_unavailable("dbus_connection_failed", exc)
             return []
 
         try:
@@ -125,11 +141,33 @@ class RealBluetoothBackend:
                     )
                 )
             return controllers
-        except Exception:
-            logger.warning("bluetooth.enumeration_failed", exc_info=True)
+        except Exception as exc:
+            self._mark_bluez_unavailable("enumeration_failed", exc)
             return []
         finally:
-            bus.disconnect()  # type: ignore[attr-defined]
+            try:
+                bus.disconnect()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    def _mark_bluez_unavailable(self, reason: str, exc: BaseException) -> None:
+        """Record that BlueZ isn't usable right now + log AT MOST once
+        per TTL window. Subsequent polls during the window return []
+        silently so the journal isn't flooded on hosts without BT."""
+        import time
+
+        cls = type(self)
+        first_time = time.monotonic() >= cls._bluez_unavailable_until
+        cls._bluez_unavailable_until = time.monotonic() + cls._BLUEZ_NEGATIVE_TTL_S
+        # First miss of the window logs a WARNING with traceback so a
+        # real problem on a BT-equipped host is still visible. The
+        # repeats within the TTL are swallowed.
+        if first_time:
+            logger.warning(
+                f"bluetooth.{reason}",
+                exc_info=(type(exc), exc, exc.__traceback__),
+                bluez_negative_cache_ttl_s=cls._BLUEZ_NEGATIVE_TTL_S,
+            )
 
     async def _find_adapter_path(self, bus: object, controller_address: str) -> str:
         objects = await self._get_managed_objects(bus)

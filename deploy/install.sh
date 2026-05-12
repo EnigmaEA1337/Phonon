@@ -518,6 +518,9 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable phonon-bt-unblock.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable phonon-bt-unblock.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-ptp4l.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-phc2sys.service
+# NTP helper — writes chrony source drop-in + chronyc reload/sync.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp write-sources *
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp sync
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 
@@ -602,6 +605,12 @@ if [ -f "${REPO_ROOT}/deploy/ptp-query.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/ptp-query.sh"
     ln -sf "${REPO_ROOT}/deploy/ptp-query.sh" /usr/local/sbin/phonon-ptp-query
     echo "  PTP query wrapper wired (sudo phonon-ptp-query port|current|parent available)"
+fi
+
+if [ -f "${REPO_ROOT}/deploy/phonon-ntp.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/phonon-ntp.sh"
+    ln -sf "${REPO_ROOT}/deploy/phonon-ntp.sh" /usr/local/sbin/phonon-ntp
+    echo "  NTP helper wired (sudo phonon-ntp write-sources|sync available)"
 fi
 
 # Disable rival PipeWire stacks for non-phonon users. Two pipewire+

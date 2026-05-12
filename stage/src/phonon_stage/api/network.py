@@ -1,11 +1,15 @@
 """Network endpoints — NTP/clock status, QoS marking, etc.
 
-Phase 1 (this commit): read-only NTP status panel.
+Phase 1:
+  * slice 1: read-only NTP status panel
+  * slice 2: edit NTP server list + manual sync ← this commit
+  * slice 3+: interface IP / VLAN / WiFi (TBD on backend)
+  * slice 6: DSCP marking for AES67/PTP via nftables
 
-We avoid sudoing or touching system config in this slice — only
-read `chronyc` / `timedatectl` and surface what's already there.
-Write-side (server list edit, sync trigger, DSCP rules) ships in
-follow-up commits so each one is independently rollback-safe.
+Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`)
+so we don't run the API server as root. Each script does ONE thing
++ atomic file replace + daemon restart, so a failure can't half-write
+the chrony config.
 """
 
 from __future__ import annotations
@@ -299,3 +303,114 @@ async def get_ntp_status() -> NtpStatus:
 
     status.notes = notes
     return status
+
+
+# ─────────────────────────────────────────────────────────
+# Slice 2 — NTP write path
+# ─────────────────────────────────────────────────────────
+
+# Where phonon writes its managed chrony server list. Standard
+# distro config (/etc/chrony/chrony.conf) typically `sourcedir`s
+# /etc/chrony/sources.d so a drop-in is preferred over editing the
+# main file — keeps OS upgrades clean.
+_CHRONY_SOURCES_DROPIN = "/etc/chrony/sources.d/phonon-servers.conf"
+
+# Single shared helper for invocations of the privileged helper script.
+# install.sh sets a NOPASSWD sudoers entry on /usr/local/sbin/phonon-ntp.
+_PHONON_NTP_BIN = "/usr/local/sbin/phonon-ntp"
+
+
+class NtpConfig(BaseModel):
+    """Phonon-managed chrony config. We only own the server list and
+    the optional `pool` shorthand — the rest of /etc/chrony/chrony.conf
+    is the distro default and stays untouched."""
+
+    model_config = ConfigDict(extra="forbid")
+    # Each entry is "server <addr> [opts]" or "pool <addr> [opts]" — we
+    # store the *full* line so the operator can paste a `pool 2.debian.pool.ntp.org iburst`
+    # or `server time.cloudflare.com iburst` and we just take it verbatim.
+    # Validated as non-empty and trimmed; the helper script does the
+    # syntax check on chrony's side.
+    servers: list[str]
+
+
+class NtpApplyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: bool
+    message: str
+
+
+def _validate_server_line(line: str) -> str:
+    """Trim + reject obvious garbage. We DON'T enforce a strict syntax
+    — chrony itself rejects bad lines on reload, and forcing a regex
+    here would break legitimate but exotic options (e.g. `iburst
+    minpoll 4 maxpoll 10`). The helper script does `chronyd -Q` to
+    smoke-test before installing."""
+    s = line.strip()
+    if not s:
+        raise ValueError("empty server line")
+    if "\n" in s or "\r" in s:
+        raise ValueError("newline in server line")
+    # Block shell metacharacters that could escape the conf format.
+    # chrony's parser would barf anyway but we belt-and-brace it here
+    # since the line lands in a sudoed conf write.
+    bad = set("`$&|;><\"'\\")
+    if any(c in s for c in bad):
+        raise ValueError(f"forbidden character in server line: {s!r}")
+    head = s.split(None, 1)[0].lower()
+    if head not in {"server", "pool", "peer"}:
+        raise ValueError(f"server line must start with 'server', 'pool', or 'peer': {s!r}")
+    return s
+
+
+@router.get("/ntp/config", response_model=NtpConfig)
+async def get_ntp_config() -> NtpConfig:
+    """Return the phonon-managed server list (parsed from the drop-in)."""
+    try:
+        from pathlib import Path
+        path = Path(_CHRONY_SOURCES_DROPIN)
+        if not path.exists():
+            return NtpConfig(servers=[])
+        lines = []
+        for raw in path.read_text().splitlines():
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            lines.append(s)
+        return NtpConfig(servers=lines)
+    except Exception as exc:
+        logger.warning("ntp.config_read_failed", exc_info=True)
+        # Empty config rather than 500 — keeps the UI usable so the
+        # operator can still push a fresh list.
+        return NtpConfig(servers=[])
+
+
+@router.put("/ntp/config", response_model=NtpApplyResult)
+async def put_ntp_config(cfg: NtpConfig) -> NtpApplyResult:
+    """Replace the phonon drop-in + reload chrony. Atomic on the helper
+    side (write to a tempfile, fsync, rename, chronyc reload sources)."""
+    validated: list[str] = []
+    for raw in cfg.servers:
+        try:
+            validated.append(_validate_server_line(raw))
+        except ValueError as exc:
+            return NtpApplyResult(ok=False, message=str(exc))
+    if len(validated) > 32:
+        return NtpApplyResult(ok=False, message="too many entries (limit 32)")
+    body = "# Managed by phonon-stage. Edits here are overwritten.\n"
+    body += "\n".join(validated) + "\n"
+    rc, out, err = await _run(["sudo", "-n", _PHONON_NTP_BIN, "write-sources", body], timeout=10.0)
+    if rc != 0:
+        return NtpApplyResult(ok=False, message=f"helper failed rc={rc}: {(err or out)[:200]}")
+    return NtpApplyResult(ok=True, message=f"{len(validated)} servers applied, chrony reloaded")
+
+
+@router.post("/ntp/sync", response_model=NtpApplyResult)
+async def trigger_sync() -> NtpApplyResult:
+    """`chronyc -a burst 4/4 + makestep` — forces a fast re-sync. Useful
+    after a power cycle when the clock is way off, or after a server
+    list edit. Requires authority over chrony (sudo via the helper)."""
+    rc, out, err = await _run(["sudo", "-n", _PHONON_NTP_BIN, "sync"], timeout=10.0)
+    if rc != 0:
+        return NtpApplyResult(ok=False, message=f"helper failed rc={rc}: {(err or out)[:200]}")
+    return NtpApplyResult(ok=True, message=out.strip()[:200] or "sync requested")

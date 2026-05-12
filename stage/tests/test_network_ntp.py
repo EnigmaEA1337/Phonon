@@ -8,11 +8,14 @@ go through the integration path on a real Stage.
 
 from __future__ import annotations
 
+import pytest
+
 from phonon_stage.api.network import (
     _parse_chronyc_sources,
     _parse_chronyc_tracking,
     _parse_lastrx,
     _parse_us_or_ms,
+    _validate_server_line,
 )
 
 # Sample captured from stage-x21 on 2026-05-12 — kept verbatim so
@@ -131,3 +134,55 @@ def test_us_or_ms_converts_units():
     # Unknown unit → 0.0, not a crash
     assert _parse_us_or_ms("foo") == 0.0
     assert _parse_us_or_ms("") == 0.0
+
+
+# ─────────────────────────────────────────────────────────
+# Slice 2 — server-line validator
+# ─────────────────────────────────────────────────────────
+
+
+def test_validate_server_accepts_standard_forms():
+    assert _validate_server_line("server time.cloudflare.com iburst") == \
+        "server time.cloudflare.com iburst"
+    assert _validate_server_line("pool 2.debian.pool.ntp.org iburst minpoll 4") == \
+        "pool 2.debian.pool.ntp.org iburst minpoll 4"
+    assert _validate_server_line("peer 192.168.1.1 minpoll 4 maxpoll 6") == \
+        "peer 192.168.1.1 minpoll 4 maxpoll 6"
+
+
+def test_validate_server_trims_whitespace():
+    assert _validate_server_line("  server foo.example iburst  ") == \
+        "server foo.example iburst"
+
+
+def test_validate_server_rejects_empty():
+    with pytest.raises(ValueError):
+        _validate_server_line("")
+    with pytest.raises(ValueError):
+        _validate_server_line("   ")
+
+
+def test_validate_server_rejects_unknown_keyword():
+    # chrony would silently ignore but we want explicit feedback
+    with pytest.raises(ValueError, match="must start"):
+        _validate_server_line("nameserver 1.1.1.1")
+    with pytest.raises(ValueError, match="must start"):
+        _validate_server_line("garbage line")
+
+
+def test_validate_server_rejects_shell_metacharacters():
+    # The line lands in a sudoed conf write; defence in depth.
+    for bad in (
+        "server `whoami`.example iburst",
+        "server foo.example iburst; rm -rf /",
+        "server foo.example iburst|cat",
+        "server foo.example iburst$(id)",
+        "server \"foo\" iburst",
+    ):
+        with pytest.raises(ValueError, match="forbidden|newline"):
+            _validate_server_line(bad)
+
+
+def test_validate_server_rejects_newline_in_line():
+    with pytest.raises(ValueError, match="newline"):
+        _validate_server_line("server a\nserver b")

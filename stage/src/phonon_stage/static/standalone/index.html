@@ -860,6 +860,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- NTP servers (editable list) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        NTP Servers
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          /etc/chrony/sources.d/phonon-servers.conf — one line per entry, format: <code>server &lt;addr&gt; iburst</code> or <code>pool &lt;addr&gt; iburst</code>
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="ntpSync()" title="chronyc burst + makestep — force fast resync">Sync now</button>
+      </div>
+      <div class="section-body" id="ntp-config-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- AES67 -->
     <div class="section">
       <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
@@ -5291,6 +5306,98 @@ async function fetchNtp() {
     renderNtp(await r.json());
   } catch (e) {
     host.innerHTML = `<div style="color:var(--red);font-size:11px">NTP fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+  fetchNtpConfig();
+}
+
+async function fetchNtpConfig() {
+  const host = document.getElementById('ntp-config-form');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/ntp/config');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderNtpConfig(await r.json());
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">Config fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderNtpConfig(cfg) {
+  const host = document.getElementById('ntp-config-form');
+  if (!host) return;
+  // textarea editor, one server line per row. Pre-fill with the
+  // current managed list; empty = fall back to the distro defaults
+  // in /etc/chrony/chrony.conf (we don't override those, just append).
+  const initial = (cfg.servers || []).join('\n');
+  host.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <textarea id="ntp-servers-ta" rows="6"
+        placeholder="server time.cloudflare.com iburst&#10;pool 2.debian.pool.ntp.org iburst"
+        style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;
+               padding:8px;font-family:var(--font-m);font-size:11px;line-height:1.4;resize:vertical">${escapeHtml(initial)}</textarea>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary" onclick="ntpApplyConfig()" style="font-size:10px">Apply</button>
+        <button class="btn" onclick="fetchNtpConfig()" style="font-size:10px">Revert</button>
+        <span id="ntp-config-status" style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)"></span>
+      </div>
+      <div style="font-family:var(--font-m);font-size:9px;color:var(--text-fade)">
+        Apply writes the drop-in atomically and reloads chrony. The distro defaults in
+        /etc/chrony/chrony.conf remain in effect — this list is additive.
+      </div>
+    </div>`;
+}
+
+async function ntpApplyConfig() {
+  const ta = document.getElementById('ntp-servers-ta');
+  const status = document.getElementById('ntp-config-status');
+  if (!ta) return;
+  const servers = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+  status.textContent = 'applying…';
+  status.style.color = 'var(--text-dim)';
+  try {
+    const r = await fetch(API + '/network/ntp/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ servers }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      status.textContent = j.message || ('HTTP ' + r.status);
+      status.style.color = 'var(--red)';
+      return;
+    }
+    status.textContent = j.message;
+    status.style.color = 'var(--green)';
+    // Give chrony a beat then refresh the status panel so the user
+    // sees the new sources show up.
+    setTimeout(fetchNtp, 1500);
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function ntpSync() {
+  // chronyc burst + makestep. Status feedback in the existing
+  // ntp-config-status line if available, otherwise an alert.
+  const status = document.getElementById('ntp-config-status');
+  if (status) {
+    status.textContent = 'syncing…';
+    status.style.color = 'var(--text-dim)';
+  }
+  try {
+    const r = await fetch(API + '/network/ntp/sync', { method: 'POST' });
+    const j = await r.json();
+    if (status) {
+      status.textContent = j.message;
+      status.style.color = j.ok ? 'var(--green)' : 'var(--red)';
+    }
+    setTimeout(fetchNtp, 2500);
+  } catch (e) {
+    if (status) {
+      status.textContent = 'error: ' + e.message;
+      status.style.color = 'var(--red)';
+    }
   }
 }
 

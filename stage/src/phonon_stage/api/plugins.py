@@ -190,6 +190,35 @@ async def get_plugin_journal(
         ) from exc
 
 
+@router.get("/diag/pactl")
+async def get_pactl_diag() -> dict[str, str]:
+    """Diagnostic: dump `pactl list short sinks` + `pactl list short modules`
+    as the phonon user sees them. Useful when shairport-sync / spotifyd
+    can't find their target sink despite the null-sink being present in
+    pw-dump (PA-compat layer can be out of sync with raw PW)."""
+    import asyncio
+
+    out: dict[str, str] = {}
+    for cmd_label, args in (
+        ("sinks", ("pactl", "list", "short", "sinks")),
+        ("modules", ("pactl", "list", "short", "modules")),
+        ("info", ("pactl", "info")),
+    ):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            sb, eb = await asyncio.wait_for(proc.communicate(), timeout=4)
+            out[cmd_label] = sb.decode("utf-8", errors="replace")
+            if proc.returncode != 0:
+                out[cmd_label + "_stderr"] = eb.decode("utf-8", errors="replace")
+        except Exception as exc:
+            out[cmd_label + "_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 @router.get("/{name}/settings")
 async def get_settings(request: Request, name: str) -> dict[str, Any]:
     reg = _registry(request)

@@ -941,6 +941,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- QoS / DSCP marking (slice 7) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        QoS — DSCP marking
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          nftables egress: PTP (UDP 319/320) + AES67 RTP (239.x.x.x) → EF (DSCP 46)
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchQos()">Refresh</button>
+      </div>
+      <div class="section-body" id="qos-panel">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- Macvlans (slice 8) -->
     <div class="section">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
@@ -1324,7 +1339,7 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
-  if (name === 'network') { fetchIfaces(); fetchVlans(); fetchMacvlans(); }
+  if (name === 'network') { fetchIfaces(); fetchVlans(); fetchMacvlans(); fetchQos(); }
   if (name === 'ptp') { fetchNtp(); fetchNqptp(); fetchPtpSockets(); }   // ClockWorld
 }
 
@@ -6073,6 +6088,105 @@ async function vlanDelete(name) {
     alert('Delete error: ' + e.message);
   }
   setTimeout(() => { fetchVlans(); fetchIfaces(); refreshPendingBanner(); }, 800);
+}
+
+/* ─── QoS / DSCP (slice 7) ─── */
+
+async function fetchQos() {
+  const host = document.getElementById('qos-panel');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/qos');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderQos(await r.json());
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">QoS fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _extractNftCounters(dump) {
+  // Parse `nft list table inet phonon_qos` output:
+  //   meta l4proto udp udp sport { 319, 320 } ip dscp set ef counter packets 42 bytes 5432
+  // Pull packets/bytes per rule.
+  if (!dump) return [];
+  const rows = [];
+  const re = /(?:sport|dport)\s+\{?\s*([^}]*?)\s*\}?\s+ip dscp set ef counter packets (\d+) bytes (\d+)/g;
+  // First pass: PTP rules (sport / dport ranges of 319/320)
+  let m;
+  while ((m = re.exec(dump)) !== null) {
+    rows.push({ label: `UDP ${m[1].trim()} (PTP)`, packets: parseInt(m[2], 10), bytes: parseInt(m[3], 10) });
+  }
+  // AES67 multicast rule has a different shape — match separately.
+  const aesRe = /ip daddr 239\.0\.0\.0\/8.*?counter packets (\d+) bytes (\d+)/s;
+  const am = aesRe.exec(dump);
+  if (am) rows.push({ label: 'AES67 multicast 239.0.0.0/8', packets: parseInt(am[1], 10), bytes: parseInt(am[2], 10) });
+  return rows;
+}
+
+function renderQos(state) {
+  const host = document.getElementById('qos-panel');
+  if (!host) return;
+  const enabled = !!state.enabled;
+  const badge = enabled
+    ? '<span style="color:var(--green);font-weight:700">● Enabled</span>'
+    : '<span style="color:var(--text-dim)">● Disabled</span>';
+  const toggleBtn = enabled
+    ? `<button class="btn" style="font-size:10px;color:var(--red);border-color:var(--red)" onclick="qosToggle(false)">Disable</button>`
+    : `<button class="btn btn-primary" style="font-size:10px" onclick="qosToggle(true)">Enable</button>`;
+  let countersHtml = '';
+  if (enabled) {
+    const rows = _extractNftCounters(state.nft_dump || '');
+    if (rows.length) {
+      countersHtml = `
+        <div style="margin-top:12px">
+          <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:4px">RULE HITS (live)</div>
+          <table style="width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:10px">
+            <thead><tr style="color:var(--text-dim);text-align:left">
+              <th style="padding:3px 10px 3px 0">Rule</th><th>Packets</th><th>Bytes</th>
+            </tr></thead>
+            <tbody>${rows.map(r => `
+              <tr style="border-top:1px solid var(--border)">
+                <td style="padding:3px 10px 3px 0">${escapeHtml(r.label)}</td>
+                <td>${r.packets.toLocaleString()}</td>
+                <td>${(r.bytes/1024).toFixed(1)} kB</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>`;
+    }
+  }
+  host.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;font-family:var(--font-m);font-size:11px">
+      <div>Status: ${badge}</div>
+      <span style="flex:1"></span>
+      ${toggleBtn}
+    </div>
+    <div style="margin-top:8px;font-family:var(--font-m);font-size:9px;color:var(--text-fade);line-height:1.5">
+      When enabled, every outgoing PTP packet (UDP 319 / 320) and AES67 multicast RTP
+      packet (239.0.0.0/8 on UDP 5004-6004) gets its DSCP field set to <b>EF (46)</b>.
+      DSCP-aware switches (UniFi USW, Cisco, etc.) bump these into the high-priority
+      queue → protects them from bulk traffic on the same wire. Counter values below
+      prove rules are matching live traffic.
+    </div>
+    ${countersHtml}`;
+}
+
+async function qosToggle(enable) {
+  const host = document.getElementById('qos-panel');
+  if (host) host.innerHTML = `<div style="color:var(--text-dim);font-size:11px">${enable ? 'Enabling' : 'Disabling'} QoS…</div>`;
+  try {
+    const r = await fetch(API + '/network/qos', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enable }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      alert('QoS toggle failed: ' + (j.message || r.status));
+    }
+  } catch (e) {
+    alert('QoS error: ' + e.message);
+  }
+  setTimeout(fetchQos, 600);
 }
 
 /* ─── Macvlans (slice 8) ─── */

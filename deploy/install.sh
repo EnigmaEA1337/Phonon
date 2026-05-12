@@ -93,6 +93,7 @@ if ! apt-get install -y -qq \
     wireplumber \
     pulseaudio-utils \
     linuxptp \
+    nftables \
     shairport-sync ; then
     echo "  ERROR: apt-get install failed — fix the network or repo issue and rerun" >&2
     exit 1
@@ -534,6 +535,9 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-macvlans
 # Diagnostic: read-only `ss -tulnp` filtered to PTP ports (319+320).
 # Needs root so the process column is populated (CAP_NET_ADMIN).
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net diag-sockets
+# QoS marking — writes /etc/nftables.d/phonon-qos.nft + loads via nft.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-qos *
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net qos-status
 # nqptp — companion PTP daemon for shairport-sync AirPlay 2.
 # Plugin start/stops it alongside shairport-sync depending on
 # airplay_version setting.

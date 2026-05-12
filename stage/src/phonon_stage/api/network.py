@@ -7,9 +7,9 @@ Phase 1:
   * slice 3b: edit interface IP / DHCP / static
   * slice 5: VLAN tagged iface + IP aliases
   * slice 6: PTP interface binding UI
-  * slice 8: macvlan child interfaces ← this commit
-  * slice 4: WiFi scan + connect
-  * slice 7: DSCP marking for AES67/PTP via nftables
+  * slice 8: macvlan child interfaces
+  * slice 7: DSCP marking for AES67/PTP via nftables ← this commit
+  * slice 4: WiFi scan + connect (deferred — no WiFi on prod hosts)
 
 Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`,
 `phonon-net`) so we don't run the API server as root. The netplan
@@ -809,6 +809,7 @@ class NetworkState(BaseModel):
     ethernets: dict[str, IfaceConfig] = {}   # iface name → cfg
     vlans: dict[str, VlanConfig] = {}        # vlan child name → cfg
     macvlans: dict[str, MacvlanConfig] = {}  # macvlan child name → cfg
+    qos_enabled: bool = False                # slice 7 — nftables DSCP marking
 
 
 # Module-level singleton. Loaded by init() at app startup so the
@@ -1391,6 +1392,70 @@ async def list_ptp_sockets() -> list[PtpSocketBinding]:
     if rc != 0:
         return []
     return _parse_ss_ptp(out)
+
+
+# ─────────────────────────────────────────────────────────
+# Slice 7 — DSCP marking (QoS) via nftables
+# ─────────────────────────────────────────────────────────
+
+
+class QosState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    # nft list table output — only populated when enabled=True. The
+    # UI shows packet counters from this so the operator can verify
+    # rules are matching live traffic.
+    nft_dump: str = ""
+
+
+class QosUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@router.get("/qos", response_model=QosState)
+async def get_qos() -> QosState:
+    """Read the current nftables QoS state.
+
+    enabled mirrors the persisted NetworkState flag. nft_dump is the
+    live `nft list table inet phonon_qos` output (with counters) so
+    the UI can show "X PTP packets marked, Y AES67 packets marked"
+    and confirm rules are firing."""
+    dump = ""
+    if _state.qos_enabled:
+        rc, out, _ = await _run(
+            ["sudo", "-n", _PHONON_NET_BIN, "qos-status"], timeout=3.0,
+        )
+        if rc == 0:
+            dump = out
+    return QosState(enabled=_state.qos_enabled, nft_dump=dump)
+
+
+@router.put("/qos", response_model=ApplyResult)
+async def set_qos(body: QosUpdate) -> ApplyResult:
+    """Toggle the nftables DSCP marking rules. When True the helper
+    writes /etc/nftables.d/phonon-qos.nft + loads it via `nft -f` +
+    installs a systemd oneshot unit so the table persists across
+    reboot. When False the table is dropped + the unit disabled."""
+    if _state.qos_enabled == body.enabled:
+        return ApplyResult(ok=True, message=f"QoS already {body.enabled}")
+    prev = _state.qos_enabled
+    _state.qos_enabled = body.enabled
+    _save_state()
+    mode = "1" if body.enabled else "0"
+    rc, out, err = await _run(
+        ["sudo", "-n", _PHONON_NET_BIN, "apply-qos", mode], timeout=10.0,
+    )
+    if rc != 0:
+        # Roll back the in-memory flag — the helper rejected the
+        # change so we shouldn't pretend it landed.
+        _state.qos_enabled = prev
+        _save_state()
+        return ApplyResult(ok=False, message=f"rc={rc}: {(err or out).strip()[:200]}")
+    return ApplyResult(
+        ok=True,
+        message=f"QoS {'enabled — PTP + AES67 marked EF' if body.enabled else 'disabled — table cleared'}",
+    )
 
 
 @router.delete("/macvlans/{name}", response_model=ApplyResult)

@@ -108,12 +108,18 @@ autoreconf -fi >>"$LOG" 2>&1
     --with-soxr \
     --with-avahi \
     --with-ssl=openssl \
-    --with-systemd \
     --with-airplay-2 \
     --with-metadata \
     --with-dbus-interface \
     --with-mpris-interface \
     >>"$LOG" 2>&1
+# --with-systemd dropped: it tries to `install -d $(UNITDIR)` at
+# `make install` time, and without an explicit
+# --with-systemd-unit-dir the variable expands to empty → install
+# barfs ("install with -d requires at least one argument"). We
+# install our own /etc/systemd/system/shairport-sync.service.d/
+# drop-in via install.sh, so the upstream-installed unit isn't
+# needed anyway.
 make -j"$(nproc)" >>"$LOG" 2>&1
 make install >>"$LOG" 2>&1
 log "shairport-sync AP2 installed → /usr/local/bin/shairport-sync"

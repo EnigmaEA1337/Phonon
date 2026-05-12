@@ -221,14 +221,166 @@ cmd_status() {
     fi
 }
 
+cmd_apply_macvlans() {
+    # JSON body on stdin: {name: {parent, mac, dhcp4, addresses4, gateway4, dns, mtu}, ...}
+    # We write 2 files per macvlan: <prefix><name>.netdev (the device
+    # declaration) and <prefix><name>.network (its IP config), plus
+    # ONE attach file per parent that lists the children via the
+    # MACVLAN= key — without that the device is created but never
+    # attached to the parent. systemd-networkd reads the whole
+    # /etc/systemd/network/ tree on reload, so we wipe stale
+    # phonon-prefixed files first.
+    local body
+    body="$(cat)"
+    if [ -z "$body" ]; then
+        log "apply-macvlans: empty body — refusing"
+        return 2
+    fi
+
+    local managed_dir=/etc/systemd/network
+    local prefix=30-phonon-macvlan-
+    local attach_prefix=35-phonon-macvlan-attach-
+    mkdir -p "$managed_dir"
+
+    # Generate the file bodies with python3 — bash JSON parsing is
+    # painful, python ships with every distro we deploy on.
+    local plan
+    plan=$(echo "$body" | python3 -c '
+import sys, json, base64, collections
+data = json.load(sys.stdin)
+attach_by_parent = collections.defaultdict(list)
+for name, cfg in data.items():
+    parent = cfg["parent"]
+    mac = cfg.get("mac", "")
+    dhcp4 = bool(cfg.get("dhcp4", True))
+    addrs = cfg.get("addresses4") or []
+    gw = cfg.get("gateway4", "")
+    dns = cfg.get("dns") or []
+    mtu = cfg.get("mtu") or 0
+    nd = ["# Managed by phonon-stage. Edits here are overwritten.",
+          "[NetDev]", f"Name={name}", "Kind=macvlan"]
+    if mac:
+        nd.append(f"MACAddress={mac}")
+    if mtu:
+        nd.append(f"MTUBytes={mtu}")
+    nd += ["", "[MACVLAN]", "Mode=bridge"]
+    netdev = "\n".join(nd) + "\n"
+    nw = ["# Managed by phonon-stage. Edits here are overwritten.",
+          "[Match]", f"Name={name}", "", "[Network]"]
+    if dhcp4:
+        nw.append("DHCP=ipv4")
+    for a in addrs:
+        nw.append(f"Address={a}")
+    if gw:
+        nw.append(f"Gateway={gw}")
+    for d in dns:
+        nw.append(f"DNS={d}")
+    network = "\n".join(nw) + "\n"
+    print(f"D\t{name}\t{parent}\t{base64.b64encode(netdev.encode()).decode()}\t{base64.b64encode(network.encode()).decode()}")
+    attach_by_parent[parent].append(name)
+for parent, children in attach_by_parent.items():
+    body = ["# Managed by phonon-stage. Auto-attach macvlan children.",
+            "[Match]", f"Name={parent}", "", "[Network]"]
+    for c in children:
+        body.append(f"MACVLAN={c}")
+    print(f"A\t{parent}\t{base64.b64encode((chr(10).join(body) + chr(10)).encode()).decode()}")
+')
+    if [ -z "$plan" ] && [ "$body" != "{}" ]; then
+        log "apply-macvlans: parse failed"
+        return 3
+    fi
+
+    # Collect wanted child + parent attach names from the plan
+    # before doing any writes. Then sweep stale phonon-prefixed
+    # files that aren't in the wanted set.
+    local wanted_children=""
+    local wanted_parents=""
+    while IFS=$'\t' read -r kind a b _c _d; do
+        case "$kind" in
+            D) wanted_children="${wanted_children} ${a}" ;;
+            A) wanted_parents="${wanted_parents} ${a}" ;;
+        esac
+    done <<< "$plan"
+
+    # Sweep stale macvlan-child files
+    for f in "${managed_dir}/${prefix}"*.netdev "${managed_dir}/${prefix}"*.network; do
+        [ -f "$f" ] || continue
+        local fname iface_name keep
+        fname=$(basename "$f")
+        iface_name=$(echo "$fname" | sed -E "s/^${prefix}//; s/\.(netdev|network)$//")
+        keep=0
+        for w in $wanted_children; do
+            if [ "$w" = "$iface_name" ]; then keep=1; break; fi
+        done
+        if [ "$keep" -eq 0 ]; then
+            log "apply-macvlans: removing stale child $f"
+            rm -f "$f"
+            # Best-effort kernel cleanup. The child may have been
+            # auto-removed when systemd-networkd noticed its .netdev
+            # disappeared, but `ip link delete` here is idempotent.
+            ip link delete "$iface_name" 2>/dev/null || true
+        fi
+    done
+    # Sweep stale parent-attach files
+    for f in "${managed_dir}/${attach_prefix}"*.network; do
+        [ -f "$f" ] || continue
+        local fname parent_name keep
+        fname=$(basename "$f")
+        parent_name=$(echo "$fname" | sed -E "s/^${attach_prefix}//; s/\.network$//")
+        keep=0
+        for w in $wanted_parents; do
+            if [ "$w" = "$parent_name" ]; then keep=1; break; fi
+        done
+        if [ "$keep" -eq 0 ]; then
+            log "apply-macvlans: removing stale attach $f"
+            rm -f "$f"
+        fi
+    done
+
+    # Write the wanted files atomically.
+    while IFS=$'\t' read -r kind a b c d; do
+        case "$kind" in
+            D)
+                local name="$a"
+                local netdev_path="${managed_dir}/${prefix}${name}.netdev"
+                local network_path="${managed_dir}/${prefix}${name}.network"
+                local tmp_netdev tmp_network
+                tmp_netdev="$(mktemp --tmpdir="$managed_dir" ${prefix}${name}.XXXXXX.netdev)"
+                tmp_network="$(mktemp --tmpdir="$managed_dir" ${prefix}${name}.XXXXXX.network)"
+                echo "$c" | base64 -d > "$tmp_netdev"
+                echo "$d" | base64 -d > "$tmp_network"
+                chmod 0644 "$tmp_netdev" "$tmp_network"
+                mv -f "$tmp_netdev" "$netdev_path"
+                mv -f "$tmp_network" "$network_path"
+                log "apply-macvlans: wrote child ${name} on ${b}"
+                ;;
+            A)
+                local parent="$a"
+                local attach_path="${managed_dir}/${attach_prefix}${parent}.network"
+                local tmp_attach
+                tmp_attach="$(mktemp --tmpdir="$managed_dir" ${attach_prefix}${parent}.XXXXXX.network)"
+                echo "$b" | base64 -d > "$tmp_attach"
+                chmod 0644 "$tmp_attach"
+                mv -f "$tmp_attach" "$attach_path"
+                log "apply-macvlans: wrote attach for parent ${parent}"
+                ;;
+        esac
+    done <<< "$plan"
+
+    # Tell networkd to pick up the new files.
+    networkctl reload >>"$LOG" 2>&1 || log "apply-macvlans: networkctl reload reported errors (continuing)"
+    log "apply-macvlans: done"
+}
+
 case "${1:-}" in
-    apply-iface)  shift; cmd_apply_iface "${1:-}" ;;
-    confirm)      cmd_confirm ;;
-    cancel)       cmd_cancel ;;
-    rollback)     shift; cmd_rollback "${1:-}" ;;
-    status)       cmd_status ;;
+    apply-iface)    shift; cmd_apply_iface "${1:-}" ;;
+    confirm)        cmd_confirm ;;
+    cancel)         cmd_cancel ;;
+    rollback)       shift; cmd_rollback "${1:-}" ;;
+    status)         cmd_status ;;
+    apply-macvlans) cmd_apply_macvlans ;;
     *)
-        echo "usage: $0 {apply-iface <yaml> <timeout-s> | confirm | cancel | rollback <backup-dir> | status}" >&2
+        echo "usage: $0 {apply-iface <timeout-s> | confirm | cancel | rollback <backup-dir> | status | apply-macvlans}" >&2
         exit 1
         ;;
 esac

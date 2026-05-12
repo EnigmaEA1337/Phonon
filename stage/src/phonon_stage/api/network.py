@@ -5,9 +5,10 @@ Phase 1:
   * slice 2: edit NTP server list + manual sync
   * slice 3a: read-only interface table
   * slice 3b: edit interface IP / DHCP / static
-  * slice 5: VLAN tagged iface + IP aliases ← this commit
-  * slice 4: WiFi scan + connect
+  * slice 5: VLAN tagged iface + IP aliases
   * slice 6: PTP interface binding UI
+  * slice 8: macvlan child interfaces ← this commit
+  * slice 4: WiFi scan + connect
   * slice 7: DSCP marking for AES67/PTP via nftables
 
 Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`,
@@ -16,10 +17,11 @@ write path uses a systemd-run rollback timer for an auto-revert
 window that makes the mgmt iface effectively un-brickable.
 
 State management: every phonon-managed iface override + every VLAN
-lives in /var/lib/phonon/network-state.json. Every apply rewrites
-/etc/netplan/99-phonon-managed.yaml from this state in full — that
-way adding a VLAN doesn't clobber a sibling iface override, and
-the state file is the single source of truth for the UI.
++ every macvlan lives in /var/lib/phonon/network-state.json. Every
+apply rewrites /etc/netplan/99-phonon-managed.yaml (ethernets +
+vlans) AND /etc/systemd/network/30-phonon-macvlan-*.{netdev,network}
+(macvlans, which netplan doesn't model natively). The JSON file is
+the single source of truth for the UI.
 """
 
 from __future__ import annotations
@@ -766,14 +768,47 @@ class VlanConfig(BaseModel):
     timeout_s: int = 120
 
 
+class MacvlanConfig(BaseModel):
+    """A macvlan child interface — a virtual NIC sitting on top of
+    a physical iface with its own MAC + IP, visible separately to
+    the switch. Solves the "two daemons want the same UDP port on
+    the same NIC" case (nqptp + ptp4l) without ip_forward, NAT, or
+    dummy + manual routes: each daemon binds its own macvlan ifname,
+    Linux sees them as distinct interfaces from a socket POV, and
+    packets transit the same physical wire naturally.
+
+    netplan doesn't natively model macvlan, so this lives in raw
+    systemd-networkd .netdev + .network files under
+    /etc/systemd/network/, separate from the netplan-managed YAML.
+    Both layers feed into systemd-networkd which is the runtime
+    source of truth.
+
+    The kernel's macvlan mode `bridge` is the common choice — it
+    lets multiple macvlan children on the same parent talk to each
+    other but not to the parent itself (Linux limitation). Other
+    modes (private, vepa, passthru) target specific hypervisor or
+    802.1Qbg use cases — we don't need them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    parent: str                  # parent iface (must exist as ether)
+    mac: str = ""                # ":" lowercase hex, empty = kernel auto-assigns
+    dhcp4: bool = True
+    addresses4: list[str] = []
+    gateway4: str = ""
+    dns: list[str] = []
+    mtu: int = 0
+
+
 class NetworkState(BaseModel):
-    """Phonon-managed network overrides. Whatever is here gets
-    rewritten verbatim into /etc/netplan/99-phonon-managed.yaml on
-    every apply."""
+    """Phonon-managed network overrides. ethernets + vlans live in
+    netplan YAML; macvlans live in raw systemd-networkd files
+    (netplan doesn't model them)."""
 
     model_config = ConfigDict(extra="forbid")
     ethernets: dict[str, IfaceConfig] = {}   # iface name → cfg
     vlans: dict[str, VlanConfig] = {}        # vlan child name → cfg
+    macvlans: dict[str, MacvlanConfig] = {}  # macvlan child name → cfg
 
 
 # Module-level singleton. Loaded by init() at app startup so the
@@ -963,6 +998,92 @@ def _validate_vlan_cfg(name: str, cfg: VlanConfig) -> str | None:
 _validate_config = _validate_iface_cfg
 
 
+# ─────────────────────────────────────────────────────────
+# macvlan renderers + validator (slice 8)
+# ─────────────────────────────────────────────────────────
+
+
+_MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+
+
+def render_macvlan_netdev(name: str, cfg: MacvlanConfig) -> str:
+    """systemd-networkd .netdev body for a macvlan child."""
+    lines = [
+        "# Managed by phonon-stage. Edits here are overwritten.",
+        "[NetDev]",
+        f"Name={name}",
+        "Kind=macvlan",
+    ]
+    if cfg.mac:
+        # MACAddress= goes in [NetDev] for macvlan.
+        lines.append(f"MACAddress={cfg.mac}")
+    if cfg.mtu:
+        lines.append(f"MTUBytes={cfg.mtu}")
+    lines.append("")
+    lines.append("[MACVLAN]")
+    # `bridge` mode lets all macvlan children on the same parent
+    # see each other on the wire — common default, matches what
+    # `ip link add ... type macvlan mode bridge` gives.
+    lines.append("Mode=bridge")
+    return "\n".join(lines) + "\n"
+
+
+def render_macvlan_network(name: str, cfg: MacvlanConfig) -> str:
+    """systemd-networkd .network body — IP config for the macvlan
+    child. Mirrors the IfaceConfig fields (dhcp4, addresses4,
+    gateway4, dns) but in systemd-networkd's INI format rather than
+    netplan YAML."""
+    lines = [
+        "# Managed by phonon-stage. Edits here are overwritten.",
+        "[Match]",
+        f"Name={name}",
+        "",
+        "[Network]",
+    ]
+    if cfg.dhcp4:
+        lines.append("DHCP=ipv4")
+    for addr in cfg.addresses4:
+        lines.append(f"Address={addr}")
+    if cfg.gateway4:
+        lines.append(f"Gateway={cfg.gateway4}")
+    for d in cfg.dns:
+        lines.append(f"DNS={d}")
+    return "\n".join(lines) + "\n"
+
+
+def render_parent_attach(parent: str, child: str) -> str:
+    """The PARENT iface needs a `MACVLAN=<child>` line in its
+    [Network] section to actually attach the child. systemd-networkd
+    is bidirectional: the child .netdev declares the parentless
+    device, the parent .network attaches it. Without this the
+    macvlan device sits orphaned in the kernel."""
+    return f"# auto-managed: attaches macvlan {child} to {parent}\n[Match]\nName={parent}\n\n[Network]\nMACVLAN={child}\n"
+
+
+def _validate_macvlan_cfg(name: str, cfg: MacvlanConfig) -> str | None:
+    if not _valid_iface_name(name):
+        return f"invalid macvlan name: {name!r}"
+    if not _valid_iface_name(cfg.parent):
+        return f"invalid parent iface name: {cfg.parent!r}"
+    if name == cfg.parent:
+        return "macvlan child cannot have the same name as its parent"
+    if cfg.mac and not _MAC_RE.match(cfg.mac):
+        return f"invalid MAC address: {cfg.mac!r} (expected aa:bb:cc:dd:ee:ff)"
+    if not cfg.dhcp4 and not cfg.addresses4:
+        return "static macvlan requires at least one address (CIDR form)"
+    err = _validate_addresses(cfg.addresses4)
+    if err:
+        return err
+    if cfg.gateway4 and not _valid_ipv4(cfg.gateway4):
+        return f"invalid IPv4 gateway: {cfg.gateway4!r}"
+    for d in cfg.dns:
+        if not _valid_ipv4(d):
+            return f"invalid DNS address: {d!r}"
+    if cfg.mtu and not (576 <= cfg.mtu <= 9216):
+        return f"MTU out of range (576-9216): {cfg.mtu}"
+    return None
+
+
 @router.get("/interfaces/pending", response_model=PendingApply)
 async def get_pending_apply() -> PendingApply:
     """Is a netplan apply still inside its auto-revert window?
@@ -1117,6 +1238,85 @@ async def update_vlan(name: str, cfg: VlanConfig) -> ApplyResult:
     result = await _apply_state(cfg.timeout_s)
     if not result.ok:
         _state.vlans[name] = prev
+        _save_state()
+    return result
+
+
+async def _apply_macvlans() -> ApplyResult:
+    """Render the macvlan state into systemd-networkd files and push
+    via the helper. No auto-revert window — macvlans don't touch the
+    mgmt iface, just add siblings, so locking out the operator is not
+    a realistic failure mode."""
+    payload = {
+        name: cfg.model_dump() for name, cfg in _state.macvlans.items()
+    }
+    body = json.dumps(payload)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", _PHONON_NET_BIN, "apply-macvlans",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out_b, err_b = await asyncio.wait_for(
+            proc.communicate(body.encode("utf-8")), timeout=15.0
+        )
+        rc = proc.returncode if proc.returncode is not None else -1
+        out = out_b.decode("utf-8", errors="replace")
+        err_out = err_b.decode("utf-8", errors="replace")
+    except Exception as exc:
+        return ApplyResult(ok=False, message=f"helper invocation failed: {exc}")
+    if rc != 0:
+        msg = (err_out or out).strip()[:300] or "helper failed"
+        return ApplyResult(ok=False, message=f"rc={rc}: {msg}")
+    return ApplyResult(ok=True, message=f"{len(_state.macvlans)} macvlan(s) applied")
+
+
+@router.post("/macvlans", response_model=ApplyResult)
+async def create_macvlan(cfg: MacvlanConfig, name: str) -> ApplyResult:
+    """Create a macvlan child on `parent`. The name lives in the
+    query string so the body is a clean MacvlanConfig (matches the
+    POST /vlans pattern)."""
+    err = _validate_macvlan_cfg(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    if name in _state.macvlans:
+        return ApplyResult(ok=False, message=f"macvlan {name!r} already exists (use PUT to update)")
+    _state.macvlans[name] = cfg
+    _save_state()
+    result = await _apply_macvlans()
+    if not result.ok:
+        _state.macvlans.pop(name, None)
+        _save_state()
+    return result
+
+
+@router.put("/macvlans/{name}", response_model=ApplyResult)
+async def update_macvlan(name: str, cfg: MacvlanConfig) -> ApplyResult:
+    if name not in _state.macvlans:
+        return ApplyResult(ok=False, message=f"macvlan {name!r} not found")
+    err = _validate_macvlan_cfg(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    prev = _state.macvlans[name]
+    _state.macvlans[name] = cfg
+    _save_state()
+    result = await _apply_macvlans()
+    if not result.ok:
+        _state.macvlans[name] = prev
+        _save_state()
+    return result
+
+
+@router.delete("/macvlans/{name}", response_model=ApplyResult)
+async def delete_macvlan(name: str) -> ApplyResult:
+    if name not in _state.macvlans:
+        return ApplyResult(ok=False, message=f"macvlan {name!r} not found")
+    prev = _state.macvlans.pop(name)
+    _save_state()
+    result = await _apply_macvlans()
+    if not result.ok:
+        _state.macvlans[name] = prev
         _save_state()
     return result
 

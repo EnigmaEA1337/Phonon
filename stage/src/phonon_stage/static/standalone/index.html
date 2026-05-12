@@ -941,6 +941,69 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- Macvlans (slice 8) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Macvlans
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          virtual NIC on top of a physical iface — own MAC + own IP, lets daemons (nqptp, ptp4l) bind separately without UDP port conflict
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn btn-primary" style="font-size:9px;padding:2px 8px" onclick="openMacvlanCreateModal()">+ Add macvlan</button>
+      </div>
+      <div class="section-body" id="macvlans-list">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Macvlan create / edit modal -->
+    <div id="macvlan-modal" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-head">
+          <span id="macvlan-modal-title">Add macvlan</span>
+          <button class="modal-close" onclick="closeMacvlanModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;align-items:center;font-family:var(--font-m);font-size:11px">
+            <label>Name</label>
+            <input type="text" id="macvlan-name" placeholder="mvl-airplay" maxlength="15"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Parent iface</label>
+            <select id="macvlan-parent" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px"></select>
+            <label>MAC (optional)</label>
+            <input type="text" id="macvlan-mac" placeholder="aa:bb:cc:dd:ee:ff (auto if empty)"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Mode</label>
+            <div style="display:flex;gap:10px">
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="macvlan-mode" value="dhcp" checked> DHCP</label>
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="macvlan-mode" value="static"> Static</label>
+            </div>
+            <label>IP/CIDR</label>
+            <input type="text" id="macvlan-addr" placeholder="192.168.1.50/24"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Gateway</label>
+            <input type="text" id="macvlan-gw" placeholder="192.168.1.254 (optional)"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>DNS</label>
+            <input type="text" id="macvlan-dns" placeholder="1.1.1.1 (optional)"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>MTU</label>
+            <input type="number" id="macvlan-mtu" placeholder="1500" min="576" max="9216"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;width:90px">
+          </div>
+          <div style="margin-top:10px;font-family:var(--font-m);font-size:9px;color:var(--text-fade)">
+            Created in bridge mode (children on the same parent see each other). Mode kernel = macvlan bridge.
+            The child gets its own MAC visible to the switch; from the switch's POV it looks like a 2nd device on the same port.
+          </div>
+          <div id="macvlan-status" style="margin-top:10px;font-family:var(--font-m);font-size:10px;color:var(--text-dim);min-height:14px"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" onclick="closeMacvlanModal()">Cancel</button>
+          <button class="btn btn-primary" id="macvlan-create-btn" onclick="macvlanCreate()">Create</button>
+        </div>
+      </div>
+    </div>
+
     <!-- VLAN create / edit modal -->
     <div id="vlan-modal" class="modal-overlay" style="display:none">
       <div class="modal" style="max-width:520px">
@@ -1193,7 +1256,7 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
-  if (name === 'network') { fetchIfaces(); fetchVlans(); }
+  if (name === 'network') { fetchIfaces(); fetchVlans(); fetchMacvlans(); }
   if (name === 'ptp') { fetchNtp(); fetchNqptp(); }   // ClockWorld tab — NTP + nqptp
 }
 
@@ -5870,6 +5933,142 @@ async function vlanDelete(name) {
     alert('Delete error: ' + e.message);
   }
   setTimeout(() => { fetchVlans(); fetchIfaces(); refreshPendingBanner(); }, 800);
+}
+
+/* ─── Macvlans (slice 8) ─── */
+
+async function fetchMacvlans() {
+  const host = document.getElementById('macvlans-list');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/managed');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const state = await r.json();
+    renderMacvlans(state.macvlans || {});
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">macvlans fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderMacvlans(macvlans) {
+  const host = document.getElementById('macvlans-list');
+  if (!host) return;
+  const names = Object.keys(macvlans);
+  if (names.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No macvlans managed by phonon. Click + Add macvlan to create one.</div>';
+    return;
+  }
+  host.innerHTML = names.map(name => {
+    const m = macvlans[name];
+    const ipLine = m.addresses4 && m.addresses4.length ? m.addresses4.join(', ') : (m.dhcp4 ? '(DHCP)' : '—');
+    return `
+      <div style="background:var(--bg-1);padding:10px 12px;border-radius:4px;border-left:3px solid var(--cyan);margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+          <div style="font-family:var(--font-d);font-size:14px;font-weight:600">${escapeHtml(name)}</div>
+          <span style="color:var(--cyan);font-weight:600">macvlan</span>
+          <span style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)">on ${escapeHtml(m.parent)}${m.mac ? ' · ' + escapeHtml(m.mac) : ' · MAC auto'}</span>
+          <span style="flex:1"></span>
+          <button class="btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="macvlanDelete('${escapeHtml(name)}')">Delete</button>
+        </div>
+        <div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-family:var(--font-m);font-size:10px">
+          <div style="color:var(--text-dim)">IPv4</div><div>${escapeHtml(ipLine)}${m.dhcp4 ? ' <span style="color:var(--green);font-size:9px">DHCP</span>' : ''}</div>
+          ${m.gateway4 ? `<div style="color:var(--text-dim)">Gateway</div><div>${escapeHtml(m.gateway4)}</div>` : ''}
+          ${m.dns && m.dns.length ? `<div style="color:var(--text-dim)">DNS</div><div>${m.dns.map(escapeHtml).join(' · ')}</div>` : ''}
+          ${m.mtu ? `<div style="color:var(--text-dim)">MTU</div><div>${m.mtu}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openMacvlanCreateModal() {
+  const sel = document.getElementById('macvlan-parent');
+  sel.innerHTML = (_ifaceList || [])
+    .filter(i => i.type === 'ether')
+    .map(i => `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)}</option>`)
+    .join('');
+  document.getElementById('macvlan-name').value = '';
+  document.getElementById('macvlan-mac').value = '';
+  document.getElementById('macvlan-addr').value = '';
+  document.getElementById('macvlan-gw').value = '';
+  document.getElementById('macvlan-dns').value = '';
+  document.getElementById('macvlan-mtu').value = '';
+  document.getElementById('macvlan-status').textContent = '';
+  document.querySelector('input[name="macvlan-mode"][value="dhcp"]').checked = true;
+  document.getElementById('macvlan-modal').style.display = 'flex';
+}
+
+function closeMacvlanModal() {
+  document.getElementById('macvlan-modal').style.display = 'none';
+}
+
+async function macvlanCreate() {
+  const status = document.getElementById('macvlan-status');
+  const name = document.getElementById('macvlan-name').value.trim();
+  const parent = document.getElementById('macvlan-parent').value;
+  if (!name || !parent) {
+    status.textContent = 'Name + parent are required';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  const mode = document.querySelector('input[name="macvlan-mode"]:checked')?.value || 'dhcp';
+  const addr = document.getElementById('macvlan-addr').value.trim();
+  const dns = document.getElementById('macvlan-dns').value
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const body = {
+    parent,
+    mac: document.getElementById('macvlan-mac').value.trim(),
+    dhcp4: (mode === 'dhcp'),
+    addresses4: addr ? [addr] : [],
+    gateway4: document.getElementById('macvlan-gw').value.trim(),
+    dns,
+    mtu: parseInt(document.getElementById('macvlan-mtu').value, 10) || 0,
+  };
+  const btn = document.getElementById('macvlan-create-btn');
+  btn.disabled = true;
+  status.textContent = 'creating…';
+  status.style.color = 'var(--text-dim)';
+  try {
+    // name lives in the query string per the API contract — body
+    // stays a clean MacvlanConfig.
+    const r = await fetch(API + '/network/macvlans?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      status.textContent = j.message || ('HTTP ' + r.status);
+      status.style.color = 'var(--red)';
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = j.message;
+    status.style.color = 'var(--green)';
+    setTimeout(() => {
+      closeMacvlanModal();
+      fetchMacvlans();
+      fetchIfaces();
+    }, 800);
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+async function macvlanDelete(name) {
+  if (!confirm(`Delete macvlan ${name}? The child iface will be torn down from the kernel.`)) return;
+  try {
+    const r = await fetch(API + '/network/macvlans/' + encodeURIComponent(name), { method: 'DELETE' });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      alert('Delete failed: ' + (j.message || r.status));
+      return;
+    }
+  } catch (e) {
+    alert('Delete error: ' + e.message);
+  }
+  setTimeout(() => { fetchMacvlans(); fetchIfaces(); }, 800);
 }
 
 /* ─── Iface edit modal (slice 3b) ─── */

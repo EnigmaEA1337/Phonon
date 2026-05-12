@@ -528,6 +528,9 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-iface *
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net confirm
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net cancel
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net status
+# macvlan management — writes systemd-networkd .netdev + .network
+# files under /etc/systemd/network/ outside the netplan-managed tree.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-macvlans
 # nqptp — companion PTP daemon for shairport-sync AirPlay 2.
 # Plugin start/stops it alongside shairport-sync depending on
 # airplay_version setting.

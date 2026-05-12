@@ -12,14 +12,18 @@ import pytest
 
 from phonon_stage.api.network import (
     IfaceConfig,
+    MacvlanConfig,
     NetworkState,
     VlanConfig,
     _valid_iface_name,
     _valid_ipv4,
     _valid_ipv4_cidr,
     _validate_iface_cfg,
+    _validate_macvlan_cfg,
     _validate_vlan_cfg,
     parse_ethtool_T,
+    render_macvlan_netdev,
+    render_macvlan_network,
     render_netplan_yaml,
 )
 
@@ -405,3 +409,77 @@ def test_ethtool_hw_ptp_requires_phc_not_just_caps():
     assert c.hw_receive
     assert c.phc_index == -1
     assert c.hw_ptp_capable is False
+
+
+# ─── macvlan validator + renderer (slice 8) ──────────────
+
+
+def test_validate_macvlan_dhcp_passes():
+    cfg = MacvlanConfig(parent="enp1s0", dhcp4=True)
+    assert _validate_macvlan_cfg("mvl-airplay", cfg) is None
+
+
+def test_validate_macvlan_static_full():
+    cfg = MacvlanConfig(
+        parent="enp1s0", mac="aa:bb:cc:dd:ee:ff",
+        dhcp4=False, addresses4=["192.168.1.50/24"], gateway4="192.168.1.254",
+        dns=["1.1.1.1"], mtu=1500,
+    )
+    assert _validate_macvlan_cfg("mvl-aes67", cfg) is None
+
+
+def test_validate_macvlan_rejects_self_parent():
+    cfg = MacvlanConfig(parent="mvl-foo", dhcp4=True)
+    err = _validate_macvlan_cfg("mvl-foo", cfg)
+    assert err and "same name" in err
+
+
+def test_validate_macvlan_rejects_bad_mac():
+    for bad in ("zz:zz:zz:zz:zz:zz", "aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee", "ggggg"):
+        cfg = MacvlanConfig(parent="enp1s0", mac=bad)
+        err = _validate_macvlan_cfg("mvl-x", cfg)
+        assert err and "MAC" in err, f"expected MAC error for {bad!r}"
+
+
+def test_validate_macvlan_static_requires_address():
+    cfg = MacvlanConfig(parent="enp1s0", dhcp4=False)
+    err = _validate_macvlan_cfg("mvl-x", cfg)
+    assert err and "address" in err
+
+
+def test_render_macvlan_netdev_dhcp_basic():
+    cfg = MacvlanConfig(parent="enp1s0", dhcp4=True)
+    body = render_macvlan_netdev("mvl-airplay", cfg)
+    assert "Kind=macvlan" in body
+    assert "Name=mvl-airplay" in body
+    assert "Mode=bridge" in body
+    # No MAC line when MAC is empty (kernel auto-assigns).
+    assert "MACAddress" not in body
+
+
+def test_render_macvlan_netdev_with_mac():
+    cfg = MacvlanConfig(parent="enp1s0", mac="aa:bb:cc:dd:ee:ff", dhcp4=True)
+    body = render_macvlan_netdev("mvl-x", cfg)
+    assert "MACAddress=aa:bb:cc:dd:ee:ff" in body
+
+
+def test_render_macvlan_network_static():
+    cfg = MacvlanConfig(
+        parent="enp1s0", dhcp4=False, addresses4=["192.168.1.50/24"],
+        gateway4="192.168.1.254", dns=["1.1.1.1", "8.8.8.8"],
+    )
+    body = render_macvlan_network("mvl-x", cfg)
+    assert "[Match]" in body
+    assert "Name=mvl-x" in body
+    assert "DHCP=ipv4" not in body
+    assert "Address=192.168.1.50/24" in body
+    assert "Gateway=192.168.1.254" in body
+    assert "DNS=1.1.1.1" in body
+    assert "DNS=8.8.8.8" in body
+
+
+def test_render_macvlan_network_dhcp():
+    cfg = MacvlanConfig(parent="enp1s0", dhcp4=True)
+    body = render_macvlan_network("mvl-x", cfg)
+    assert "DHCP=ipv4" in body
+    assert "Address=" not in body

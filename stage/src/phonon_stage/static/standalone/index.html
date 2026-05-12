@@ -5351,8 +5351,13 @@ function _nodeShortLabel(n) {
 // specific role wins (master before generic source, etc.).
 function _classifyNode(node, mixer, plugins, daemonNodeIds) {
   const name = node.name || '';
-  if (name === 'phonon_master') return 'master';
-  if (name.startsWith('phonon_fx_')) return 'fx';
+  // PW prefixes filter-chain stream nodes with input./output., so
+  // the logical name (used for role detection) needs the prefix
+  // stripped — otherwise every phonon_fx_<id> stream falls through
+  // the FX check and lands in 'transport'.
+  const logical = name.replace(/^(input|output)\./, '');
+  if (logical === 'phonon_master') return 'master';
+  if (logical.startsWith('phonon_fx_')) return 'fx';
   // Source-plugin null-sinks: airplay_in, spotify_in, ...
   for (const p of plugins || []) {
     if ((p.pw_node_names || []).includes(name)) return 'srcsink';
@@ -5535,7 +5540,13 @@ function renderGraph() {
   }
 
   // ── Pick the nodes to render ──
-  const visibleNodes = showAll ? allNodes.slice() : allNodes.filter(n => relevantNames.has(n.name));
+  // Match raw name OR stripped-prefix logical name so input./output.
+  // halves of filter-chain streams pass the filter (their logical
+  // name `phonon_fx_<id>` is what the mixer added to relevantNames).
+  const _stripPfx = (s) => (s || '').replace(/^(input|output)\./, '');
+  const visibleNodes = showAll
+    ? allNodes.slice()
+    : allNodes.filter(n => relevantNames.has(n.name) || relevantNames.has(_stripPfx(n.name)));
 
   // ── Classify each visible node into a lane ──
   const roleByNode = {};
@@ -5546,16 +5557,17 @@ function renderGraph() {
     graphRoles[n.name] = role;
   }
 
-  // ── Group nodes by name (= same logical unit) ──
+  // ── Group nodes by logical name (= same logical unit) ──
   // PW spawns one node per stream side for module-loopback and
-  // module-filter-chain: a "capture" stream (output ports only,
-  // feeding downstream) and a "playback" stream (input ports only,
-  // sinking upstream). They share the same node.name. Treating them
-  // as ONE box per name kills the duplicate-box clutter and gives
-  // the bridge a real input-left / output-right shape.
+  // module-filter-chain: a "capture" stream (Stream/Input, name
+  // `input.<chain>`) and a "playback" stream (Stream/Output, name
+  // `output.<chain>`). The user-visible nick is the same on both
+  // sides. Strip the `input.` / `output.` prefix to derive a
+  // logical key so the two sides collapse into one box.
+  const _logicalKey = (n) => (n.name || '').replace(/^(input|output)\./, '');
   const groupsByKey = new Map();
   for (const n of visibleNodes) {
-    const k = n.name;
+    const k = _logicalKey(n);
     if (!groupsByKey.has(k)) groupsByKey.set(k, []);
     groupsByKey.get(k).push(n);
   }

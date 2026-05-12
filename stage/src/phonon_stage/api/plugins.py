@@ -146,6 +146,50 @@ async def restart_plugin(request: Request, name: str) -> PluginResponse:
     return _to_response(await reg.info(name))
 
 
+@router.get("/{name}/journal")
+async def get_plugin_journal(
+    request: Request, name: str, lines: int = 50
+) -> dict[str, str]:
+    """Return the last N journalctl lines for the plugin's user unit.
+    Pure diagnostic — used when a daemon is `running: true` but
+    misbehaves (drops connections, crashes mid-session, silent
+    audio path failure) and we can't see that from the runtime
+    check alone."""
+    import asyncio
+
+    reg = _registry(request)
+    try:
+        plugin = reg.get(name)
+    except PluginNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown plugin: {name}") from exc
+    unit = getattr(plugin, "UNIT", None)
+    if not unit:
+        raise HTTPException(status_code=400, detail="plugin has no UNIT attr")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl",
+            "--user",
+            "-u",
+            unit,
+            "-n",
+            str(max(1, min(lines, 500))),
+            "--no-pager",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=5)
+        return {
+            "unit": unit,
+            "rc": str(proc.returncode),
+            "log": stdout_b.decode("utf-8", errors="replace"),
+            "stderr": stderr_b.decode("utf-8", errors="replace"),
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 @router.get("/{name}/settings")
 async def get_settings(request: Request, name: str) -> dict[str, Any]:
     reg = _registry(request)

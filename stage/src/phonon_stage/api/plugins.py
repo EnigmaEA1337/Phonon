@@ -190,6 +190,36 @@ async def get_plugin_journal(
         ) from exc
 
 
+@router.get("/diag/clock")
+async def get_clock_diag() -> dict[str, str]:
+    """Diagnostic: `timedatectl status` + `chronyc tracking` if available.
+    AirPlay's sync requires the Stage clock to track real time within
+    ~10ms — large persistent shairport sync errors usually trace back
+    to a broken NTP setup here."""
+    import asyncio
+
+    out: dict[str, str] = {}
+    for label, args in (
+        ("timedatectl", ("timedatectl", "status")),
+        ("chronyc", ("chronyc", "tracking")),
+        ("timesyncd", ("systemctl", "status", "--no-pager", "-n", "5", "systemd-timesyncd")),
+        ("date_utc", ("date", "--utc", "+%Y-%m-%dT%H:%M:%S.%N")),
+    ):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            sb, eb = await asyncio.wait_for(proc.communicate(), timeout=4)
+            out[label] = sb.decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0 and eb:
+                out[label + "_stderr"] = eb.decode("utf-8", errors="replace").strip()
+        except Exception as exc:
+            out[label + "_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 @router.get("/diag/pactl")
 async def get_pactl_diag() -> dict[str, str]:
     """Diagnostic: dump `pactl list short sinks` + `pactl list short modules`

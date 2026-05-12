@@ -522,7 +522,9 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-phc2sys.service
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp write-sources *
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp sync
 # Network helper — netplan apply with auto-revert window.
-phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-iface * *
+# YAML body is passed on stdin (multi-line); only the timeout
+# argument is on the command line.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-iface *
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net confirm
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net cancel
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net status

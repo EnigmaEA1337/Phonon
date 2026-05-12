@@ -787,10 +787,23 @@ async def apply_iface_config(name: str, cfg: IfaceConfig) -> ApplyResult:
     if err:
         return ApplyResult(ok=False, message=err)
     body = render_netplan_yaml({name: cfg})
-    rc, out, err_out = await _run(
-        ["sudo", "-n", _PHONON_NET_BIN, "apply-iface", body, str(cfg.timeout_s)],
-        timeout=30.0,
-    )
+    # YAML body via stdin — sudoers rejects multi-line wildcards
+    # when the body would otherwise live on the command line.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", _PHONON_NET_BIN, "apply-iface", str(cfg.timeout_s),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out_b, err_b = await asyncio.wait_for(
+            proc.communicate(body.encode("utf-8")), timeout=30.0
+        )
+        rc = proc.returncode if proc.returncode is not None else -1
+        out = out_b.decode("utf-8", errors="replace")
+        err_out = err_b.decode("utf-8", errors="replace")
+    except Exception as exc:
+        return ApplyResult(ok=False, message=f"helper invocation failed: {exc}")
     if rc != 0:
         msg = (err_out or out).strip()[:300] or "helper failed"
         return ApplyResult(ok=False, message=f"rc={rc}: {msg}")

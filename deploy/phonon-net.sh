@@ -82,10 +82,15 @@ EOF
 }
 
 cmd_apply_iface() {
-    local body="$1"
-    local timeout="${2:-120}"
+    local timeout="${1:-120}"
+    # YAML body comes via stdin — passing multi-line bodies as a
+    # CLI argument trips sudoers (wildcards forbidden when the arg
+    # contains newlines), so the API writes the body to our stdin
+    # and we read it here.
+    local body
+    body="$(cat)"
     if [ -z "$body" ]; then
-        log "apply-iface: empty body — refusing"
+        log "apply-iface: empty body on stdin — refusing"
         return 2
     fi
     case "$timeout" in
@@ -217,7 +222,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
-    apply-iface)  shift; cmd_apply_iface "${1:-}" "${2:-}" ;;
+    apply-iface)  shift; cmd_apply_iface "${1:-}" ;;
     confirm)      cmd_confirm ;;
     cancel)       cmd_cancel ;;
     rollback)     shift; cmd_rollback "${1:-}" ;;

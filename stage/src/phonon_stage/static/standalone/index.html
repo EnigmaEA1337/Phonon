@@ -1299,6 +1299,14 @@ async function openPluginSettings(name) {
     <div class="modal-head"><h2>AirPlay (Classic) — Settings</h2></div>
     <div class="modal-body">
 
+      ${section('Protocol', `
+        ${sel('ap-airplay_version', s.airplay_version, [1, 2], 'AirPlay version — 1 = classic RAOP (lossy 44.1k/16), 2 = AP2 (up to 24/48 lossless, needs nqptp companion)')}
+        <div style="font-size:9px;color:var(--text-fade);margin-top:-4px;margin-bottom:8px">
+          v2 requires a shairport-sync binary built with --with-airplay-2 (auto-installed by install.sh)
+          and binds UDP 319/320 via nqptp — conflicts with ptp4l on the same iface.
+        </div>
+      `)}
+
       ${section('Identity', `
         ${text('ap-name', s.name, 63, 'Receiver name (shown in iPhone AirPlay picker)')}
         ${text('ap-password', s.password, 64, 'Password (optional — empty = open)')}
@@ -1346,6 +1354,7 @@ async function openPluginSettings(name) {
 async function savePluginSettings(name) {
   const v = id => document.getElementById(id);
   const body = {
+    airplay_version: parseInt(v('ap-airplay_version').value, 10),
     name: v('ap-name').value,
     password: v('ap-password').value,
     interpolation: v('ap-interpolation').value,

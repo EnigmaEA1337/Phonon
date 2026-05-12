@@ -712,11 +712,11 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab active" data-tab="general" onclick="switchTab('general')">GENERAL</div>
     <div class="tab" data-tab="services" onclick="switchTab('services')">SERVICES</div>
     <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
+    <div class="tab" data-tab="aes67" onclick="switchTab('aes67')">AES67</div>
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
     <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
     <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
     <div class="tab" data-tab="graph" onclick="switchTab('graph')">GRAPH</div>
-    <div class="tab" data-tab="settings" onclick="switchTab('settings')">SETTINGS</div>
   </div>
 
   <!-- ─── Tab: General (default) — Monitoring + Mix Console ─── -->
@@ -841,6 +841,61 @@ body.mode-live .edit-only select { opacity: 0.4; }
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ─── Tab: AES67 (Network Stages + AES67 streams + AES67/SAP settings) ─── -->
+  <div class="tab-pane edit-only" data-tab-pane="aes67">
+
+    <!-- 1. Network Stages — other phonon-stages visible on the LAN -->
+    <div class="section">
+      <div class="section-head">Network Stages <span style="font-weight:400;color:var(--text-dim);font-size:10px">other phonon stages discovered via mDNS-SD</span></div>
+      <div class="section-body" id="stages-list">
+        <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
+      </div>
+    </div>
+
+    <!-- 2. AES67 streams — local Send/Recv + DISCOVERED via SAP -->
+    <div class="section">
+      <div class="section-head">AES67 streams <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
+      <div class="section-body">
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-family:var(--font-m);font-size:10px">
+          <input type="text" id="aes67-name" placeholder="name" maxlength="32"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100px">
+          <input type="text" id="aes67-group" placeholder="239.69.10.10" value="239.69.10.10"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:120px">
+          <input type="number" id="aes67-port" placeholder="5004" value="5004" min="1024" max="65535"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:70px">
+          <label style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
+            <input type="checkbox" id="aes67-loop" checked> loop
+          </label>
+          <button class="btn btn-primary" onclick="aes67Create('send')">+ Send</button>
+          <button class="btn btn-primary" onclick="aes67Create('recv')">+ Recv</button>
+          <span class="tb-info" id="aes67-status">—</span>
+        </div>
+        <div id="aes67-streams"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+          <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
+          <div id="aes67-discovered"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. AES67 parameters — defaults applied to new streams -->
+    <div class="section">
+      <div class="section-head">AES67 parameters <span style="font-weight:400;color:var(--text-dim);font-size:10px">defaults applied to newly-created streams (existing streams keep their own settings)</span></div>
+      <div class="section-body" id="aes67-params-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
+    <!-- 4. SAP Announce — local stream announcement on the LAN -->
+    <div class="section">
+      <div class="section-head">SAP Announce <span style="font-weight:400;color:var(--text-dim);font-size:10px">how this stage advertises its AES67 streams (and listens for others)</span></div>
+      <div class="section-body" id="sap-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ─── Tab: Network ─── -->
@@ -1004,39 +1059,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
-    <!-- AES67 -->
-    <div class="section">
-      <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
-      <div class="section-body">
-        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-family:var(--font-m);font-size:10px">
-          <input type="text" id="aes67-name" placeholder="name" maxlength="32"
-            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100px">
-          <input type="text" id="aes67-group" placeholder="239.69.10.10" value="239.69.10.10"
-            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:120px">
-          <input type="number" id="aes67-port" placeholder="5004" value="5004" min="1024" max="65535"
-            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:70px">
-          <label style="display:flex;align-items:center;gap:4px;color:var(--text-dim)">
-            <input type="checkbox" id="aes67-loop" checked> loop
-          </label>
-          <button class="btn btn-primary" onclick="aes67Create('send')">+ Send</button>
-          <button class="btn btn-primary" onclick="aes67Create('recv')">+ Recv</button>
-          <span class="tb-info" id="aes67-status">—</span>
-        </div>
-        <div id="aes67-streams"></div>
-        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
-          <div style="font-family:var(--font-m);font-size:9px;color:var(--text-dim);margin-bottom:6px">DISCOVERED via SAP</div>
-          <div id="aes67-discovered"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Discovered Stages -->
-    <div class="section">
-      <div class="section-head">Network Stages</div>
-      <div class="section-body" id="stages-list">
-        <div style="color:var(--text-fade);font-size:11px">Scanning...</div>
-      </div>
-    </div>
+    <!-- AES67 + Network Stages moved to the dedicated AES67 tab (slice: UI reorg). -->
   </div>
 
   <!-- ─── Tab: PTP ─── -->
@@ -1114,15 +1137,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
   </div>
 
-  <!-- ─── Tab: Settings ─── -->
-  <div class="tab-pane edit-only" data-tab-pane="settings">
-    <div class="section">
-      <div class="section-head">Settings <span style="font-weight:400;color:var(--text-dim);font-size:10px">SAP / PTP / AES67 defaults</span></div>
-      <div class="section-body" id="settings-form">
-        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
-      </div>
-    </div>
-  </div>
+  <!-- ─── (Settings tab removed) AES67 + SAP settings live in the AES67 tab now. PTP is in the PTP tab. ─── -->
 
   <!-- Status bar -->
   <div class="statusbar" id="statusbar">
@@ -3970,18 +3985,15 @@ function updateModeBadge(stages, streams) {
   }
 }
 
-// ── Settings panel ────────────────────────────────────
+// ── Settings panel (now split into two boxes in the AES67 tab) ────────
+//
+// Historically these lived in a single Settings tab. After the UI
+// reorg they sit in the AES67 tab as two separate sections — AES67
+// parameters first, then SAP Announce — but the wire format on /settings
+// is unchanged, so settingsSave() still pushes both blocks in one PATCH.
 let _settingsDirty = false;
 
-function renderSettings(s, ifaces) {
-  if (_settingsDirty) return;  // user is editing, don't clobber
-  const el = document.getElementById('settings-form');
-  if (!el) return;
-
-  const ifaceOpts = [{name:'',ip:'auto-pick',kind:''}, ...(ifaces||[])]
-    .map(i => `<option value="${i.name}" ${i.name===s.ptp.interface?'selected':''}>${i.name||'(auto)'}${i.ip?` — ${i.ip}`:''}${i.kind?` [${i.kind}]`:''}</option>`).join('');
-
-  el.innerHTML = `
+const _SETTINGS_STYLES = `
     <style>
       .stg-grid { display:grid; grid-template-columns:140px 1fr; gap:8px 14px; align-items:center; font-family:var(--font-m); font-size:10px; }
       .stg-grid label { color:var(--text-dim); }
@@ -3990,28 +4002,28 @@ function renderSettings(s, ifaces) {
         padding:3px 6px; font-family:var(--font-m); font-size:10px; width:100%; box-sizing:border-box;
       }
       .stg-grid input[type=checkbox] { accent-color:var(--cyan); }
-      .stg-section { font-weight:600; color:var(--cyan); text-transform:uppercase; letter-spacing:1px;
-        font-size:10px; margin:10px 0 6px; padding-bottom:4px; border-bottom:1px solid var(--border); }
-      .stg-section:first-child { margin-top:0; }
       .stg-actions { margin-top:12px; display:flex; gap:8px; align-items:center; }
-    </style>
-    <div class="stg-section">SAP — stream announcement</div>
-    <div class="stg-grid">
-      <label>Announce my streams</label>
-      <input type="checkbox" id="stg-sap-ann" ${s.sap.announce_enabled?'checked':''} onchange="settingsMarkDirty()">
-      <label>Announce interval (s)</label>
-      <input type="number" id="stg-sap-int" min="2" max="60" value="${s.sap.announce_interval_s}" onchange="settingsMarkDirty()">
-      <label>Listen for incoming SAP</label>
-      <input type="checkbox" id="stg-sap-lis" ${s.sap.listen_enabled?'checked':''} onchange="settingsMarkDirty()">
-    </div>
+    </style>`;
 
-    <div class="stg-section" style="color:var(--text-fade)">PTP — moved to its own tab</div>
-    <div style="font-size:10px;color:var(--text-dim);margin-bottom:10px">
-      All PTP parameters (28 fields incl. priority1, clockClass, log intervals, DSCP, servo, etc.)
-      now live in the dedicated <strong style="color:var(--cyan)">PTP</strong> tab.
-    </div>
+function renderSettings(s, ifaces) {
+  if (_settingsDirty) return;  // user is editing, don't clobber
+  _renderAes67ParamsForm(s);
+  _renderSapForm(s);
 
-    <div class="stg-section">AES67 — defaults for new streams</div>
+  // Pre-fill the AES67 stream form (top of AES67 panel) with defaults
+  const aGroup = document.getElementById('aes67-group');
+  const aPort = document.getElementById('aes67-port');
+  const aLoop = document.getElementById('aes67-loop');
+  if (aGroup && !aGroup.dataset.touched) aGroup.value = s.aes67.multicast_group;
+  if (aPort && !aPort.dataset.touched) aPort.value = s.aes67.port;
+  if (aLoop && !aLoop.dataset.touched) aLoop.checked = s.aes67.loop;
+}
+
+function _renderAes67ParamsForm(s) {
+  const el = document.getElementById('aes67-params-form');
+  if (!el) return;
+  el.innerHTML = `
+    ${_SETTINGS_STYLES}
     <div class="stg-grid">
       <label>Multicast group</label>
       <input type="text" id="stg-ae-mg" value="${s.aes67.multicast_group}" onchange="settingsMarkDirty()">
@@ -4034,21 +4046,36 @@ function renderSettings(s, ifaces) {
       <label title="Jitter buffer on the receive side. Bump higher (50→100→200) if you hear crackles on AES67 streams.">Recv buffer (ms)</label>
       <input type="number" id="stg-ae-rxbuf" min="5" max="500" step="5" value="${s.aes67.recv_buffer_ms}" onchange="settingsMarkDirty()">
     </div>
-
     <div class="stg-actions">
       <button class="btn btn-primary" onclick="settingsSave()">Save</button>
       <button class="btn" onclick="settingsReset()">Cancel</button>
       <span id="stg-status" class="tb-info">—</span>
     </div>
   `;
+}
 
-  // Pre-fill the AES67 stream form (top of AES67 panel) with defaults
-  const aGroup = document.getElementById('aes67-group');
-  const aPort = document.getElementById('aes67-port');
-  const aLoop = document.getElementById('aes67-loop');
-  if (aGroup && !aGroup.dataset.touched) aGroup.value = s.aes67.multicast_group;
-  if (aPort && !aPort.dataset.touched) aPort.value = s.aes67.port;
-  if (aLoop && !aLoop.dataset.touched) aLoop.checked = s.aes67.loop;
+function _renderSapForm(s) {
+  const el = document.getElementById('sap-form');
+  if (!el) return;
+  // SAP and AES67 params share the same backing settings object —
+  // clicking Save in either box pushes the whole settings PATCH,
+  // and Cancel reverts both forms.
+  el.innerHTML = `
+    ${_SETTINGS_STYLES}
+    <div class="stg-grid">
+      <label>Announce my streams</label>
+      <input type="checkbox" id="stg-sap-ann" ${s.sap.announce_enabled?'checked':''} onchange="settingsMarkDirty()">
+      <label>Announce interval (s)</label>
+      <input type="number" id="stg-sap-int" min="2" max="60" value="${s.sap.announce_interval_s}" onchange="settingsMarkDirty()">
+      <label>Listen for incoming SAP</label>
+      <input type="checkbox" id="stg-sap-lis" ${s.sap.listen_enabled?'checked':''} onchange="settingsMarkDirty()">
+    </div>
+    <div class="stg-actions">
+      <button class="btn btn-primary" onclick="settingsSave()">Save</button>
+      <button class="btn" onclick="settingsReset()">Cancel</button>
+      <span id="stg-status-sap" class="tb-info">—</span>
+    </div>
+  `;
 }
 
 function settingsMarkDirty() { _settingsDirty = true; }

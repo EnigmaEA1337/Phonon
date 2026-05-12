@@ -1049,13 +1049,27 @@ class MixerService:
         filter-chain.service — the chain comes back with the plugin's
         LADSPA defaults, losing whatever the user had set. Without
         this, persisted state ("Mode=2", "Wet=0.5"...) and the live
-        engine drift apart after every reload."""
+        engine drift apart after every reload.
+
+        Chain bring-up after `systemctl restart filter-chain.service`
+        can take 200-1500ms depending on host load — polling for the
+        chain's input.<name> node to appear is more reliable than a
+        flat sleep, and bails after ~3s rather than hanging."""
         if output.insert is None or not output.insert.enabled:
             return
         chain = chain_name_for(output)
-        # Tiny breath so the chain's input.<name> node is settled in
-        # pw-dump's view before set-param tries to resolve it.
-        await asyncio.sleep(0.15)
+        candidates = (chain, f"input.{chain}", f"output.{chain}")
+        for attempt in range(15):
+            await asyncio.sleep(0.2)
+            try:
+                nodes = await self._pw.list_nodes()
+            except Exception:
+                continue
+            if any(n.name in candidates for n in nodes):
+                break
+        else:
+            logger.warning("mixer.chain_resync_timeout", output_id=output.id, chain=chain)
+            return
         for ctl_name, value in output.insert.controls.items():
             try:
                 await self._pw.set_filter_node_control(chain, ctl_name, value)

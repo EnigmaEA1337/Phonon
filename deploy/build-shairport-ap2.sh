@@ -60,7 +60,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y >>"$LOG" 2>&1 \
     libpopt-dev libconfig-dev libssl-dev libsoxr-dev \
     libavahi-client-dev libplist-dev libsodium-dev libgcrypt-dev \
     libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
-    uuid-dev libdaemon-dev libffi-dev
+    uuid-dev libdaemon-dev libffi-dev \
+    libasound2-dev libpulse-dev libmosquitto-dev libglib2.0-dev
 log "apt build deps installed"
 
 # ─── nqptp ──────────────────────────────────────────────────────

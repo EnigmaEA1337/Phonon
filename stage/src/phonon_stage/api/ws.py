@@ -121,11 +121,14 @@ async def _levels_tick(_active_bridges, _active_streams, _read_peak) -> None:
         keys.append(f"node:{source_name}")
         tasks.append(_read_peak(source_name, duration_ms=20))
 
-    # Source plugins (AirPlay, …) each own a null-sink whose
+    # Source plugins (AirPlay, Spotify, …) each own a null-sink whose
     # .monitor port exposes the audio coming from its upstream daemon.
+    # Adding a new source plugin → import its NULL_SINK_NAME and
+    # extend the tuple below so its VU bar animates in the UI.
     from phonon_stage.plugins.airplay_v1 import NULL_SINK_NAME as _AIRPLAY_SINK
+    from phonon_stage.plugins.spotify_v1 import NULL_SINK_NAME as _SPOTIFY_SINK
 
-    for sink_name in (_AIRPLAY_SINK,):
+    for sink_name in (_AIRPLAY_SINK, _SPOTIFY_SINK):
         keys.append(f"node:{sink_name}")
         tasks.append(_read_peak(f"{sink_name}.monitor", duration_ms=20))
 

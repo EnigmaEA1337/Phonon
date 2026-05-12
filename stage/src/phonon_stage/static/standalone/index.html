@@ -845,6 +845,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- ─── Tab: Network ─── -->
   <div class="tab-pane edit-only" data-tab-pane="network">
+    <!-- NTP / Clock -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        NTP / System Clock
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          shairport-sync + AirPlay sync rely on the system clock — a drift here = audio drift
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchNtp()" title="Refresh">Refresh</button>
+      </div>
+      <div class="section-body" id="ntp-panel">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- AES67 -->
     <div class="section">
       <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
@@ -993,6 +1008,7 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
+  if (name === 'network') fetchNtp();
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -5254,6 +5270,123 @@ async function showModal(type) {
     }
   }
   overlay.classList.add('open');
+}
+
+/* ─────────────────────────────────────────────────────────
+   NTP / System Clock panel.
+
+   Read-only Phase 1 view. Surfaces what chrony already knows so
+   the operator can correlate AirPlay/shairport timing drift,
+   AES67 jitter, etc. with clock-domain health — the "+1s late"
+   bug we've been chasing is exactly the kind of thing this lights
+   up at a glance.
+───────────────────────────────────────────────────────── */
+
+async function fetchNtp() {
+  const host = document.getElementById('ntp-panel');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/ntp');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderNtp(await r.json());
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">NTP fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _fmtOffsetUs(us) {
+  // Pretty-print with the unit that's most readable for the magnitude.
+  if (!Number.isFinite(us)) return '—';
+  const abs = Math.abs(us);
+  if (abs < 1)        return `${us.toFixed(3)} µs`;
+  if (abs < 1000)     return `${us.toFixed(1)} µs`;
+  if (abs < 1_000_000) return `${(us / 1000).toFixed(2)} ms`;
+  return `${(us / 1_000_000).toFixed(2)} s`;
+}
+
+function _offsetClass(us) {
+  // Color the offset by audio-quality bands: <1ms green, <10ms yellow,
+  // anything bigger red. shairport-sync's tolerance is around ~1ms.
+  if (!Number.isFinite(us)) return 'text-fade';
+  const abs = Math.abs(us);
+  if (abs < 1000) return 'green';
+  if (abs < 10_000) return 'yellow';
+  return 'red';
+}
+
+function renderNtp(s) {
+  const host = document.getElementById('ntp-panel');
+  if (!host) return;
+  const daemonBadge = s.daemon === 'chrony'
+    ? '<span style="color:var(--green);font-weight:600">chrony</span>'
+    : s.daemon === 'timesyncd'
+      ? '<span style="color:var(--yellow);font-weight:600">timesyncd</span>'
+      : '<span style="color:var(--red);font-weight:600">none</span>';
+  const syncBadge = s.synchronized
+    ? '<span style="color:var(--green)">synchronized</span>'
+    : '<span style="color:var(--red)">NOT synchronized</span>';
+
+  const refLine = s.reference_name
+    ? `${escapeHtml(s.reference_name)}${s.reference_id ? ` <span style="color:var(--text-fade)">(${escapeHtml(s.reference_id)})</span>` : ''}`
+    : (s.reference_id || '—');
+
+  // Top stat block.
+  let html = `
+    <div style="display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-family:var(--font-m);font-size:11px;margin-bottom:10px">
+      <div style="color:var(--text-dim)">Daemon</div>          <div>${daemonBadge} · ${syncBadge}</div>
+      <div style="color:var(--text-dim)">Reference</div>       <div>${refLine}${s.stratum ? ` · stratum ${s.stratum}` : ''}</div>
+      <div style="color:var(--text-dim)">System offset</div>   <div style="color:var(--${_offsetClass(s.system_offset_us)})">${_fmtOffsetUs(s.system_offset_us)}</div>
+      <div style="color:var(--text-dim)">Last offset</div>     <div>${_fmtOffsetUs(s.last_offset_us)}</div>
+      <div style="color:var(--text-dim)">RMS offset</div>      <div>${_fmtOffsetUs(s.rms_offset_us)}</div>
+      <div style="color:var(--text-dim)">Frequency</div>       <div>${Number.isFinite(s.frequency_ppm) ? s.frequency_ppm.toFixed(3) + ' ppm' : '—'}</div>
+    </div>`;
+
+  // Sources table.
+  if (s.sources && s.sources.length) {
+    html += `<div style="font-family:var(--font-m);font-size:10px;color:var(--text-dim);margin-bottom:4px">SOURCES</div>`;
+    html += `<table style="width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:10px">
+      <thead>
+        <tr style="color:var(--text-dim);text-align:left">
+          <th style="padding:4px 8px 4px 0">S</th>
+          <th>Address</th>
+          <th>Stratum</th>
+          <th>Reach</th>
+          <th>Last Rx</th>
+          <th>Offset</th>
+          <th>Jitter</th>
+        </tr>
+      </thead><tbody>`;
+    for (const src of s.sources) {
+      const stateChar = src.state || '?';
+      const stateColor = stateChar === '*' ? 'var(--green)'
+                       : stateChar === '+' ? 'var(--cyan)'
+                       : stateChar === '?' || stateChar === 'x' ? 'var(--red)'
+                       : 'var(--text-mid)';
+      // reach 255 = perfect (8/8 last polls received); anything less = some loss
+      const reachPct = Math.round((src.reach / 255) * 100);
+      const reachColor = src.reach === 255 ? 'var(--green)' : src.reach >= 192 ? 'var(--yellow)' : 'var(--red)';
+      html += `
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:3px 8px 3px 0;color:${stateColor};font-weight:600">${escapeHtml(stateChar)}</td>
+          <td>${escapeHtml(src.address)}</td>
+          <td>${src.stratum}</td>
+          <td><span style="color:${reachColor}">${reachPct}%</span></td>
+          <td>${src.last_rx_s}s</td>
+          <td style="color:var(--${_offsetClass(src.offset_us)})">${_fmtOffsetUs(src.offset_us)}</td>
+          <td>${_fmtOffsetUs(src.jitter_us)}</td>
+        </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+
+  // Notes (warnings, fallbacks).
+  if (s.notes && s.notes.length) {
+    html += `<div style="margin-top:10px;font-family:var(--font-m);font-size:10px;color:var(--yellow)">`;
+    for (const n of s.notes) html += `<div>• ${escapeHtml(n)}</div>`;
+    html += `</div>`;
+  }
+
+  host.innerHTML = html;
 }
 
 /* ─────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ from phonon_stage.api.health import router as health_router
 from phonon_stage.api.levels import router as levels_router
 from phonon_stage.api.mappings import router as mappings_router
 from phonon_stage.api.mixer import router as mixer_router
+from phonon_stage.api.network import router as network_router
 from phonon_stage.api.pipewire import router as pipewire_router
 from phonon_stage.api.plugins import router as plugins_router
 from phonon_stage.api.ptp import router as ptp_router
@@ -274,6 +275,7 @@ def create_app(
     app.include_router(plugins_router)
     app.include_router(mixer_router)
     app.include_router(dsp_router)
+    app.include_router(network_router)
 
     # Mount standalone mini-UI static files
     if _STATIC_DIR.exists():

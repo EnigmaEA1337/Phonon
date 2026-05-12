@@ -195,17 +195,39 @@ class RealPipeWireBackend:
         # moment a USB sound card is plugged in). We unmute when a
         # mapping points at it, otherwise the user gets a perfectly
         # routed link that produces silence.
+        import asyncio as _asyncio
+        import os as _os
+
         flag = "1" if muted else "0"
+        env = {**_os.environ, "LC_ALL": "C", "LANG": "C"}
+        # Capture rc/stdout/stderr so silent failures are visible via
+        # the monitoring `?debug=1` endpoint.
+        last = {"node_id": node_id, "muted": muted}
         try:
-            await cli.run_command("wpctl", "set-mute", str(node_id), flag)
-            logger.info("pipewire.mute_set", node_id=node_id, muted=muted)
+            proc = await _asyncio.create_subprocess_exec(
+                "wpctl", "set-mute", str(node_id), flag,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_b, stderr_b = await _asyncio.wait_for(proc.communicate(), timeout=3)
+            last.update({
+                "cmd": f"wpctl set-mute {node_id} {flag}",
+                "rc": proc.returncode,
+                "stdout": stdout_b.decode("utf-8", errors="replace"),
+                "stderr": stderr_b.decode("utf-8", errors="replace"),
+            })
+            self._last_set_mute = last  # type: ignore[attr-defined]
+            if proc.returncode == 0:
+                logger.info("pipewire.mute_set", node_id=node_id, muted=muted)
+                return
+            logger.warning(
+                "pipewire.mute_set_wpctl_failed",
+                node_id=node_id, rc=proc.returncode, stderr=last["stderr"],
+            )
         except Exception:
-            try:
-                pactl_flag = "1" if muted else "0"
-                await cli.run_command("pactl", "set-sink-mute", str(node_id), pactl_flag)
-                logger.info("pipewire.mute_set_pactl", node_id=node_id, muted=muted)
-            except Exception:
-                logger.warning("pipewire.mute_set_failed", node_id=node_id, exc_info=True)
+            logger.warning("pipewire.mute_set_exception", node_id=node_id, exc_info=True)
+            self._last_set_mute = {**last, "error": "wpctl exception"}  # type: ignore[attr-defined]
 
     async def set_node_latency_offset(self, node_id: int, offset_ns: int) -> None:
         try:

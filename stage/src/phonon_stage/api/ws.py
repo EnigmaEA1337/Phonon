@@ -75,96 +75,82 @@ async def _levels_loop() -> None:
     from phonon_stage.api.levels import _read_peak
 
     while True:
-        if clients:
-            levels: dict[str, float] = {}
-            tasks: list[Any] = []
-            keys: list[str] = []
-
-            for _key, bridge in _active_bridges.items():
-                name = bridge.get("name", "")
-                btype = bridge.get("type", "")
-                # Playback bridges (Phonon -> BT speaker via aplay/bluealsa)
-                # are skipped: spawning a parec on bt_<name>.monitor 4x/s
-                # competes with the bridge's own parec for graph time on
-                # a Pi 3, which under load creates jitter on the aplay
-                # output and crackly audio at the JBL. The user can hear
-                # the speaker — they don't need a UI VU for that side.
-                if btype != "capture":
-                    continue
-                # Capture bridge is now a null-sink (`bt_<name>_in`) fed
-                # by `arecord | pacat` — the readable PipeWire source is
-                # the null-sink's MONITOR port (`bt_<name>_in.monitor`).
-                # Key by `node:<pw-name>` so the UI's per-fader VU lookup
-                # (which joins on mapping.source_node_name) finds it
-                # directly. The previous bridge-mac key was opaque to
-                # the patch-bay rendering and broke BT VU on faders.
-                source_name = f"bt_{name}_in"
-                keys.append(f"node:{source_name}")
-                tasks.append(_read_peak(f"{source_name}.monitor", duration_ms=20))
-
-            # AES67 receivers expose an Audio/Source named
-            # `aes67-recv-<stream_name>`. parec reads it directly — no
-            # monitor suffix because rtp-source IS a source. We skip
-            # send streams: their PipeWire node is Audio/Sink and the
-            # interesting level is the upstream feeder, which is
-            # already covered by the bluealsa-bridge case above (or by
-            # the local non-BT input sources, which we don't meter yet).
-            for _sid, s in _active_streams.items():
-                if s.get("kind") != "recv":
-                    continue
-                stream_name = str(s.get("name", ""))
-                if not stream_name:
-                    continue
-                source_name = f"aes67-recv-{stream_name}"
-                # Keyed by node name so the UI's per-fader VU finds it
-                # via the same `node:<name>` lookup as the other source
-                # families. The old `aes67_<sid>` key was opaque to
-                # the patch bay.
-                keys.append(f"node:{source_name}")
-                tasks.append(_read_peak(source_name, duration_ms=20))
-
-            # Source plugins (AirPlay, …): each owns a null-sink whose
-            # .monitor port exposes the audio coming from its upstream
-            # daemon. Meter it just like the BT bridge monitors so the
-            # UI can show a per-source VU in the patch bay. We key
-            # entries by `node:<sink-name>` so the JS can join them by
-            # node name (more stable than the synthetic per-bridge key
-            # used above, which is opaque to the patch-bay rendering).
-            from phonon_stage.plugins.airplay_v1 import NULL_SINK_NAME as _AIRPLAY_SINK
-
-            for sink_name in (_AIRPLAY_SINK,):
-                keys.append(f"node:{sink_name}")
-                tasks.append(_read_peak(f"{sink_name}.monitor", duration_ms=20))
-
-            # Mix console: meter the master bus + every output. Each
-            # exposes a .monitor port we can parec without disturbing
-            # the playback path. Keyed by node name so the per-fader
-            # VU on the Mix tab finds them directly.
-            try:
-                from phonon_stage.mixer.service import MASTER_SINK_NAME
-
-                _mixer_svc = _mixer_service_ref()
-                # Master bus — exists once the mixer is initialised.
-                keys.append(f"node:{MASTER_SINK_NAME}")
-                tasks.append(_read_peak(f"{MASTER_SINK_NAME}.monitor", duration_ms=20))
-                if _mixer_svc is not None:
-                    for o in _mixer_svc.outputs:
-                        keys.append(f"node:{o.sink_node_name}")
-                        tasks.append(_read_peak(f"{o.sink_node_name}.monitor", duration_ms=20))
-            except Exception:
-                # The mixer service is optional from this module's POV;
-                # if anything fails we just skip these meters, sources
-                # and bridges keep working.
-                pass
-
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for k, result in zip(keys, results, strict=False):
-                    levels[k] = result if isinstance(result, float) else 0.0
-
-            await broadcast("levels", levels)
-
+        try:
+            await _levels_tick(_active_bridges, _active_streams, _read_peak)
+        except Exception:
+            # An unhandled exception inside the tick (parec hang, broken
+            # import inside one of the source families, mixer service
+            # transiently None…) used to kill the whole task — and
+            # _tasks_started never resets, so the levels stream stayed
+            # dead until a daemon restart. Catch + log so we keep
+            # ticking even when one tick goes sideways.
+            logger.warning("ws.levels_tick_failed", exc_info=True)
         await asyncio.sleep(1.0)
+
+
+async def _levels_tick(_active_bridges, _active_streams, _read_peak) -> None:
+    """One pass of the levels loop. Extracted so the outer loop can
+    wrap it in a single try/except without dragging every
+    source-family block under another layer of indentation."""
+    if not clients:
+        return
+
+    levels: dict[str, float] = {}
+    tasks: list[Any] = []
+    keys: list[str] = []
+
+    for _key, bridge in _active_bridges.items():
+        name = bridge.get("name", "")
+        btype = bridge.get("type", "")
+        # Playback bridges are skipped on Pi 3 — parec on their
+        # monitor competes with the bridge's own parec under load
+        # and crackles the JBL.
+        if btype != "capture":
+            continue
+        source_name = f"bt_{name}_in"
+        keys.append(f"node:{source_name}")
+        tasks.append(_read_peak(f"{source_name}.monitor", duration_ms=20))
+
+    for _sid, s in _active_streams.items():
+        if s.get("kind") != "recv":
+            continue
+        stream_name = str(s.get("name", ""))
+        if not stream_name:
+            continue
+        source_name = f"aes67-recv-{stream_name}"
+        keys.append(f"node:{source_name}")
+        tasks.append(_read_peak(source_name, duration_ms=20))
+
+    # Source plugins (AirPlay, …) each own a null-sink whose
+    # .monitor port exposes the audio coming from its upstream daemon.
+    from phonon_stage.plugins.airplay_v1 import NULL_SINK_NAME as _AIRPLAY_SINK
+
+    for sink_name in (_AIRPLAY_SINK,):
+        keys.append(f"node:{sink_name}")
+        tasks.append(_read_peak(f"{sink_name}.monitor", duration_ms=20))
+
+    # Mix console: meter the master bus + every output. Wrapped in
+    # try/except because the mixer service is optional from this
+    # module's POV — bridges + plugins keep working without it.
+    try:
+        from phonon_stage.mixer.service import MASTER_SINK_NAME
+
+        _mixer_svc = _mixer_service_ref()
+        keys.append(f"node:{MASTER_SINK_NAME}")
+        tasks.append(_read_peak(f"{MASTER_SINK_NAME}.monitor", duration_ms=20))
+        if _mixer_svc is not None:
+            for o in _mixer_svc.outputs:
+                keys.append(f"node:{o.sink_node_name}")
+                tasks.append(_read_peak(f"{o.sink_node_name}.monitor", duration_ms=20))
+    except Exception:
+        pass
+
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for k, result in zip(keys, results, strict=False):
+            levels[k] = result if isinstance(result, float) else 0.0
+
+    await broadcast("levels", levels)
 
 
 async def _mode_loop() -> None:

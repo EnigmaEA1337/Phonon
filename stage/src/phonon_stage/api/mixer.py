@@ -318,6 +318,26 @@ async def patch_output_insert(request: Request, output_id: str, body: InsertSet)
     return _to_output_resp(out)
 
 
+@router.post("/admin/reconcile")
+async def reconcile(request: Request) -> dict[str, str]:
+    """Force a full mixer reconcile — tear down + rebuild every link,
+    loopback, and filter-chain from the persisted state.
+
+    Use case: PW restart, a `pactl unload-module` cascade, or any
+    out-of-band edit nuked the live audio graph. The `Resync` button
+    in the Mix Console points here. Previously it patched master
+    gain_db hoping that would trigger reconcile, but the server's
+    PATCH /master fast-paths volume-only changes (no topology touch),
+    so the reconcile never ran — links stayed broken.
+
+    Idempotent. Safe to call repeatedly; each run snaps the live PW
+    state to whatever the store says.
+    """
+    svc: MixerService = request.app.state.mixer_service
+    await svc._reconcile()  # noqa: SLF001 — service exposes no public hook
+    return {"status": "reconciled"}
+
+
 @router.post("/admin/cleanup-orphan-chain")
 async def cleanup_orphan_chain(request: Request, filename: str) -> dict[str, object]:
     """Operator escape hatch: delete any file in the filter-chain

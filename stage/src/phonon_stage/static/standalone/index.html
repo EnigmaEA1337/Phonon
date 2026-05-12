@@ -2774,9 +2774,24 @@ function mixOutputUpdateDelay(id, raw) {
 }
 
 async function mixerResync() {
-  // Re-apply persisted state to PW: piggyback on a PATCH master with
-  // current values (the server's PATCH triggers a full _reconcile).
-  await fetch(API + '/mixer/master', { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: mixerState.master.gain_db }) });
+  // Force the full mixer reconcile: tear down + rebuild every link,
+  // loopback, and filter-chain from the persisted state. Use case is
+  // post-PW-restart or out-of-band graph nuke where links are missing.
+  //
+  // Earlier this was wired to PATCH /mixer/master with the current
+  // gain_db hoping that would trigger _reconcile on the server, but
+  // PATCH master fast-paths volume-only changes and skipped reconcile
+  // entirely — the button was effectively a no-op for what the
+  // operator actually wants here.
+  try {
+    const r = await fetch(API + '/mixer/admin/reconcile', { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Resync failed: ' + (e.detail || r.status));
+    }
+  } catch (e) {
+    alert('Resync error: ' + e.message);
+  }
   await fetchMixer();
 }
 

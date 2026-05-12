@@ -496,27 +496,40 @@ async def apply_settings() -> None:
                 err=err.strip(),
             )
         else:
-            rc1, e1 = await _systemctl("enable", "--now", PTP4L_SERVICE)
+            # sudoers grants `enable`/`disable`/`start`/`stop` per-unit
+            # but NOT the combined `enable --now` / `disable --now`
+            # forms. Splitting the two ops keeps each invocation within
+            # an existing sudoers rule and avoids a silent permission
+            # denial that masks the failure as a no-op.
+            rc1, e1 = await _systemctl("enable", PTP4L_SERVICE)
+            rc1b, e1b = await _systemctl("start", PTP4L_SERVICE)
             if cfg.phc2sys_enabled:
-                rc2, e2 = await _systemctl("enable", "--now", PHC2SYS_SERVICE)
+                rc2, e2 = await _systemctl("enable", PHC2SYS_SERVICE)
+                rc2b, e2b = await _systemctl("start", PHC2SYS_SERVICE)
             else:
-                rc2, e2 = await _systemctl("disable", "--now", PHC2SYS_SERVICE)
+                rc2, e2 = await _systemctl("stop", PHC2SYS_SERVICE)
+                rc2b, e2b = await _systemctl("disable", PHC2SYS_SERVICE)
             logger.info(
                 "ptp.services_enabled",
-                ptp4l_rc=rc1,
-                phc2sys_rc=rc2,
-                ptp4l_err=e1.strip(),
-                phc2sys_err=e2.strip(),
+                ptp4l_rc=rc1, ptp4l_start_rc=rc1b,
+                phc2sys_rc=rc2, phc2sys_2_rc=rc2b,
+                ptp4l_err=(e1 + " " + e1b).strip(),
+                phc2sys_err=(e2 + " " + e2b).strip(),
             )
     else:
-        rc1, e1 = await _systemctl("disable", "--now", PTP4L_SERVICE)
-        rc2, e2 = await _systemctl("disable", "--now", PHC2SYS_SERVICE)
+        # Order matters: stop first (unit still running uses fd), then
+        # disable. Using the bare verbs because sudoers only grants
+        # those — `disable --now` is forbidden.
+        rc1a, e1a = await _systemctl("stop", PTP4L_SERVICE)
+        rc1b, e1b = await _systemctl("disable", PTP4L_SERVICE)
+        rc2a, e2a = await _systemctl("stop", PHC2SYS_SERVICE)
+        rc2b, e2b = await _systemctl("disable", PHC2SYS_SERVICE)
         logger.info(
             "ptp.services_disabled",
-            ptp4l_rc=rc1,
-            phc2sys_rc=rc2,
-            ptp4l_err=e1.strip(),
-            phc2sys_err=e2.strip(),
+            ptp4l_stop_rc=rc1a, ptp4l_disable_rc=rc1b,
+            phc2sys_stop_rc=rc2a, phc2sys_disable_rc=rc2b,
+            ptp4l_err=(e1a + " " + e1b).strip(),
+            phc2sys_err=(e2a + " " + e2b).strip(),
         )
 
 

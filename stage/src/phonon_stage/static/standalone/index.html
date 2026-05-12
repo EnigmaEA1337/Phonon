@@ -1133,6 +1133,23 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- PTP socket bindings — read-only view of who binds UDP 319/320
+         right now. Useful to verify nqptp + ptp4l don't fight over
+         the same iface after configuring macvlans. -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        PTP socket bindings
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          live `ss -tulnp` on UDP 319/320 — who's actually bound where
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchPtpSockets()">Refresh</button>
+      </div>
+      <div class="section-body" id="ptp-sockets-panel">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- AirPlay 2 PTP (nqptp) — clock domain dedicated to AirPlay 2.
          Lives in CLOCKWORLD because it's a PTP daemon, sibling to
          ptp4l (AES67 PTP) and chrony/NTP. -->
@@ -1257,7 +1274,7 @@ function switchTab(name) {
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
   if (name === 'network') { fetchIfaces(); fetchVlans(); fetchMacvlans(); }
-  if (name === 'ptp') { fetchNtp(); fetchNqptp(); }   // ClockWorld tab — NTP + nqptp
+  if (name === 'ptp') { fetchNtp(); fetchNqptp(); fetchPtpSockets(); }   // ClockWorld
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -6285,6 +6302,76 @@ async function ifaceCancelApply() {
     alert('Revert error: ' + e.message);
   }
   setTimeout(() => { refreshPendingBanner(); fetchIfaces(); }, 1000);
+}
+
+/* ─── PTP socket bindings panel (ClockWorld) ─── */
+
+async function fetchPtpSockets() {
+  const host = document.getElementById('ptp-sockets-panel');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/ptp-sockets');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderPtpSockets(await r.json());
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">socket fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderPtpSockets(rows) {
+  const host = document.getElementById('ptp-sockets-panel');
+  if (!host) return;
+  if (!rows || rows.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No process bound to UDP 319/320. Neither ptp4l nor nqptp is currently running.</div>';
+    return;
+  }
+  // Group by daemon+pid so each daemon shows as one row covering
+  // both ports (319 + 320 are usually held by the same process).
+  const groups = {};
+  for (const r of rows) {
+    const k = `${r.daemon}#${r.pid}`;
+    if (!groups[k]) groups[k] = { daemon: r.daemon, pid: r.pid, ports: [], iface: r.iface, address: r.address };
+    groups[k].ports.push(r.port);
+  }
+  // Stable order: known daemons first then unknowns
+  const order = (g) => ({ ptp4l: 0, nqptp: 1 }[g.daemon] ?? 9);
+  const arr = Object.values(groups).sort((a,b) => order(a) - order(b));
+  const rowsHtml = arr.map(g => {
+    const dot = g.daemon === 'ptp4l' ? 'var(--cyan)'
+              : g.daemon === 'nqptp' ? 'var(--magenta)'
+              : 'var(--text-dim)';
+    const portStr = [...new Set(g.ports)].sort().join(' + ');
+    const where = g.iface
+      ? `<span style="color:var(--green)">${escapeHtml(g.iface)}</span>`
+      : `<span style="color:var(--yellow)">ALL ifaces</span>`;
+    return `
+      <tr style="border-top:1px solid var(--border)">
+        <td style="padding:4px 10px 4px 0"><span style="color:${dot};font-weight:600">●</span> ${escapeHtml(g.daemon)}</td>
+        <td>${g.pid || '—'}</td>
+        <td>${escapeHtml(g.address)}</td>
+        <td>${where}</td>
+        <td>UDP ${escapeHtml(portStr)}</td>
+      </tr>`;
+  }).join('');
+  // Conflict hint: 2+ daemons listening on same iface (or both on wildcard).
+  let conflictHint = '';
+  const ifaces = arr.map(g => g.iface || '*');
+  const wildcards = arr.filter(g => g.iface === '').length;
+  const hasConflict = wildcards >= 2 || ifaces.length !== new Set(ifaces).size;
+  if (hasConflict && arr.length >= 2) {
+    conflictHint = `<div style="margin-top:8px;color:var(--yellow);font-family:var(--font-m);font-size:9px">
+      ⚠ Multiple daemons share an iface scope — incoming PTP packets land where the kernel chooses.
+      Bind each daemon to its own iface (macvlan) for deterministic delivery.
+    </div>`;
+  }
+  host.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:10px">
+      <thead><tr style="color:var(--text-dim);text-align:left">
+        <th style="padding:3px 10px 3px 0">Daemon</th><th>PID</th><th>Bind addr</th><th>Iface scope</th><th>Ports</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    ${conflictHint}`;
 }
 
 /* ─── AirPlay 2 PTP (nqptp) panel — ClockWorld section ─── */

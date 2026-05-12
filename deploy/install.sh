@@ -531,6 +531,9 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net status
 # macvlan management — writes systemd-networkd .netdev + .network
 # files under /etc/systemd/network/ outside the netplan-managed tree.
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-macvlans
+# Diagnostic: read-only `ss -tulnp` filtered to PTP ports (319+320).
+# Needs root so the process column is populated (CAP_NET_ADMIN).
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net diag-sockets
 # nqptp — companion PTP daemon for shairport-sync AirPlay 2.
 # Plugin start/stops it alongside shairport-sync depending on
 # airplay_version setting.

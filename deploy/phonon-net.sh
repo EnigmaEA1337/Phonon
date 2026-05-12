@@ -452,6 +452,14 @@ for parent, children in attach_by_parent.items():
     log "apply-macvlans: done"
 }
 
+cmd_diag_sockets() {
+    # Print all UDP listeners on PTP ports (319 + 320). Run as root so
+    # the process column is populated (ss needs CAP_NET_ADMIN to see
+    # other users' procs). Output goes straight to stdout for the
+    # caller (API) to parse.
+    ss -tulnp 2>/dev/null | grep -E ':(319|320)\s' || true
+}
+
 case "${1:-}" in
     apply-iface)    shift; cmd_apply_iface "${1:-}" ;;
     confirm)        cmd_confirm ;;
@@ -459,8 +467,9 @@ case "${1:-}" in
     rollback)       shift; cmd_rollback "${1:-}" ;;
     status)         cmd_status ;;
     apply-macvlans) cmd_apply_macvlans ;;
+    diag-sockets)   cmd_diag_sockets ;;
     *)
-        echo "usage: $0 {apply-iface <timeout-s> | confirm | cancel | rollback <backup-dir> | status | apply-macvlans}" >&2
+        echo "usage: $0 {apply-iface <timeout-s> | confirm | cancel | rollback <backup-dir> | status | apply-macvlans | diag-sockets}" >&2
         exit 1
         ;;
 esac

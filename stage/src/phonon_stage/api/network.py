@@ -1308,6 +1308,91 @@ async def update_macvlan(name: str, cfg: MacvlanConfig) -> ApplyResult:
     return result
 
 
+class PtpSocketBinding(BaseModel):
+    """One UDP socket on port 319 or 320 — what `ss -tulnp` reports."""
+
+    model_config = ConfigDict(extra="forbid")
+    daemon: str       # "ptp4l" | "nqptp" | "unknown"
+    pid: int = 0
+    port: int         # 319 or 320
+    address: str      # "0.0.0.0" | "::" (wildcard) | etc.
+    iface: str        # set iff SO_BINDTODEVICE — e.g. "enp1s0", "mvl-ptp"; "" = listen all
+
+
+def _parse_ss_ptp(output: str) -> list[PtpSocketBinding]:
+    """Parse `ss -tulnp` filtered to ports 319/320.
+
+    Each row looks like:
+      udp UNCONN 0 0 0.0.0.0%enp1s0:319 0.0.0.0:* users:(("ptp4l",pid=1032120,fd=13))
+      udp UNCONN 0 0 [::]:320 [::]:* users:(("nqptp",pid=1028515,fd=7))
+
+    Output fields (whitespace-separated):
+      [0] Netid (udp)
+      [1] State (UNCONN)
+      [2] Recv-Q
+      [3] Send-Q
+      [4] Local Address:Port  ← target
+      [5] Peer Address:Port
+      [6+] users:((...))      ← process info, may be missing
+    """
+    addr_re = re.compile(
+        r"^"
+        r"(?:\[([^\]]+)\]|([^%:\s]+))"   # 1=IPv6, 2=IPv4
+        r"(?:%(\S+?))?"                   # 3=iface from BINDTODEVICE
+        r":(\d+)$"                        # 4=port
+    )
+    user_re = re.compile(r'users:\(\("([^"]+)",pid=(\d+),fd=\d+\)')
+    results: list[PtpSocketBinding] = []
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s or not s.startswith("udp"):
+            continue
+        parts = s.split(None, 6)
+        if len(parts) < 5:
+            continue
+        local = parts[4]
+        m = addr_re.match(local)
+        if not m:
+            continue
+        ipv6, ipv4, iface, port_s = m.groups()
+        try:
+            port = int(port_s)
+        except ValueError:
+            continue
+        if port not in (319, 320):
+            continue
+        addr = ipv6 if ipv6 else (ipv4 or "")
+        daemon = "unknown"
+        pid = 0
+        if len(parts) >= 7:
+            um = user_re.search(parts[6])
+            if um:
+                daemon = um.group(1)
+                pid = int(um.group(2))
+        results.append(PtpSocketBinding(
+            daemon=daemon, pid=pid, port=port,
+            address=addr, iface=iface or "",
+        ))
+    return results
+
+
+@router.get("/ptp-sockets", response_model=list[PtpSocketBinding])
+async def list_ptp_sockets() -> list[PtpSocketBinding]:
+    """Read-only view of who's bound to UDP 319/320 right now.
+
+    Useful for verifying that ptp4l and nqptp don't fight for the
+    same iface + port. Runs `ss -tulnp` filtered to PTP ports via
+    a sudo-granted helper command — sudo is needed so the process
+    column is populated for daemons running as other users.
+    """
+    rc, out, _ = await _run(
+        ["sudo", "-n", _PHONON_NET_BIN, "diag-sockets"], timeout=3.0,
+    )
+    if rc != 0:
+        return []
+    return _parse_ss_ptp(out)
+
+
 @router.delete("/macvlans/{name}", response_model=ApplyResult)
 async def delete_macvlan(name: str) -> ApplyResult:
     if name not in _state.macvlans:

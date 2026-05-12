@@ -15,6 +15,7 @@ from phonon_stage.api.network import (
     MacvlanConfig,
     NetworkState,
     VlanConfig,
+    _parse_ss_ptp,
     _valid_iface_name,
     _valid_ipv4,
     _valid_ipv4_cidr,
@@ -483,3 +484,58 @@ def test_render_macvlan_network_dhcp():
     body = render_macvlan_network("mvl-x", cfg)
     assert "DHCP=ipv4" in body
     assert "Address=" not in body
+
+
+# ─── ss -tulnp parser (PTP socket bindings) ──────────────
+
+# Captured verbatim from stage-x99 during the slice 8 nqptp tests.
+SS_OUTPUT_BOTH_RUNNING = """\
+udp   UNCONN 0      0               0.0.0.0%enp1s0:319        0.0.0.0:*    users:(("ptp4l",pid=1032120,fd=13))
+udp   UNCONN 0      0               0.0.0.0%enp1s0:320        0.0.0.0:*    users:(("ptp4l",pid=1032120,fd=14))
+udp   UNCONN 0      0                         [::]:319           [::]:*    users:(("nqptp",pid=1028515,fd=5))
+udp   UNCONN 0      0                         [::]:320           [::]:*    users:(("nqptp",pid=1028515,fd=7))
+"""
+
+
+def test_parse_ss_extracts_ptp4l_and_nqptp():
+    rows = _parse_ss_ptp(SS_OUTPUT_BOTH_RUNNING)
+    assert len(rows) == 4
+    ptp4l = [r for r in rows if r.daemon == "ptp4l"]
+    nqptp = [r for r in rows if r.daemon == "nqptp"]
+    assert len(ptp4l) == 2 and len(nqptp) == 2
+    # ptp4l is BINDTODEVICE'd to enp1s0
+    assert all(r.iface == "enp1s0" for r in ptp4l)
+    assert all(r.address == "0.0.0.0" for r in ptp4l)
+    # nqptp is IPv6 wildcard, no iface
+    assert all(r.iface == "" for r in nqptp)
+    assert all(r.address == "::" for r in nqptp)
+    # Ports 319 and 320 represented once each per daemon
+    assert sorted(r.port for r in ptp4l) == [319, 320]
+    assert sorted(r.port for r in nqptp) == [319, 320]
+
+
+def test_parse_ss_ignores_non_ptp_ports():
+    # If the helper ever stops grep-filtering, the parser still
+    # ignores anything outside 319/320.
+    extra = SS_OUTPUT_BOTH_RUNNING + (
+        "udp   UNCONN 0 0  0.0.0.0:5353  0.0.0.0:*  users:((\"avahi-daemon\",pid=999,fd=1))\n"
+    )
+    rows = _parse_ss_ptp(extra)
+    assert all(r.port in (319, 320) for r in rows)
+
+
+def test_parse_ss_handles_missing_users_column():
+    # Non-root ss output may omit the process column for foreign-uid
+    # daemons. Parser should still extract addr + port.
+    text = "udp   UNCONN 0      0          0.0.0.0%mvl-ptp:319    0.0.0.0:*\n"
+    rows = _parse_ss_ptp(text)
+    assert len(rows) == 1
+    assert rows[0].daemon == "unknown"
+    assert rows[0].pid == 0
+    assert rows[0].iface == "mvl-ptp"
+    assert rows[0].port == 319
+
+
+def test_parse_ss_empty_input():
+    assert _parse_ss_ptp("") == []
+    assert _parse_ss_ptp("\n\n") == []

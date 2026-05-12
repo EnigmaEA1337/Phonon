@@ -1,9 +1,17 @@
-"""AirPlay v1 plugin — wraps shairport-sync 3.x / 4.x (AirPlay 1 mode).
+"""AirPlay plugin — wraps shairport-sync 3.x / 4.x (AP1 or AP2 mode).
 
-shairport-sync exposes the Stage as an AirPlay 1 receiver (classic
-RAOP protocol). It listens on TCP 5000 + UDP, announces itself via
-mDNS as a `_raop._tcp` service, and pushes received audio into a
-PulseAudio backend.
+shairport-sync exposes the Stage as an AirPlay receiver. The `airplay_version`
+setting picks between:
+
+  * AP1 (RAOP): legacy protocol, works with every Apple device since
+    2007, 16-bit 44.1 kHz lossy ALAC. No external daemon needed.
+  * AP2: lossless ALAC up to 24/48, multi-room sync via PTP. Requires
+    the nqptp companion daemon running on the same host (binds UDP
+    319 + 320 — collides with ptp4l on the same iface).
+
+The legacy module name (`airplay_v1.py`, class `AirplayV1Plugin`, unit
+`shairport-sync.service`) stays for API/state compatibility; the v1
+vs v2 toggle lives inside the settings model.
 
 Routing model
 -------------
@@ -75,6 +83,18 @@ class AirplayV1Settings(PluginSettings):
     diagnostics verbosity)."""
 
     model_config = ConfigDict(extra="forbid")
+
+    # ── Protocol version ────────────────────────────────────────
+    airplay_version: Literal[1, 2] = Field(
+        default=1,
+        description=(
+            "AirPlay protocol version. 1 = classic RAOP (44.1k/16 lossy ALAC, "
+            "every Apple device since 2007). 2 = AirPlay 2 (up to 24/48 "
+            "lossless, multi-room sync via PTP — needs nqptp companion "
+            "daemon, conflicts with ptp4l on UDP 319/320). Switching v1→v2 "
+            "starts nqptp; v2→v1 stops it."
+        ),
+    )
 
     # ── Identity ────────────────────────────────────────────────
     name: str = Field(
@@ -240,6 +260,10 @@ class AirplayV1Plugin:
     settings_model: type[PluginSettings] = AirplayV1Settings
 
     UNIT: str = "shairport-sync.service"
+    # AP2 requires nqptp (Not Quite PTP) running on the host. The
+    # plugin starts/stops it alongside shairport-sync whenever the
+    # current settings have airplay_version=2. AP1 mode tears it down.
+    NQPTP_UNIT: str = "nqptp.service"
 
     def __init__(
         self,
@@ -274,6 +298,7 @@ class AirplayV1Plugin:
         if not self._system.file_exists(self._conf_path):
             await self.put_settings(AirplayV1Settings())
         await self._ensure_null_sink()
+        await self._sync_nqptp_to_settings()
         await self._system.systemctl_enable(self.UNIT)
 
     async def disable(self) -> None:
@@ -282,16 +307,22 @@ class AirplayV1Plugin:
         # keeping it around if no daemon is writing to it).
         await self._system.systemctl_stop(self.UNIT)
         await self._system.systemctl_disable(self.UNIT)
+        # nqptp on the host is shared infrastructure — but our plugin
+        # is the only thing that uses it today, so tearing it down on
+        # disable is correct.
+        await self._stop_nqptp_quiet()
         await self._remove_null_sink()
 
     async def start(self) -> None:
         if not self._system.file_exists(self._conf_path):
             await self.put_settings(AirplayV1Settings())
         await self._ensure_null_sink()
+        await self._sync_nqptp_to_settings()
         await self._system.systemctl_start(self.UNIT)
 
     async def stop(self) -> None:
         await self._system.systemctl_stop(self.UNIT)
+        await self._stop_nqptp_quiet()
 
     async def restart(self) -> None:
         # Don't tear down the null-sink here — the goal of restart is
@@ -299,7 +330,42 @@ class AirplayV1Plugin:
         # the routing target stable so any mappings to airplay_in stay
         # intact.
         await self._ensure_null_sink()
+        await self._sync_nqptp_to_settings()
         await self._system.systemctl_restart(self.UNIT)
+
+    # ── nqptp lifecycle (AP2 companion) ────────────────────────
+
+    async def _sync_nqptp_to_settings(self) -> None:
+        """Bring nqptp's running state into agreement with the current
+        airplay_version setting. Called from every start path.
+
+        v2 → start nqptp (no-op if already running)
+        v1 → stop nqptp  (so its UDP 319/320 bind doesn't squat the
+                          ports when ptp4l later wants them)
+
+        Errors are swallowed-and-logged: a host without nqptp installed
+        is a valid AP1-only deployment, and `systemctl start` returning
+        non-zero shouldn't crash the plugin's start path."""
+        settings = await self.get_settings()
+        if settings.airplay_version == 2:
+            try:
+                await self._system.systemctl_start(self.NQPTP_UNIT)
+            except Exception:
+                import structlog
+                structlog.get_logger().warning(
+                    "plugins.airplay.nqptp_start_failed",
+                    exc_info=True,
+                )
+        else:
+            await self._stop_nqptp_quiet()
+
+    async def _stop_nqptp_quiet(self) -> None:
+        try:
+            await self._system.systemctl_stop(self.NQPTP_UNIT)
+        except Exception:
+            # Already stopped / never installed / not granted via sudoers
+            # — all benign here, the AP1 path doesn't depend on nqptp.
+            pass
 
     # ── Settings ───────────────────────────────────────────────
 
@@ -325,6 +391,20 @@ class AirplayV1Plugin:
             raise TypeError(msg)
         rendered = self._render_conf(settings)
         self._system.write_text_atomic(self._conf_path, rendered, mode=0o644)
+        # v1↔v2 toggle changes nqptp's required state — bring it in
+        # line BEFORE restarting shairport-sync so the daemon comes up
+        # against a healthy companion (or no companion in AP1 mode).
+        if settings.airplay_version == 2:
+            try:
+                await self._system.systemctl_start(self.NQPTP_UNIT)
+            except Exception:
+                import structlog
+                structlog.get_logger().warning(
+                    "plugins.airplay.nqptp_start_failed",
+                    exc_info=True,
+                )
+        else:
+            await self._stop_nqptp_quiet()
         # Restart only if the unit is currently active — otherwise
         # the next start/enable will pick up the new config naturally.
         if await self._system.systemctl_is_active(self.UNIT):
@@ -416,6 +496,15 @@ class AirplayV1Plugin:
           * `playback_mode` and `output_format` are valid in `general`.
         """
         password_line = f'password = "{s.password}";' if s.password else "// password unset"
+        # airplay-version is only honoured by shairport-sync builds
+        # compiled with --with-airplay-2. The apt binary (AP1-only)
+        # silently ignores it, so emitting unconditionally is safe —
+        # but we omit it for v1 to keep the conf tidy and avoid
+        # confusion when an operator reads the file looking for
+        # "what protocol is this stage advertising?".
+        version_line = (
+            f"  airplay-version = {s.airplay_version};\n" if s.airplay_version == 2 else ""
+        )
         # Optional lines — only emit when the value would be accepted /
         # meaningful. shairport-sync 4.x rejects `volume_range_db = 0`
         # despite the doc saying it means "device default".
@@ -432,6 +521,7 @@ class AirplayV1Plugin:
             "{\n"
             f'  name = "{s.name}";\n'
             f"  {password_line}\n"
+            f"{version_line}"
             f'  interpolation = "{s.interpolation}";\n'
             f'  output_format = "{s.output_format}";\n'
             f'  playback_mode = "{s.playback_mode}";\n'
@@ -503,7 +593,13 @@ class AirplayV1Plugin:
                 return fallback
             return v.lower() in {"yes", "true", "1"}
 
+        # airplay-version reads as an integer; default to v1 if the
+        # line is missing (legacy confs predating the toggle).
+        ap_v_raw = _extract_number(text, "airplay-version")
+        airplay_version: Literal[1, 2] = 2 if ap_v_raw == 2 else 1
+
         return AirplayV1Settings(
+            airplay_version=airplay_version,
             name=s_q("name", fallback=defaults.name),
             password=s_q("password", fallback=""),
             interpolation=s_q(

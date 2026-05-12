@@ -1,0 +1,17 @@
+[Unit]
+Description=Not Quite PTP — companion to shairport-sync AirPlay 2
+Documentation=https://github.com/mikebrady/nqptp
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/nqptp
+Restart=on-failure
+RestartSec=2s
+# nqptp binds UDP/319 + UDP/320 — same ports as ptp4l. If you run
+# ptp4l for AES67 on the same iface, this service WILL fail to start.
+# The airplay-v1 plugin's lifecycle hook checks for that and surfaces
+# a clean error rather than letting nqptp crash-loop silently.
+
+[Install]
+WantedBy=multi-user.target

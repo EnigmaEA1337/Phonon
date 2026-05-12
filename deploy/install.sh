@@ -528,6 +528,14 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-iface *
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net confirm
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net cancel
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net status
+# nqptp — companion PTP daemon for shairport-sync AirPlay 2.
+# Plugin start/stops it alongside shairport-sync depending on
+# airplay_version setting.
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl start nqptp.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop nqptp.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart nqptp.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable nqptp.service
+phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable nqptp.service
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 
@@ -840,6 +848,45 @@ if [ "${PLATFORM}" = "x86_64" ]; then
     esac
 else
     echo "  PTP installed but NOT enabled (Pi default — toggle in Stage UI when ready)"
+fi
+
+# -- Step 9b: Build shairport-sync (AirPlay 2) + nqptp ------------------------
+
+echo "[9b/11] Building shairport-sync AirPlay 2 + nqptp..."
+
+# The apt shairport-sync package on Ubuntu / Raspberry Pi OS is built
+# WITHOUT --with-airplay-2, so it can only act as an AirPlay 1
+# receiver. We compile both shairport-sync (with AP2) and its nqptp
+# companion daemon from upstream sources into /usr/local/. The build
+# script is idempotent — re-running on an already-built system is a
+# fast feature-string check and exits OK.
+#
+# Set PHONON_SKIP_AP2_BUILD=1 to skip on hosts where AP1 is enough
+# (e.g. dev machines, CI runners, slow Pi where the ~5 min build
+# isn't justified). The plugin's airplay_version=1 still works
+# against the apt binary even when this build is skipped.
+if [ "${PHONON_SKIP_AP2_BUILD:-0}" = "1" ]; then
+    echo "  skipped (PHONON_SKIP_AP2_BUILD=1) — AirPlay v1 still works against apt shairport-sync"
+elif [ -f "${REPO_ROOT}/deploy/build-shairport-ap2.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/build-shairport-ap2.sh"
+    if "${REPO_ROOT}/deploy/build-shairport-ap2.sh"; then
+        # Drop-in override pointing the apt unit at our AP2 binary
+        # + phonon-managed conf path. Drop-in dirs are picked up
+        # automatically by `daemon-reload` below.
+        mkdir -p /etc/systemd/system/shairport-sync.service.d
+        cp "${REPO_ROOT}/deploy/systemd/shairport-sync.service.d/phonon-ap2.conf" \
+            /etc/systemd/system/shairport-sync.service.d/phonon-ap2.conf
+        # nqptp unit
+        cp "${REPO_ROOT}/deploy/systemd/nqptp.service" /etc/systemd/system/nqptp.service
+        systemctl daemon-reload
+        echo "  shairport-sync AP2 + nqptp installed"
+        echo "  features: $(/usr/local/bin/shairport-sync -V 2>&1 | head -1)"
+    else
+        echo "  WARNING: shairport-sync AP2 build failed — falling back to apt binary (AP1 only)"
+        echo "  See /var/log/phonon/build-shairport-ap2.log for details"
+    fi
+else
+    echo "  build script missing — skipping (AirPlay v2 unavailable until next sync)"
 fi
 
 # -- Step 10/11: Setup user service + linger ----------------------------------

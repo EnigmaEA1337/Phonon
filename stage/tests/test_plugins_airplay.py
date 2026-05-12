@@ -318,3 +318,76 @@ class TestAirplayV1Validation:
     def test_interpolation_constrained(self) -> None:
         with pytest.raises(ValueError):
             AirplayV1Settings(interpolation="lanczos")  # type: ignore[arg-type]
+
+    def test_airplay_version_constrained(self) -> None:
+        # Only 1 or 2 are accepted — Pydantic Literal rejects others.
+        AirplayV1Settings(airplay_version=1)
+        AirplayV1Settings(airplay_version=2)
+        with pytest.raises(ValueError):
+            AirplayV1Settings(airplay_version=3)  # type: ignore[arg-type]
+
+
+class TestAirplayV2Mode:
+    """Behaviour gated on airplay_version=2: nqptp lifecycle + the
+    `airplay-version` conf line."""
+
+    async def test_v1_default_omits_airplay_version_line(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
+    ) -> None:
+        await plugin.put_settings(AirplayV1Settings())  # version=1 default
+        body = fake_sys.read_text(conf_path)
+        # The line is omitted entirely for v1 — tidier conf + matches
+        # the "AP2 binary silently ignores it anyway" comment.
+        assert "airplay-version" not in body
+
+    async def test_v2_emits_airplay_version_line(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
+    ) -> None:
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        body = fake_sys.read_text(conf_path)
+        assert "airplay-version = 2" in body
+
+    async def test_v2_settings_round_trip(self, plugin: AirplayV1Plugin) -> None:
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2, name="Phonon AP2"))
+        back = await plugin.get_settings()
+        assert back.airplay_version == 2
+        assert back.name == "Phonon AP2"
+
+    async def test_v1_then_v2_starts_nqptp(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
+    ) -> None:
+        # Start on v1 — nqptp should be stopped (default state).
+        await plugin.put_settings(AirplayV1Settings(airplay_version=1))
+        assert not await fake_sys.systemctl_is_active("nqptp.service")
+        # Switch to v2 — nqptp should be brought up.
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        assert await fake_sys.systemctl_is_active("nqptp.service")
+
+    async def test_v2_then_v1_stops_nqptp(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
+    ) -> None:
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        assert await fake_sys.systemctl_is_active("nqptp.service")
+        await plugin.put_settings(AirplayV1Settings(airplay_version=1))
+        assert not await fake_sys.systemctl_is_active("nqptp.service")
+
+    async def test_disable_stops_nqptp(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
+    ) -> None:
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        await plugin.enable()
+        assert await fake_sys.systemctl_is_active("nqptp.service")
+        await plugin.disable()
+        assert not await fake_sys.systemctl_is_active("nqptp.service")
+
+    async def test_start_with_v2_brings_up_nqptp(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
+    ) -> None:
+        # Persist v2 in the conf first, then call start() — it should
+        # read the conf and bring nqptp up before shairport-sync.
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        await fake_sys.systemctl_stop("nqptp.service")  # reset to a known state
+        assert not await fake_sys.systemctl_is_active("nqptp.service")
+        await plugin.start()
+        assert await fake_sys.systemctl_is_active("nqptp.service")
+        assert await fake_sys.systemctl_is_active("shairport-sync.service")

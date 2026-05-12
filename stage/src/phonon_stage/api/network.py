@@ -619,6 +619,214 @@ async def _build_iface_info(nd: dict, routes: list[dict], mgmt: str) -> IfaceInf
     return info
 
 
+# ─────────────────────────────────────────────────────────
+# Slice 3b — interface IP/DHCP edit via netplan + auto-revert
+# ─────────────────────────────────────────────────────────
+
+_PHONON_NET_BIN = "/usr/local/sbin/phonon-net"
+_PENDING_STATE_FILE = "/run/phonon-net/pending.json"
+
+
+class IfaceConfig(BaseModel):
+    """One iface's desired netplan state. Single static address per
+    iface in this slice — VLAN tagging and IP aliases ship later as
+    their own sections (different netplan keys + different UI flows
+    so collapsing them here would muddy the model)."""
+
+    model_config = ConfigDict(extra="forbid")
+    dhcp4: bool = True
+    address4: str = ""        # "192.168.1.21/24"  — used iff dhcp4=False
+    gateway4: str = ""        # "192.168.1.254"    — optional even on static
+    dns: list[str] = []       # ["1.1.1.1", "192.168.1.254"]
+    mtu: int = 0              # 0 = leave kernel default
+    timeout_s: int = 120      # rollback window — clamped 30-600 by the helper
+
+
+class ApplyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: bool
+    message: str
+    expires_at: int = 0       # epoch seconds; non-zero iff a rollback is pending
+
+
+class PendingApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pending: bool
+    expires_at: int = 0
+    backup_dir: str = ""
+    seconds_remaining: int = 0
+
+
+_IPV4_CIDR_RE = re.compile(
+    r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$"
+)
+_IPV4_RE = re.compile(
+    r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$"
+)
+
+
+def _valid_ipv4(addr: str) -> bool:
+    m = _IPV4_RE.match(addr)
+    if not m:
+        return False
+    return all(0 <= int(g) <= 255 for g in m.groups())
+
+
+def _valid_ipv4_cidr(addr: str) -> bool:
+    m = _IPV4_CIDR_RE.match(addr)
+    if not m:
+        return False
+    octets = [int(g) for g in m.groups()[:4]]
+    prefix = int(m.group(5))
+    return all(0 <= o <= 255 for o in octets) and 0 <= prefix <= 32
+
+
+def _valid_iface_name(name: str) -> bool:
+    """Linux iface names: 1-15 chars, alnum + dot/dash/underscore.
+    Tighter than the kernel so we can paste it into YAML safely."""
+    return bool(re.match(r"^[A-Za-z0-9._-]{1,15}$", name))
+
+
+def render_netplan_yaml(ifaces: dict[str, IfaceConfig]) -> str:
+    """Produce a minimal netplan YAML for the given ifaces. Caller
+    has already validated the IPv4 / iface name; this just emits
+    canonical YAML the parser is happy with.
+
+    Note: we intentionally don't use PyYAML — the structure is tiny
+    + fully under our control, and pulling in a dep just to dump 12
+    lines of YAML is overkill. The format is hand-stable.
+    """
+    lines = [
+        "# Managed by phonon-stage. Edits here are overwritten.",
+        "network:",
+        "  version: 2",
+        "  renderer: networkd",
+        "  ethernets:",
+    ]
+    for name, cfg in ifaces.items():
+        lines.append(f"    {name}:")
+        if cfg.dhcp4:
+            lines.append("      dhcp4: true")
+        else:
+            lines.append("      dhcp4: false")
+            if cfg.address4:
+                lines.append(f"      addresses: [{cfg.address4}]")
+            if cfg.gateway4:
+                lines.append("      routes:")
+                lines.append("        - to: default")
+                lines.append(f"          via: {cfg.gateway4}")
+        if cfg.dns:
+            lines.append("      nameservers:")
+            lines.append(f"        addresses: [{', '.join(cfg.dns)}]")
+        if cfg.mtu:
+            lines.append(f"      mtu: {cfg.mtu}")
+    return "\n".join(lines) + "\n"
+
+
+def _validate_config(name: str, cfg: IfaceConfig) -> str | None:
+    """Return None if cfg is valid, else an error string."""
+    if not _valid_iface_name(name):
+        return f"invalid iface name: {name!r}"
+    if not cfg.dhcp4:
+        if not cfg.address4:
+            return "static config requires address4 (CIDR form like 192.168.1.21/24)"
+        if not _valid_ipv4_cidr(cfg.address4):
+            return f"invalid IPv4 CIDR: {cfg.address4!r}"
+        if cfg.gateway4 and not _valid_ipv4(cfg.gateway4):
+            return f"invalid IPv4 gateway: {cfg.gateway4!r}"
+    for d in cfg.dns:
+        if not _valid_ipv4(d):
+            return f"invalid DNS address: {d!r} (IPv4 only in this slice)"
+    if cfg.mtu and not (576 <= cfg.mtu <= 9216):
+        return f"MTU out of range (576-9216): {cfg.mtu}"
+    if not (30 <= cfg.timeout_s <= 600):
+        return f"timeout out of range (30-600s): {cfg.timeout_s}"
+    return None
+
+
+@router.get("/interfaces/pending", response_model=PendingApply)
+async def get_pending_apply() -> PendingApply:
+    """Is a netplan apply still inside its auto-revert window?
+
+    Polled by the UI countdown so the operator can see how many
+    seconds are left before rollback. Reads /run/phonon-net/pending.json
+    directly — no sudo needed, the helper writes it world-readable
+    because we want this path to stay cheap."""
+    import time
+    p = Path(_PENDING_STATE_FILE)
+    if not p.exists():
+        return PendingApply(pending=False)
+    try:
+        data = json.loads(p.read_text())
+        expires = int(data.get("expires_at", 0))
+        return PendingApply(
+            pending=True,
+            expires_at=expires,
+            backup_dir=str(data.get("backup_dir", "")),
+            seconds_remaining=max(0, expires - int(time.time())),
+        )
+    except Exception:
+        # Corrupt pending file — report as pending so the UI shows
+        # an indeterminate countdown rather than hiding the timer.
+        return PendingApply(pending=True)
+
+
+@router.put("/interfaces/{name}", response_model=ApplyResult)
+async def apply_iface_config(name: str, cfg: IfaceConfig) -> ApplyResult:
+    """Apply a new netplan config to one iface with an auto-revert
+    window. The change is live immediately; if the operator doesn't
+    POST /interfaces/confirm within `timeout_s` seconds, a systemd-run
+    timer trips `phonon-net rollback` which restores the previous
+    /etc/netplan/*.yaml and reloads networkd.
+
+    Idempotent on a pending apply — if a prior pending apply exists,
+    the helper rolls it back BEFORE applying the new one. Otherwise
+    the new "backup" would capture the about-to-be-undone state.
+    """
+    err = _validate_config(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    body = render_netplan_yaml({name: cfg})
+    rc, out, err_out = await _run(
+        ["sudo", "-n", _PHONON_NET_BIN, "apply-iface", body, str(cfg.timeout_s)],
+        timeout=30.0,
+    )
+    if rc != 0:
+        msg = (err_out or out).strip()[:300] or "helper failed"
+        return ApplyResult(ok=False, message=f"rc={rc}: {msg}")
+    # Re-read the pending state so we can echo back the rollback
+    # deadline (the UI uses this for its countdown).
+    pending = await get_pending_apply()
+    return ApplyResult(
+        ok=True,
+        message=f"Applied. Rollback in {cfg.timeout_s}s if not confirmed.",
+        expires_at=pending.expires_at,
+    )
+
+
+@router.post("/interfaces/confirm", response_model=ApplyResult)
+async def confirm_apply() -> ApplyResult:
+    """Make the pending apply permanent — cancels the rollback timer
+    and drops the backup."""
+    rc, out, err = await _run(
+        ["sudo", "-n", _PHONON_NET_BIN, "confirm"], timeout=10.0
+    )
+    if rc != 0:
+        return ApplyResult(ok=False, message=f"rc={rc}: {(err or out).strip()[:200]}")
+    return ApplyResult(ok=True, message="Config confirmed.")
+
+
+@router.post("/interfaces/cancel", response_model=ApplyResult)
+async def cancel_apply() -> ApplyResult:
+    """Roll back the pending apply right now. Used for "Revert now"."""
+    rc, out, err = await _run(
+        ["sudo", "-n", _PHONON_NET_BIN, "cancel"], timeout=30.0
+    )
+    if rc != 0:
+        return ApplyResult(ok=False, message=f"rc={rc}: {(err or out).strip()[:200]}")
+    return ApplyResult(ok=True, message="Rolled back.")
+
+
 @router.get("/interfaces", response_model=list[IfaceInfo])
 async def list_interfaces_detailed(request: Request) -> list[IfaceInfo]:
     """Per-interface snapshot used by the Network tab's iface table.

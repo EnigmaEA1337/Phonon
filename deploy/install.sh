@@ -521,6 +521,11 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart phonon-phc2sys.service
 # NTP helper — writes chrony source drop-in + chronyc reload/sync.
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp write-sources *
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ntp sync
+# Network helper — netplan apply with auto-revert window.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net apply-iface * *
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net confirm
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net cancel
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-net status
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 
@@ -611,6 +616,12 @@ if [ -f "${REPO_ROOT}/deploy/phonon-ntp.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/phonon-ntp.sh"
     ln -sf "${REPO_ROOT}/deploy/phonon-ntp.sh" /usr/local/sbin/phonon-ntp
     echo "  NTP helper wired (sudo phonon-ntp write-sources|sync available)"
+fi
+
+if [ -f "${REPO_ROOT}/deploy/phonon-net.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/phonon-net.sh"
+    ln -sf "${REPO_ROOT}/deploy/phonon-net.sh" /usr/local/sbin/phonon-net
+    echo "  Network helper wired (sudo phonon-net apply-iface|confirm|cancel|status available)"
 fi
 
 # Disable rival PipeWire stacks for non-phonon users. Two pipewire+

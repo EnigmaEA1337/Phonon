@@ -885,8 +885,65 @@ body.mode-live .edit-only select { opacity: 0.4; }
         <span style="flex:1"></span>
         <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchIfaces()">Refresh</button>
       </div>
+      <!-- Pending rollback banner — shown while a netplan apply is
+           inside its auto-revert window. The countdown polls
+           /network/interfaces/pending every second; Keep Config /
+           Revert Now act on the helper. -->
+      <div id="iface-pending-banner" style="display:none;background:var(--bg-3);
+            border:1px solid var(--red);border-left:4px solid var(--red);
+            padding:10px 14px;margin:0 0 12px 0;border-radius:4px;
+            display:none;align-items:center;gap:12px;font-family:var(--font-m);font-size:11px">
+      </div>
       <div class="section-body" id="ifaces-list">
         <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Iface edit modal (slice 3b) -->
+    <div id="iface-edit-modal" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-head">
+          <span id="iface-edit-title">Edit interface</span>
+          <button class="modal-close" onclick="closeIfaceEditModal()">×</button>
+        </div>
+        <div class="modal-body" id="iface-edit-body">
+          <div id="iface-edit-mgmt-warn" style="display:none;background:rgba(248,113,113,0.1);
+                border:1px solid var(--red);border-radius:4px;padding:8px 10px;margin-bottom:12px;
+                font-family:var(--font-m);font-size:10px;color:var(--red)">
+            ⚠ MGMT interface — a wrong config can lock you out of this UI.
+            We'll apply with a <b>120s auto-revert</b>: if you don't click "Keep config"
+            within 2 minutes, the system reverts to the previous network state automatically.
+          </div>
+          <div style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;align-items:center;font-family:var(--font-m);font-size:11px">
+            <label>Mode</label>
+            <div style="display:flex;gap:10px">
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="iface-mode" value="dhcp" onchange="ifaceModeChanged()"> DHCP</label>
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="iface-mode" value="static" onchange="ifaceModeChanged()"> Static</label>
+            </div>
+            <label>IP/CIDR</label>
+            <input type="text" id="iface-addr" placeholder="192.168.1.21/24" disabled
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Gateway</label>
+            <input type="text" id="iface-gw" placeholder="192.168.1.254" disabled
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>DNS</label>
+            <input type="text" id="iface-dns" placeholder="1.1.1.1, 8.8.8.8"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>MTU</label>
+            <input type="number" id="iface-mtu" placeholder="1500" min="576" max="9216"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;width:90px">
+            <label>Revert window</label>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="iface-timeout" value="120" min="30" max="600" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;width:70px">
+              <span style="color:var(--text-fade);font-size:10px">seconds (auto-rollback if not confirmed)</span>
+            </div>
+          </div>
+          <div id="iface-edit-status" style="margin-top:10px;font-family:var(--font-m);font-size:10px;color:var(--text-dim);min-height:14px"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" onclick="closeIfaceEditModal()">Cancel</button>
+          <button class="btn btn-primary" id="iface-edit-apply" onclick="ifaceApplyEdit()">Apply</button>
+        </div>
       </div>
     </div>
 
@@ -5392,16 +5449,21 @@ async function ntpApplyConfig() {
   }
 }
 
+let _ifaceList = [];        // most-recent snapshot for the edit modal
+let _ifacePendingTimer = null;
+
 async function fetchIfaces() {
   const host = document.getElementById('ifaces-list');
   if (!host) return;
   try {
     const r = await fetch(API + '/network/interfaces');
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    renderIfaces(await r.json());
+    _ifaceList = await r.json();
+    renderIfaces(_ifaceList);
   } catch (e) {
     host.innerHTML = `<div style="color:var(--red);font-size:11px">Ifaces fetch failed: ${escapeHtml(e.message)}</div>`;
   }
+  refreshPendingBanner();
 }
 
 function _ifaceTypeBadge(t) {
@@ -5458,6 +5520,12 @@ function renderIfaces(list) {
       ? `<div style="color:var(--yellow);font-size:9px">VLAN id ${i.vlan_id} on ${escapeHtml(i.vlan_parent)}</div>`
       : '';
     const border = i.is_mgmt ? 'border-left:3px solid var(--red)' : 'border-left:3px solid var(--border)';
+    // Edit button only on ether / vlan ifaces — wifi gets its own
+    // panel in a later slice (different fields).
+    const editable = (i.type === 'ether' || i.type === 'vlan');
+    const editBtn = editable
+      ? `<button class="btn" style="font-size:9px;padding:2px 8px" onclick="openIfaceEditModal('${escapeHtml(i.name)}')">Edit</button>`
+      : '';
     return `
       <div style="background:var(--bg-1);padding:10px 12px;border-radius:4px;${border};margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -5467,6 +5535,7 @@ function renderIfaces(list) {
           ${mgmt}
           <span style="flex:1"></span>
           <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${escapeHtml(i.mac)} · MTU ${i.mtu} · ${speed}${i.duplex ? ' / ' + escapeHtml(i.duplex) : ''}</span>
+          ${editBtn}
         </div>
         ${vlanLine}
         <div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-family:var(--font-m);font-size:10px">
@@ -5479,6 +5548,172 @@ function renderIfaces(list) {
       </div>`;
   }).join('');
   host.innerHTML = cards;
+}
+
+/* ─── Iface edit modal (slice 3b) ─── */
+
+let _ifaceEditing = null;   // iface name being edited
+
+function openIfaceEditModal(name) {
+  const i = (_ifaceList || []).find(x => x.name === name);
+  if (!i) return;
+  _ifaceEditing = name;
+  document.getElementById('iface-edit-title').textContent = `Edit ${name}` + (i.is_mgmt ? ' (MGMT)' : '');
+  document.getElementById('iface-edit-mgmt-warn').style.display = i.is_mgmt ? 'block' : 'none';
+  // Pre-fill from current state — guess DHCP from the "dynamic" flag
+  // on the primary IPv4 address.
+  const v4 = i.addresses.find(a => a.family === 'inet' && a.scope === 'global');
+  const isDhcp = v4 ? v4.dynamic : true;
+  document.querySelector(`input[name="iface-mode"][value="${isDhcp ? 'dhcp' : 'static'}"]`).checked = true;
+  document.getElementById('iface-addr').value = v4 ? `${v4.address}/${v4.prefix}` : '';
+  document.getElementById('iface-gw').value = i.gateway4 || '';
+  document.getElementById('iface-dns').value = (i.dns || []).join(', ');
+  document.getElementById('iface-mtu').value = i.mtu || '';
+  document.getElementById('iface-timeout').value = 120;
+  document.getElementById('iface-edit-status').textContent = '';
+  ifaceModeChanged();
+  document.getElementById('iface-edit-modal').style.display = 'flex';
+}
+
+function closeIfaceEditModal() {
+  document.getElementById('iface-edit-modal').style.display = 'none';
+  _ifaceEditing = null;
+}
+
+function ifaceModeChanged() {
+  const mode = document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp';
+  const dhcp = mode === 'dhcp';
+  // Static-only fields go disabled in DHCP mode (visually clear they're inactive).
+  document.getElementById('iface-addr').disabled = dhcp;
+  document.getElementById('iface-gw').disabled = dhcp;
+}
+
+async function ifaceApplyEdit() {
+  if (!_ifaceEditing) return;
+  const status = document.getElementById('iface-edit-status');
+  const mode = document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp';
+  const dns = document.getElementById('iface-dns').value
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const body = {
+    dhcp4: (mode === 'dhcp'),
+    address4: mode === 'static' ? document.getElementById('iface-addr').value.trim() : '',
+    gateway4: mode === 'static' ? document.getElementById('iface-gw').value.trim() : '',
+    dns,
+    mtu: parseInt(document.getElementById('iface-mtu').value, 10) || 0,
+    timeout_s: parseInt(document.getElementById('iface-timeout').value, 10) || 120,
+  };
+  const btn = document.getElementById('iface-edit-apply');
+  btn.disabled = true;
+  status.textContent = 'applying…';
+  status.style.color = 'var(--text-dim)';
+  try {
+    const r = await fetch(API + '/network/interfaces/' + encodeURIComponent(_ifaceEditing), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      status.textContent = j.message || ('HTTP ' + r.status);
+      status.style.color = 'var(--red)';
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = j.message;
+    status.style.color = 'var(--green)';
+    // Close modal — the pending banner now takes over the
+    // countdown + confirm/revert UX.
+    setTimeout(() => {
+      closeIfaceEditModal();
+      fetchIfaces();
+    }, 800);
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+/* ─── Pending rollback banner ─── */
+
+async function refreshPendingBanner() {
+  const banner = document.getElementById('iface-pending-banner');
+  if (!banner) return;
+  try {
+    const r = await fetch(API + '/network/interfaces/pending');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const p = await r.json();
+    if (!p.pending) {
+      banner.style.display = 'none';
+      if (_ifacePendingTimer) {
+        clearInterval(_ifacePendingTimer);
+        _ifacePendingTimer = null;
+      }
+      return;
+    }
+    _renderPendingBanner(p.seconds_remaining);
+    // Tick down every second so the operator sees the timer move.
+    if (!_ifacePendingTimer) {
+      _ifacePendingTimer = setInterval(() => {
+        const cur = parseInt(banner.dataset.remaining || '0', 10);
+        if (cur <= 1) {
+          // Refresh from server — by now the rollback has either
+          // fired (pending=false) or we're really past the deadline.
+          refreshPendingBanner();
+          fetchIfaces();
+        } else {
+          _renderPendingBanner(cur - 1);
+        }
+      }, 1000);
+    }
+  } catch (e) {
+    console.error('[Phonon] pending banner refresh failed', e);
+  }
+}
+
+function _renderPendingBanner(seconds) {
+  const banner = document.getElementById('iface-pending-banner');
+  if (!banner) return;
+  banner.dataset.remaining = String(seconds);
+  const min = Math.floor(seconds / 60);
+  const sec = seconds % 60;
+  const tStr = `${min}:${String(sec).padStart(2, '0')}`;
+  banner.innerHTML = `
+    <span style="color:var(--red);font-weight:700">⚠ Pending network change</span>
+    <span>Auto-revert in <b style="color:var(--yellow);font-size:13px">${tStr}</b></span>
+    <span style="flex:1"></span>
+    <button class="btn btn-primary" onclick="ifaceConfirmApply()" style="font-size:10px">Keep config</button>
+    <button class="btn" onclick="ifaceCancelApply()" style="font-size:10px;color:var(--red);border-color:var(--red)">Revert now</button>`;
+  banner.style.display = 'flex';
+}
+
+async function ifaceConfirmApply() {
+  try {
+    const r = await fetch(API + '/network/interfaces/confirm', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      alert('Confirm failed: ' + (j.message || r.status));
+      return;
+    }
+  } catch (e) {
+    alert('Confirm error: ' + e.message);
+  }
+  refreshPendingBanner();
+}
+
+async function ifaceCancelApply() {
+  if (!confirm('Revert the pending network change now?')) return;
+  try {
+    const r = await fetch(API + '/network/interfaces/cancel', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      alert('Revert failed: ' + (j.message || r.status));
+      return;
+    }
+  } catch (e) {
+    alert('Revert error: ' + e.message);
+  }
+  setTimeout(() => { refreshPendingBanner(); fetchIfaces(); }, 1000);
 }
 
 async function ntpSync() {

@@ -875,6 +875,21 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- Network interfaces (read-only — slice 3a) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        Network Interfaces
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          systemd-networkd / netplan view — mgmt interface (carrying this session) is marked protected
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchIfaces()">Refresh</button>
+      </div>
+      <div class="section-body" id="ifaces-list">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- AES67 -->
     <div class="section">
       <div class="section-head">AES67 <span style="font-weight:400;color:var(--text-dim);font-size:10px">RTP streams (S16BE 48kHz 2ch)</span></div>
@@ -1023,7 +1038,7 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
-  if (name === 'network') fetchNtp();
+  if (name === 'network') { fetchNtp(); fetchIfaces(); }
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -5375,6 +5390,95 @@ async function ntpApplyConfig() {
     status.textContent = 'error: ' + e.message;
     status.style.color = 'var(--red)';
   }
+}
+
+async function fetchIfaces() {
+  const host = document.getElementById('ifaces-list');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/interfaces');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderIfaces(await r.json());
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">Ifaces fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _ifaceTypeBadge(t) {
+  const map = {
+    ether:    ['var(--cyan)',   'Ethernet'],
+    wifi:     ['var(--magenta)','WiFi'],
+    vlan:     ['var(--yellow)', 'VLAN'],
+    loopback: ['var(--text-fade)','loopback'],
+    other:    ['var(--text-dim)','other'],
+  };
+  const [color, label] = map[t] || map.other;
+  return `<span style="color:${color};font-weight:600">${label}</span>`;
+}
+
+function _operstateBadge(s) {
+  if (s === 'up')   return '<span style="color:var(--green)">●</span> up';
+  if (s === 'down') return '<span style="color:var(--red)">●</span> down';
+  return `<span style="color:var(--yellow)">●</span> ${escapeHtml(s)}`;
+}
+
+function renderIfaces(list) {
+  const host = document.getElementById('ifaces-list');
+  if (!host) return;
+  if (!list || list.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No network interfaces visible (excluding loopback).</div>';
+    return;
+  }
+  // Card-per-iface layout — denser than a table when each row has
+  // multiple addresses + DNS list. mgmt-iface gets a left border
+  // highlight + a "mgmt" badge so the operator knows where to be
+  // careful in slice 3b.
+  const cards = list.map(i => {
+    const v4 = i.addresses.filter(a => a.family === 'inet');
+    const v6 = i.addresses.filter(a => a.family === 'inet6');
+    const mgmt = i.is_mgmt
+      ? '<span style="background:var(--red);color:var(--bg-0);padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:0.5px">MGMT</span>'
+      : '';
+    const v4Lines = v4.length
+      ? v4.map(a => {
+          const dhcp = a.dynamic
+            ? '<span style="color:var(--green);font-size:9px">DHCP</span>'
+            : '<span style="color:var(--yellow);font-size:9px">static</span>';
+          const lbl = a.label && a.label !== i.name ? ` <span style="color:var(--text-fade);font-size:9px">(${escapeHtml(a.label)})</span>` : '';
+          return `<div>${escapeHtml(a.address)}/${a.prefix} ${dhcp}${lbl}</div>`;
+        }).join('')
+      : '<div style="color:var(--text-fade)">—</div>';
+    const v6Lines = v6.length
+      ? v6.map(a => `<div style="color:var(--text-dim);font-size:9px">${escapeHtml(a.address)}/${a.prefix} <span style="color:var(--text-fade)">${escapeHtml(a.scope)}</span></div>`).join('')
+      : '';
+    const speed = i.speed_mbps
+      ? (i.speed_mbps >= 1000 ? `${i.speed_mbps / 1000} Gbps` : `${i.speed_mbps} Mbps`)
+      : '—';
+    const vlanLine = i.type === 'vlan'
+      ? `<div style="color:var(--yellow);font-size:9px">VLAN id ${i.vlan_id} on ${escapeHtml(i.vlan_parent)}</div>`
+      : '';
+    const border = i.is_mgmt ? 'border-left:3px solid var(--red)' : 'border-left:3px solid var(--border)';
+    return `
+      <div style="background:var(--bg-1);padding:10px 12px;border-radius:4px;${border};margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <div style="font-family:var(--font-d);font-size:14px;font-weight:600">${escapeHtml(i.name)}</div>
+          ${_ifaceTypeBadge(i.type)}
+          ${_operstateBadge(i.operstate)}
+          ${mgmt}
+          <span style="flex:1"></span>
+          <span style="font-family:var(--font-m);font-size:9px;color:var(--text-dim)">${escapeHtml(i.mac)} · MTU ${i.mtu} · ${speed}${i.duplex ? ' / ' + escapeHtml(i.duplex) : ''}</span>
+        </div>
+        ${vlanLine}
+        <div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-family:var(--font-m);font-size:10px">
+          <div style="color:var(--text-dim)">IPv4</div><div>${v4Lines}</div>
+          ${v6Lines ? `<div style="color:var(--text-dim)">IPv6</div><div>${v6Lines}</div>` : ''}
+          ${i.gateway4 ? `<div style="color:var(--text-dim)">Gateway</div><div>${escapeHtml(i.gateway4)}</div>` : ''}
+          ${i.dns.length ? `<div style="color:var(--text-dim)">DNS</div><div>${i.dns.map(escapeHtml).join(' · ')}</div>` : ''}
+          ${i.networkd_setup ? `<div style="color:var(--text-dim)">networkd</div><div>${escapeHtml(i.networkd_setup)}${i.online ? ' · online' : ''}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+  host.innerHTML = cards;
 }
 
 async function ntpSync() {

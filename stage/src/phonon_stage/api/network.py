@@ -1,25 +1,31 @@
-"""Network endpoints — NTP/clock status, QoS marking, etc.
+"""Network endpoints — NTP/clock status, interface info, QoS marking.
 
 Phase 1:
   * slice 1: read-only NTP status panel
-  * slice 2: edit NTP server list + manual sync ← this commit
-  * slice 3+: interface IP / VLAN / WiFi (TBD on backend)
-  * slice 6: DSCP marking for AES67/PTP via nftables
+  * slice 2: edit NTP server list + manual sync
+  * slice 3a: read-only interface table ← this commit
+  * slice 3b: edit interface IP / DHCP / static via netplan try
+  * slice 4: VLAN tagged iface + IP aliases via netplan
+  * slice 5: WiFi scan + connect (netplan or wpa_cli)
+  * slice 6: PTP interface binding UI
+  * slice 7: DSCP marking for AES67/PTP via nftables
 
-Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`)
-so we don't run the API server as root. Each script does ONE thing
-+ atomic file replace + daemon restart, so a failure can't half-write
-the chrony config.
+Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`,
+`phonon-net`) so we don't run the API server as root. netplan write
+paths use `netplan try` with a 120-second auto-revert window to
+make the mgmt iface effectively un-brickable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
@@ -414,3 +420,225 @@ async def trigger_sync() -> NtpApplyResult:
     if rc != 0:
         return NtpApplyResult(ok=False, message=f"helper failed rc={rc}: {(err or out)[:200]}")
     return NtpApplyResult(ok=True, message=out.strip()[:200] or "sync requested")
+
+
+# ─────────────────────────────────────────────────────────
+# Slice 3a — read-only interface table
+# ─────────────────────────────────────────────────────────
+
+
+class IfAddress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    family: str       # "inet" | "inet6"
+    address: str
+    prefix: int
+    scope: str        # "global" | "link" | "host"
+    dynamic: bool     # True iff DHCP-leased
+    label: str = ""   # for IP aliases, e.g. "enp1s0:0"
+
+
+class IfaceInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    type: str         # "ether" | "loopback" | "wifi" | "vlan" | "other"
+    operstate: str    # "up" | "down" | "unknown"
+    is_mgmt: bool     # carries the current API request — protected from edit
+    mac: str = ""
+    mtu: int = 0
+    speed_mbps: int = 0          # 0 = unknown (down / loopback / virtual)
+    duplex: str = ""             # "full" | "half" | ""
+    addresses: list[IfAddress] = []
+    gateway4: str = ""           # default route nexthop
+    dns: list[str] = []
+    vlan_parent: str = ""        # set iff this is a VLAN child
+    vlan_id: int = 0
+    # systemd-networkd / netplan-applied state
+    networkd_setup: str = ""     # "configured" | "configuring" | "unmanaged"
+    online: bool = False         # `networkctl` reports it as online
+
+
+async def _ip_addr_json() -> list[dict]:
+    rc, out, _ = await _run(["ip", "-j", "addr"], timeout=3.0)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+async def _ip_route_json() -> list[dict]:
+    rc, out, _ = await _run(["ip", "-j", "route"], timeout=3.0)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+async def _networkctl_status(iface: str) -> dict[str, str]:
+    """Parse the human-readable `networkctl status <iface>` output for
+    the fields `ip` doesn't expose: setup state, online flag, DNS,
+    link speed/duplex. networkctl --json exists but is finicky across
+    distros — text parse is more portable here."""
+    rc, out, _ = await _run(["networkctl", "status", iface], timeout=3.0)
+    if rc != 0:
+        return {}
+    fields: dict[str, str] = {}
+    for raw in out.splitlines():
+        m = re.match(r"^\s*([A-Za-z][A-Za-z0-9 ()/]*?)\s*:\s+(.*)$", raw)
+        if not m:
+            continue
+        key = m.group(1).strip().lower()
+        val = m.group(2).strip()
+        # Preserve only the first occurrence of a key — networkctl
+        # repeats some labels for multiple addresses, we want the line
+        # closest to the field header.
+        fields.setdefault(key, val)
+    return fields
+
+
+def _detect_mgmt_iface(request: Request) -> str:
+    """Return the interface name carrying this API request, so the UI
+    can flag it as protected. Falls back to "" if we can't tell —
+    the UI then treats nothing as mgmt (everything editable). We never
+    auto-block more than necessary; safer to ask the user to confirm
+    when in doubt than to over-restrict editing."""
+    # FastAPI exposes the local socket via request.scope. The local IP
+    # is the one the client connected to — we then find which iface
+    # owns that IP.
+    try:
+        local = request.scope.get("server")  # (host, port)
+        local_ip = local[0] if local else ""
+    except Exception:
+        local_ip = ""
+    if not local_ip or local_ip in ("0.0.0.0", "127.0.0.1", "::"):
+        return ""
+    # Match the IP against the kernel addr list. Synchronous fallback
+    # because we're in a non-async helper called from inside the
+    # endpoint — and `ip -o addr` is cheap.
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ip", "-j", "addr"], capture_output=True, text=True, timeout=2.0
+        )
+        if out.returncode != 0:
+            return ""
+        for nd in json.loads(out.stdout):
+            for a in nd.get("addr_info", []):
+                if a.get("local") == local_ip:
+                    return nd.get("ifname", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _classify_iface(nd: dict) -> str:
+    """Map `ip -j addr`'s loose hints into our own type taxonomy."""
+    link_type = nd.get("link_type", "")
+    linkinfo = nd.get("linkinfo") or {}
+    info_kind = linkinfo.get("info_kind", "")
+    if info_kind == "vlan":
+        return "vlan"
+    if link_type == "loopback":
+        return "loopback"
+    name = nd.get("ifname", "")
+    # iw / wireless heuristic — checked via sysfs in the read path
+    # later if we want to be exact. For now name-prefix detection is
+    # good enough for the table.
+    if name.startswith(("wl", "wlan")) or Path(f"/sys/class/net/{name}/wireless").exists():
+        return "wifi"
+    if link_type == "ether":
+        return "ether"
+    return "other"
+
+
+async def _build_iface_info(nd: dict, routes: list[dict], mgmt: str) -> IfaceInfo:
+    name = nd.get("ifname", "")
+    iface_type = _classify_iface(nd)
+    addresses: list[IfAddress] = []
+    for a in nd.get("addr_info", []):
+        addresses.append(
+            IfAddress(
+                family=a.get("family", ""),
+                address=a.get("local", ""),
+                prefix=int(a.get("prefixlen", 0) or 0),
+                scope=a.get("scope", ""),
+                dynamic=bool(a.get("dynamic", False)),
+                label=a.get("label", "") or "",
+            )
+        )
+    # Default route for this iface (IPv4 only for now — IPv6 is
+    # rarely interesting on a lab LAN and adds clutter).
+    gateway4 = ""
+    for r in routes:
+        if r.get("dst") == "default" and r.get("dev") == name and r.get("gateway"):
+            gateway4 = r["gateway"]
+            break
+    linkinfo = nd.get("linkinfo") or {}
+    info_data = linkinfo.get("info_data") or {}
+    vlan_parent = nd.get("link", "") if iface_type == "vlan" else ""
+    vlan_id = int(info_data.get("id", 0) or 0) if iface_type == "vlan" else 0
+
+    info = IfaceInfo(
+        name=name,
+        type=iface_type,
+        operstate=str(nd.get("operstate", "")).lower(),
+        is_mgmt=(name == mgmt),
+        mac=nd.get("address", ""),
+        mtu=int(nd.get("mtu", 0) or 0),
+        addresses=addresses,
+        gateway4=gateway4,
+        vlan_parent=vlan_parent,
+        vlan_id=vlan_id,
+    )
+
+    # Enrich with networkctl-only fields (speed, duplex, dns, setup state).
+    extra = await _networkctl_status(name)
+    if "speed" in extra:
+        m = re.match(r"(\d+)(?:Gbps|Mbps)", extra["speed"])
+        if m:
+            val = int(m.group(1))
+            info.speed_mbps = val * 1000 if "Gbps" in extra["speed"] else val
+    if "duplex" in extra:
+        info.duplex = extra["duplex"]
+    if "dns" in extra:
+        info.dns = [s.strip() for s in extra["dns"].split() if s.strip()]
+    if "online state" in extra:
+        info.online = extra["online state"].lower() == "online"
+    # networkctl reports SETUP via the list view (col 5); status doesn't
+    # always include it. Best-effort match by parsing the link line.
+    rc, list_out, _ = await _run(["networkctl", "list", "--no-pager", "--no-legend"], timeout=2.0)
+    if rc == 0:
+        for line in list_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[1] == name:
+                info.networkd_setup = parts[4]
+                break
+    return info
+
+
+@router.get("/interfaces", response_model=list[IfaceInfo])
+async def list_interfaces_detailed(request: Request) -> list[IfaceInfo]:
+    """Per-interface snapshot used by the Network tab's iface table.
+
+    Pulls `ip -j addr` + `ip -j route` for the kernel view and
+    `networkctl status <iface>` for the systemd-networkd / netplan
+    view. The current request's local socket is matched to one
+    interface and flagged `is_mgmt=True` so the UI can protect it
+    from edits in later slices.
+    """
+    nds = await _ip_addr_json()
+    routes = await _ip_route_json()
+    mgmt = _detect_mgmt_iface(request)
+    out: list[IfaceInfo] = []
+    # Skip loopback for the UI table — never editable, never useful here.
+    for nd in nds:
+        if nd.get("link_type") == "loopback":
+            continue
+        try:
+            out.append(await _build_iface_info(nd, routes, mgmt))
+        except Exception:
+            logger.warning("network.iface_info_failed", iface=nd.get("ifname"), exc_info=True)
+    return out

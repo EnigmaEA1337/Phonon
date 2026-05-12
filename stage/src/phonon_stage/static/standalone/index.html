@@ -1070,6 +1070,23 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- AirPlay 2 PTP (nqptp) — clock domain dedicated to AirPlay 2.
+         Lives in CLOCKWORLD because it's a PTP daemon, sibling to
+         ptp4l (AES67 PTP) and chrony/NTP. -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        AirPlay 2 PTP (nqptp)
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          companion clock daemon for shairport-sync AP2 mode — binds UDP 319/320, conflicts with ptp4l on the same iface
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchNqptp()" title="Refresh">Refresh</button>
+      </div>
+      <div class="section-body" id="nqptp-panel">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
     <!-- NTP servers (editable list) -->
     <div class="section">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
@@ -1177,7 +1194,7 @@ function switchTab(name) {
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
   if (name === 'network') { fetchIfaces(); fetchVlans(); }
-  if (name === 'ptp') fetchNtp();   // ClockWorld tab — NTP lives here now
+  if (name === 'ptp') { fetchNtp(); fetchNqptp(); }   // ClockWorld tab — NTP + nqptp
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -6069,6 +6086,178 @@ async function ifaceCancelApply() {
     alert('Revert error: ' + e.message);
   }
   setTimeout(() => { refreshPendingBanner(); fetchIfaces(); }, 1000);
+}
+
+/* ─── AirPlay 2 PTP (nqptp) panel — ClockWorld section ─── */
+
+let _nqptpDirty = false;
+
+async function fetchNqptp() {
+  if (_nqptpDirty) return;  // user is editing, don't clobber
+  const host = document.getElementById('nqptp-panel');
+  if (!host) return;
+  try {
+    // Two parallel fetches: plugin settings (carries nqptp_interface
+    // + airplay_version), and the rich iface list for the picker.
+    const [pluginR, ifacesR, svcR] = await Promise.all([
+      fetch(API + '/plugins/airplay-v1/settings'),
+      fetch(API + '/network/interfaces'),
+      fetch(API + '/system/services').catch(() => null),
+    ]);
+    if (!pluginR.ok) throw new Error('plugin HTTP ' + pluginR.status);
+    const settings = await pluginR.json();
+    const ifaces = ifacesR.ok ? await ifacesR.json() : [];
+    // Find nqptp's state in the bulk services list — the list endpoint
+    // is what the Services tab uses, so we get the same source of truth.
+    let active = null;
+    if (svcR && svcR.ok) {
+      try {
+        const svcs = await svcR.json();
+        const found = (svcs || []).find(s => s.name === 'nqptp');
+        if (found) active = (found.active === true);
+      } catch { /* tolerate parse */ }
+    }
+    renderNqptp(settings, ifaces, active);
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">nqptp panel fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderNqptp(s, ifaces, activeFlag) {
+  const host = document.getElementById('nqptp-panel');
+  if (!host) return;
+
+  // Status badges
+  const versionBadge = s.airplay_version === 2
+    ? '<span style="color:var(--green);font-weight:600">AP2 mode</span>'
+    : '<span style="color:var(--text-dim)">AP1 mode (nqptp not used)</span>';
+  let runBadge;
+  if (activeFlag === true) runBadge = '<span style="color:var(--green)">● running</span>';
+  else if (activeFlag === false) runBadge = '<span style="color:var(--text-dim)">● stopped</span>';
+  else runBadge = '<span style="color:var(--text-fade)">● unknown</span>';
+
+  // Iface dropdown — same shape as the PTP picker, including the
+  // HW-PTP capability label. nqptp doesn't actually need a PHC (it
+  // does its own software PTP), but operators tend to want their
+  // AirPlay traffic on the same iface as their AES67 anyway.
+  const ifaceLabel = (i) => {
+    let label = i.name;
+    const v4 = (i.addresses||[]).find(a => a.family === 'inet' && a.scope === 'global');
+    if (v4) label += ` — ${v4.address}`;
+    const e = i.ethtool;
+    if (e && e.hw_ptp_capable) label += ` · HW-PTP`;
+    return label;
+  };
+  const opts = [{name:''}, ...(ifaces||[]).filter(i => i.type === 'ether' || i.type === 'vlan')]
+    .map(i => `<option value="${escapeHtml(i.name)}" ${i.name === (s.nqptp_interface||'') ? 'selected' : ''}>${i.name ? escapeHtml(ifaceLabel(i)) : '(all interfaces — default)'}</option>`)
+    .join('');
+
+  // ptp4l conflict warning — both daemons fight over UDP 319/320 if
+  // bound to the same iface. We don't have a live ptp4l-iface read
+  // here, but we can flag it pre-emptively when AP2 mode is on.
+  const conflictHint = s.airplay_version === 2
+    ? `<div style="margin-top:8px;font-family:var(--font-m);font-size:9px;color:var(--text-fade)">
+         💡 nqptp binds UDP 319 + 320 on the chosen iface. If you also run ptp4l
+         (AES67 PTP) on this same iface, one of the two will fail with "address in use".
+         Use different ifaces or disable one.
+       </div>`
+    : '';
+
+  host.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;font-family:var(--font-m);font-size:11px;margin-bottom:10px">
+      <div><span style="color:var(--text-dim)">AirPlay:</span> ${versionBadge}</div>
+      <div><span style="color:var(--text-dim)">Service:</span> ${runBadge}</div>
+      <span style="flex:1"></span>
+      <button class="btn" style="font-size:9px;padding:2px 8px" onclick="nqptpRestart()" title="systemctl restart nqptp.service">Restart</button>
+    </div>
+    <div style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;align-items:center;font-family:var(--font-m);font-size:11px;max-width:560px">
+      <label style="color:var(--text-dim)">Bind interface</label>
+      <select id="nqptp-iface" onchange="_nqptpDirty=true"
+        style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+        ${opts}
+      </select>
+    </div>
+    ${conflictHint}
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" style="font-size:10px" onclick="nqptpApplyIface()">Apply</button>
+      <button class="btn" style="font-size:10px" onclick="_nqptpDirty=false; fetchNqptp()">Revert</button>
+      <span id="nqptp-status" style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)"></span>
+    </div>`;
+}
+
+async function nqptpApplyIface() {
+  const sel = document.getElementById('nqptp-iface');
+  const status = document.getElementById('nqptp-status');
+  if (!sel) return;
+  const iface = sel.value;
+  // Fetch current settings so we PATCH just the nqptp_interface field
+  // without overwriting the rest of AirplayV1Settings.
+  status.textContent = 'fetching current settings…';
+  status.style.color = 'var(--text-dim)';
+  let cur;
+  try {
+    const r = await fetch(API + '/plugins/airplay-v1/settings');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    cur = await r.json();
+  } catch (e) {
+    status.textContent = 'fetch failed: ' + e.message;
+    status.style.color = 'var(--red)';
+    return;
+  }
+  cur.nqptp_interface = iface;
+  status.textContent = 'applying…';
+  try {
+    const r = await fetch(API + '/plugins/airplay-v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cur),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      status.textContent = 'failed: ' + (e.detail || r.status);
+      status.style.color = 'var(--red)';
+      return;
+    }
+    status.textContent = iface ? `bound to ${iface}` : 'cleared (listening on all ifaces)';
+    status.style.color = 'var(--green)';
+    _nqptpDirty = false;
+    setTimeout(fetchNqptp, 800);
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function nqptpRestart() {
+  const status = document.getElementById('nqptp-status');
+  if (status) {
+    status.textContent = 'restarting…';
+    status.style.color = 'var(--text-dim)';
+  }
+  try {
+    const r = await fetch(API + '/system/services/nqptp/restart', { method: 'POST' });
+    // /system/services/{name}/{action} always returns 200; check the
+    // status field of the JSON to differentiate success from "service
+    // not installed" etc.
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      if (status) {
+        status.textContent = 'restart failed: ' + (e.detail || r.status);
+        status.style.color = 'var(--red)';
+      }
+      return;
+    }
+    if (status) {
+      status.textContent = 'restarted';
+      status.style.color = 'var(--green)';
+    }
+    setTimeout(fetchNqptp, 800);
+  } catch (e) {
+    if (status) {
+      status.textContent = 'error: ' + e.message;
+      status.style.color = 'var(--red)';
+    }
+  }
 }
 
 async function ntpSync() {

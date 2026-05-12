@@ -391,6 +391,11 @@ SERVICES: dict[str, dict[str, str]] = {
     "phonon-bt-unblock": {"kind": "system", "version_cmd": ""},
     "phonon-ptp4l": {"kind": "system", "version_cmd": ""},
     "phonon-phc2sys": {"kind": "system", "version_cmd": ""},
+    # nqptp — companion PTP daemon for shairport-sync AirPlay 2.
+    # Same kind = system as ptp4l; the AirPlay v1 plugin starts/stops
+    # it based on its airplay_version setting, but exposing it here
+    # lets the ClockWorld UI restart it directly + read its status.
+    "nqptp": {"kind": "system", "version_cmd": ""},
 }
 
 # Allowed actions, mapped to systemctl verbs

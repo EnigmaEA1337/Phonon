@@ -536,6 +536,10 @@ phonon ALL=(ALL) NOPASSWD: /bin/systemctl stop nqptp.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl restart nqptp.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl enable nqptp.service
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl disable nqptp.service
+# nqptp iface binding — installs a systemd drop-in pinning nqptp
+# to a specific iface (or clears the drop-in to go back to listen-all).
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-nqptp set-iface *
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-nqptp clear-iface
 SUDOERS
 chmod 440 /etc/sudoers.d/phonon
 
@@ -632,6 +636,12 @@ if [ -f "${REPO_ROOT}/deploy/phonon-net.sh" ]; then
     chmod +x "${REPO_ROOT}/deploy/phonon-net.sh"
     ln -sf "${REPO_ROOT}/deploy/phonon-net.sh" /usr/local/sbin/phonon-net
     echo "  Network helper wired (sudo phonon-net apply-iface|confirm|cancel|status available)"
+fi
+
+if [ -f "${REPO_ROOT}/deploy/phonon-nqptp.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/phonon-nqptp.sh"
+    ln -sf "${REPO_ROOT}/deploy/phonon-nqptp.sh" /usr/local/sbin/phonon-nqptp
+    echo "  nqptp helper wired (sudo phonon-nqptp set-iface|clear-iface available)"
 fi
 
 # Disable rival PipeWire stacks for non-phonon users. Two pipewire+

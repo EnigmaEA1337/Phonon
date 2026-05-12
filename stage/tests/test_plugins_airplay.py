@@ -391,3 +391,26 @@ class TestAirplayV2Mode:
         await plugin.start()
         assert await fake_sys.systemctl_is_active("nqptp.service")
         assert await fake_sys.systemctl_is_active("shairport-sync.service")
+
+    async def test_nqptp_interface_round_trip(self, plugin: AirplayV1Plugin) -> None:
+        # The iface setting lives in a sentinel comment in the conf so
+        # it round-trips through get_settings() like every other field.
+        await plugin.put_settings(AirplayV1Settings(
+            airplay_version=2, nqptp_interface="enp1s0",
+        ))
+        back = await plugin.get_settings()
+        assert back.nqptp_interface == "enp1s0"
+
+    async def test_nqptp_interface_empty_by_default(self, plugin: AirplayV1Plugin) -> None:
+        # The sentinel comment is OMITTED on the default empty value
+        # to keep the conf tidy. Round-trip still returns empty.
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        back = await plugin.get_settings()
+        assert back.nqptp_interface == ""
+
+    async def test_nqptp_interface_validation(self) -> None:
+        # Iface name capped at 15 chars (Linux IFNAMSIZ - 1).
+        AirplayV1Settings(nqptp_interface="enp1s0")
+        AirplayV1Settings(nqptp_interface="eth0.10")
+        with pytest.raises(ValueError, match="at most 15"):
+            AirplayV1Settings(nqptp_interface="x" * 16)

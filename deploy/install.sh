@@ -98,6 +98,20 @@ if ! apt-get install -y -qq \
     exit 1
 fi
 
+# librespot — Spotify Connect daemon. Available in `universe` on
+# Ubuntu Studio 26.04 but not always pre-enabled, so we try and
+# warn (not fail) — the Spotify plugin reports itself as 'last_error'
+# when librespot is missing rather than blocking the whole install.
+if ! command -v librespot >/dev/null 2>&1; then
+    echo "  Installing librespot (Spotify plugin)..."
+    apt-get install -y -qq librespot 2>/dev/null || {
+        echo "  WARN: librespot install failed (probably not in repos). The"
+        echo "        Spotify plugin will be installed but inert until a librespot"
+        echo "        binary is on PATH. Download from"
+        echo "        https://github.com/librespot-org/librespot/releases"
+    }
+fi
+
 # Verify the binaries the rest of install.sh expects to find. Catches
 # the rare case where a package was 'installed' but its binary lives
 # under a different path (e.g. a sysroot mismatch on cross-builds).
@@ -852,6 +866,34 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 APV1SVC
+
+# Spotify Connect — librespot. Same After/Wants pattern as
+# shairport-sync (pipewire-pulse provides the PA socket librespot
+# writes into). The EnvironmentFile is rendered by SpotifyV1Plugin
+# on enable; ExecStart uses \$LIBRESPOT_ARGS without braces so
+# systemd's shell word-splitting expands it into individual args.
+# `ConditionPathExists=` on the binary keeps the unit out of the
+# `failed` state when librespot wasn't installable (apt couldn't
+# find it) — the plugin's runtime check surfaces that as
+# `last_error` to the UI.
+mkdir -p "${DATA_DIR}/plugins/spotify-v1"
+cat > "${DATA_DIR}/.config/systemd/user/librespot.service" <<LRSPSVC
+[Unit]
+Description=Spotify Connect receiver via librespot (Phonon plugin)
+After=pipewire-pulse.service
+Wants=pipewire-pulse.service
+ConditionPathExists=/usr/bin/librespot
+
+[Service]
+Type=simple
+EnvironmentFile=-${DATA_DIR}/plugins/spotify-v1/librespot.env
+ExecStart=/usr/bin/librespot \$LIBRESPOT_ARGS
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+LRSPSVC
 
 # WirePlumber config (disable bluez5, use bluealsa instead)
 mkdir -p "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d"

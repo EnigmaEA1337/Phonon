@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
@@ -342,17 +343,15 @@ async def cleanup_orphan_chain(
             deleted = True
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"unlink failed: {exc}") from exc
-    try:
+    with contextlib.suppress(Exception):
         await backend.reload_filter_chain()
-    except Exception:
-        pass
     # filter-chain.service reload cascades into pipewire-pulse and
     # may nuke our null-sinks. Re-run the mixer's reconcile so
     # phonon_master gets recreated and chains come back.
     svc = _service(request)
     try:
-        await svc._ensure_master_null_sink()  # noqa: SLF001
-        await svc._reconcile()                # noqa: SLF001
+        await svc._ensure_master_null_sink()
+        await svc._reconcile()
     except Exception as exc:
         return {"deleted": deleted, "reconcile_error": str(exc)}
     return {"deleted": deleted, "filename": safe}
@@ -390,7 +389,10 @@ async def get_output_insert_monitoring(
             "last_set_param": last_set,
             "set_mute_log": {str(k): v for k, v in mute_log.items()},
         }
-    return values
+    # Mypy: the debug branch returns a dict[str, object] but the no-debug
+    # branch returns a dict[str, float]; both are valid for the endpoint's
+    # declared response (`dict[str, object]`). Cast keeps both shapes flat.
+    return values  # type: ignore[return-value]
 
 
 @router.patch(

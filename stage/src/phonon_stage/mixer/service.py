@@ -1059,7 +1059,7 @@ class MixerService:
             return
         chain = chain_name_for(output)
         candidates = (chain, f"input.{chain}", f"output.{chain}")
-        for attempt in range(15):
+        for _attempt in range(15):
             await asyncio.sleep(0.2)
             try:
                 nodes = await self._pw.list_nodes()

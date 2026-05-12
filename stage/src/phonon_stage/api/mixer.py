@@ -317,6 +317,47 @@ async def patch_output_insert(request: Request, output_id: str, body: InsertSet)
     return _to_output_resp(out)
 
 
+@router.post("/admin/cleanup-orphan-chain")
+async def cleanup_orphan_chain(
+    request: Request, filename: str
+) -> dict[str, object]:
+    """Operator escape hatch: delete any file in the filter-chain
+    conf drop-in directory (not restricted to `phonon-*.conf`) and
+    reload filter-chain.service. Useful for clearing test confs
+    left over from manual experiments that aren't tracked by the
+    mixer's own state. After the reload we re-ensure phonon_master
+    + reconcile so the legitimate chains come back."""
+    backend = request.app.state.pw_backend
+    fc_dir = getattr(backend, "_fc_dir", None)
+    if fc_dir is None:
+        raise HTTPException(status_code=503, detail="filter-chain dir unknown")
+    safe = "".join(c for c in filename if c.isalnum() or c in ("-", "_", "."))
+    if safe != filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    target = fc_dir / safe
+    deleted = False
+    try:
+        if target.exists():
+            target.unlink()
+            deleted = True
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"unlink failed: {exc}") from exc
+    try:
+        await backend.reload_filter_chain()
+    except Exception:
+        pass
+    # filter-chain.service reload cascades into pipewire-pulse and
+    # may nuke our null-sinks. Re-run the mixer's reconcile so
+    # phonon_master gets recreated and chains come back.
+    svc = _service(request)
+    try:
+        await svc._ensure_master_null_sink()  # noqa: SLF001
+        await svc._reconcile()                # noqa: SLF001
+    except Exception as exc:
+        return {"deleted": deleted, "reconcile_error": str(exc)}
+    return {"deleted": deleted, "filename": safe}
+
+
 @router.get(
     "/outputs/{output_id}/insert/monitoring",
 )

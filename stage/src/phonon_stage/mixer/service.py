@@ -924,28 +924,32 @@ class MixerService:
                     sink_node_name=o.sink_node_name,
                 )
                 continue
+            # Combined silence state for this output — global mute /
+            # output mute / solo'd-out. Used to pick the path AND to
+            # drive the silencing strategy (channel volume = 0).
+            output_silenced = out_solo_active and not o.solo
+            silenced = o.mute or self.master.mute or output_silenced
             o_lin = self._db_to_linear(o.gain_db)
+            # Channel volume = 0 is the definitive mute on this Stage:
+            # `wpctl set-mute` on hardware ALSA sinks returns rc=0 but
+            # doesn't actually silence audio reaching the speaker.
+            # pactl set-sink-volume <name> 0% 0% always works because
+            # it hits the post-mix gain stage — same path mute_left /
+            # mute_right already use, just extended to the full mute.
             try:
                 await self._pw.set_node_channel_volumes(
                     sink_node.name,
                     [
-                        0.0 if o.mute_left else o_lin,
-                        0.0 if o.mute_right else o_lin,
+                        0.0 if (o.mute_left or silenced) else o_lin,
+                        0.0 if (o.mute_right or silenced) else o_lin,
                     ],
                 )
             except Exception:
                 logger.warning("mixer.output_volume_failed", output_id=o.id, exc_info=True)
-            # Drive PW-level sink mute uniformly for both chain'd and
-            # loopback outputs. `silenced` is the combined logical
-            # state — global mute, output mute, or solo'd-out. The
-            # chain path keeps the chain loaded (reload is expensive,
-            # would glitch every running chain on the host); mute
-            # manifests through the sink. The loopback path doesn't
-            # strictly need the sink mute (no loopback = no audio)
-            # but applying it symmetrically prevents audio leaks if
-            # we ever swap the path under the user's feet.
-            output_silenced = out_solo_active and not o.solo
-            silenced = o.mute or self.master.mute or output_silenced
+            # Belt-and-braces: also flag the sink as PW-muted (cheap,
+            # silently ignored when wpctl can't enforce it on this
+            # hardware — the channel-volume trick above already did
+            # the actual silencing).
             try:
                 await self._pw.set_node_mute(sink_node.id, silenced)
             except Exception:

@@ -205,6 +205,9 @@ class MixerService:
             logger.info("mixer.orphan_chains_cleared", count=len(stale))
         except Exception:
             logger.warning("mixer.orphan_chain_reload_failed", exc_info=True)
+        # Same as _apply_filter_chain_diff: re-push persisted control
+        # values so the engine state matches what the UI shows.
+        await self._resync_all_chain_controls()
         self._owned_chains = dict(wanted_bodies)
 
     async def _ensure_master_null_sink(self) -> None:
@@ -1040,6 +1043,34 @@ class MixerService:
             loopbacks=len(self._owned_loopbacks),
         )
 
+    async def _resync_chain_controls_for_output(self, output: Output) -> None:
+        """Push every persisted control on an output's plugin insert
+        back into the running chain. Necessary after any reload of
+        filter-chain.service — the chain comes back with the plugin's
+        LADSPA defaults, losing whatever the user had set. Without
+        this, persisted state ("Mode=2", "Wet=0.5"...) and the live
+        engine drift apart after every reload."""
+        if output.insert is None or not output.insert.enabled:
+            return
+        chain = chain_name_for(output)
+        # Tiny breath so the chain's input.<name> node is settled in
+        # pw-dump's view before set-param tries to resolve it.
+        await asyncio.sleep(0.15)
+        for ctl_name, value in output.insert.controls.items():
+            try:
+                await self._pw.set_filter_node_control(chain, ctl_name, value)
+            except Exception:
+                logger.warning(
+                    "mixer.chain_resync_control_failed",
+                    output_id=output.id,
+                    control=ctl_name,
+                    exc_info=True,
+                )
+
+    async def _resync_all_chain_controls(self) -> None:
+        for o in self._store.state.outputs:
+            await self._resync_chain_controls_for_output(o)
+
     async def _apply_filter_chain_diff(self, wanted: dict[str, str]) -> None:
         """Reconcile the on-disk filter-chain confs against `wanted`.
         Writes new/changed confs, deletes stale ones, then reloads
@@ -1071,6 +1102,9 @@ class MixerService:
             )
         except Exception:
             logger.warning("mixer.filter_chain_reload_failed", exc_info=True)
+        # Reload reset every chain to LADSPA defaults; push our
+        # persisted control values back so engine ↔ state agree.
+        await self._resync_all_chain_controls()
 
     async def _link_pairs(self, src_ports: list[int], dst_ports: list[int]) -> None:
         """Zip-pair two pre-ordered port lists and create the links.

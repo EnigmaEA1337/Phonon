@@ -714,7 +714,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <div class="tab" data-tab="devices" onclick="switchTab('devices')">DEVICES</div>
     <div class="tab" data-tab="aes67" onclick="switchTab('aes67')">AES67</div>
     <div class="tab" data-tab="network" onclick="switchTab('network')">NETWORK</div>
-    <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">PTP</div>
+    <div class="tab" data-tab="ptp" onclick="switchTab('ptp')">CLOCKWORLD</div>
     <div class="tab" data-tab="plugins" onclick="switchTab('plugins')">PLUGINS</div>
     <div class="tab" data-tab="graph" onclick="switchTab('graph')">GRAPH</div>
   </div>
@@ -900,35 +900,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
 
   <!-- ─── Tab: Network ─── -->
   <div class="tab-pane edit-only" data-tab-pane="network">
-    <!-- NTP / Clock -->
-    <div class="section">
-      <div class="section-head" style="display:flex;align-items:center;gap:8px">
-        NTP / System Clock
-        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
-          shairport-sync + AirPlay sync rely on the system clock — a drift here = audio drift
-        </span>
-        <span style="flex:1"></span>
-        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchNtp()" title="Refresh">Refresh</button>
-      </div>
-      <div class="section-body" id="ntp-panel">
-        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
-      </div>
-    </div>
-
-    <!-- NTP servers (editable list) -->
-    <div class="section">
-      <div class="section-head" style="display:flex;align-items:center;gap:8px">
-        NTP Servers
-        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
-          /etc/chrony/sources.d/phonon-servers.conf — one line per entry, format: <code>server &lt;addr&gt; iburst</code> or <code>pool &lt;addr&gt; iburst</code>
-        </span>
-        <span style="flex:1"></span>
-        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="ntpSync()" title="chronyc burst + makestep — force fast resync">Sync now</button>
-      </div>
-      <div class="section-body" id="ntp-config-form">
-        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
-      </div>
-    </div>
+    <!-- NTP sections moved to the ClockWorld tab (was: PTP tab). -->
 
     <!-- Network interfaces (read-only — slice 3a) -->
     <div class="section">
@@ -1062,20 +1034,57 @@ body.mode-live .edit-only select { opacity: 0.4; }
     <!-- AES67 + Network Stages moved to the dedicated AES67 tab (slice: UI reorg). -->
   </div>
 
-  <!-- ─── Tab: PTP ─── -->
+  <!-- ─── Tab: ClockWorld (PTP + NTP — every clock-domain control in one place) ─── -->
   <div class="tab-pane edit-only" data-tab-pane="ptp">
+
+    <!-- PTP live status -->
     <div class="section">
       <div class="section-head">PTP Live Status <span style="font-weight:400;color:var(--text-dim);font-size:10px">grandmaster election + sync state</span></div>
       <div class="section-body" id="ptp-tab-status">
         <div style="color:var(--text-fade);font-size:11px">Loading...</div>
       </div>
     </div>
+
+    <!-- PTP configuration -->
     <div class="section">
       <div class="section-head">PTP Configuration <span style="font-weight:400;color:var(--text-dim);font-size:10px">/etc/linuxptp/phonon-aes67.conf — rewritten on Apply</span></div>
       <div class="section-body" id="ptp-config-form">
         <div style="color:var(--text-fade);font-size:11px">Loading...</div>
       </div>
     </div>
+
+    <!-- NTP / system clock — feeds the OS clock that PTP slaves to
+         when no PHC is available, and that shairport-sync etc. read.
+         Moved here so every clock-domain control lives under one tab. -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        NTP / System Clock
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          shairport-sync + AirPlay sync rely on the system clock — a drift here = audio drift
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="fetchNtp()" title="Refresh">Refresh</button>
+      </div>
+      <div class="section-body" id="ntp-panel">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
+    <!-- NTP servers (editable list) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        NTP Servers
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          /etc/chrony/sources.d/phonon-servers.conf — one line per entry, format: <code>server &lt;addr&gt; iburst</code> or <code>pool &lt;addr&gt; iburst</code>
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn" style="font-size:9px;padding:2px 8px" onclick="ntpSync()" title="chronyc burst + makestep — force fast resync">Sync now</button>
+      </div>
+      <div class="section-body" id="ntp-config-form">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ─── Tab: Plugins ─── -->
@@ -1167,7 +1176,8 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
-  if (name === 'network') { fetchNtp(); fetchIfaces(); fetchVlans(); }
+  if (name === 'network') { fetchIfaces(); fetchVlans(); }
+  if (name === 'ptp') fetchNtp();   // ClockWorld tab — NTP lives here now
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──

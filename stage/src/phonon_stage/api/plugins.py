@@ -226,6 +226,30 @@ async def get_clock_diag() -> dict[str, str]:
     return out
 
 
+@router.get("/diag/pactl-inputs")
+async def get_pactl_inputs() -> dict[str, str]:
+    """Diagnostic: `pactl list sink-inputs` — shows every PA client
+    that's actively writing audio + which sink they're targeting.
+    Used to verify shairport-sync / spotifyd land on our null-sinks
+    rather than the default."""
+    import asyncio
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pactl", "list", "sink-inputs",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        sb, eb = await asyncio.wait_for(proc.communicate(), timeout=4)
+        return {
+            "rc": str(proc.returncode),
+            "sink_inputs": sb.decode("utf-8", errors="replace"),
+            "stderr": eb.decode("utf-8", errors="replace"),
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @router.get("/diag/pactl")
 async def get_pactl_diag() -> dict[str, str]:
     """Diagnostic: dump `pactl list short sinks` + `pactl list short modules`

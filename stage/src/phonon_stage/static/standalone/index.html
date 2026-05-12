@@ -1255,6 +1255,57 @@ body.mode-live .edit-only select { opacity: 0.4; }
 <script>
 const API = window.location.origin;
 console.log('[Phonon] Script starting...');
+/* ─── Scroll-wheel fine adjust on number inputs ─────────────
+   Default behaviour (browser): scroll wheel on a focused <input
+   type="number"> increments by `step`. That's coarse — for ms /
+   gain / delay fields where the operator wants ±1 unit or ±0.1
+   unit, the default jumps in too-large bumps.
+
+   New behaviour:
+     scroll          → coarse  = `step` (browser default behavior)
+     Shift + scroll  → fine    = step / 10   (10× finer)
+     Ctrl  + scroll  → ultra-fine = step / 100  (100× finer)
+
+   The input doesn't need to be focused — wheel events on the input
+   itself work. We also preventDefault() so the page doesn't scroll
+   while the operator is fiddling with a value.
+
+   Range inputs (type=range) get the same treatment, but range's
+   `step` is enforced — we can only go AS FINE AS the input's step.
+*/
+function _attachFineScroll() {
+  document.addEventListener('wheel', (e) => {
+    const el = e.target;
+    if (!el || (el.type !== 'number' && el.type !== 'range')) return;
+    if (el.disabled || el.readOnly) return;
+    e.preventDefault();
+    const step = parseFloat(el.step) || 1;
+    const min = el.min === '' ? -Infinity : parseFloat(el.min);
+    const max = el.max === '' ? Infinity : parseFloat(el.max);
+    // Granularity divisor: 10 with Shift, 100 with Ctrl, 1 otherwise.
+    // For range inputs we keep the divisor at 1 because the slider
+    // can't represent values finer than its declared step.
+    let divisor = 1;
+    if (el.type === 'number') {
+      if (e.ctrlKey || e.metaKey) divisor = 100;
+      else if (e.shiftKey)        divisor = 10;
+    }
+    const delta = (step / divisor) * (e.deltaY < 0 ? 1 : -1);
+    let v = parseFloat(el.value);
+    if (Number.isNaN(v)) v = min === -Infinity ? 0 : min;
+    v += delta;
+    // Round to the divisor's decimals to avoid 0.1+0.2 = 0.30000004 drift.
+    const decimals = Math.max(0, -Math.floor(Math.log10(step / divisor)));
+    v = Math.min(max, Math.max(min, parseFloat(v.toFixed(decimals))));
+    el.value = v;
+    // Fire input + change so existing onchange handlers (mark-dirty,
+    // settings save, mixer apply) run as if the user typed it.
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { passive: false });
+}
+_attachFineScroll();
+
 window.onerror = function(msg, url, line, col, err) {
   document.getElementById('bt-status').textContent = 'JS ERROR: ' + msg + ' L' + line;
   console.error('[Phonon] Error:', msg, 'at line', line);
@@ -1297,6 +1348,12 @@ function renderPlugins(list) {
     host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No plugins available</div>';
     return;
   }
+  // Schedule the AP version probe right after the synchronous render
+  // returns. The endpoint may take ~50-200ms (it execs the binaries
+  // for -V), so deferring keeps the card draw fast.
+  if (list.some(p => p.name === 'airplay-v1')) {
+    setTimeout(_decorateAirPlayVersion, 0);
+  }
   host.innerHTML = list.map(p => {
     const enabledBadge = p.enabled
       ? '<span style="background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600">ENABLED</span>'
@@ -1310,6 +1367,12 @@ function renderPlugins(list) {
     const errLine = p.last_error
       ? '<div style="font-size:10px;color:var(--yellow);margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:auto;background:var(--bg-0);padding:4px;border-radius:3px">' + escapeHtml(p.last_error.slice(0, 600)) + '</div>'
       : '';
+    // AirPlay version slot — filled async by _decorateAirPlayVersion()
+    // after the cards render, so the synchronous render isn't blocked
+    // by /plugins/airplay-v1/version (which probes binaries on disk).
+    const versionSlot = (p.name === 'airplay-v1')
+      ? '<div id="airplay-version-slot" style="font-size:10px;color:var(--text-dim);margin-top:4px;font-family:var(--font-m)">checking shairport-sync binary…</div>'
+      : '';
     return `
       <div style="background:var(--bg-1);border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
@@ -1320,6 +1383,7 @@ function renderPlugins(list) {
           ${runningBadge}
         </div>
         <div style="font-size:11px;color:var(--text-mid);margin-bottom:6px">${escapeHtml(p.description)}</div>
+        ${versionSlot}
         ${pwNodes}
         ${errLine}
         <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
@@ -1334,6 +1398,50 @@ function renderPlugins(list) {
         </div>
       </div>`;
   }).join('');
+}
+
+async function _decorateAirPlayVersion() {
+  const slot = document.getElementById('airplay-version-slot');
+  if (!slot) return;
+  try {
+    const r = await fetch(API + '/plugins/airplay-v1/version');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const v = await r.json();
+    const runExe = v.running?.exe || '';
+    const runFeat = v.running?.features || '';
+    const runAp2 = v.running?.ap2_active === true;
+    if (!runExe) {
+      slot.innerHTML = '<span style="color:var(--text-fade)">shairport-sync not currently running</span>';
+      return;
+    }
+    // Show: AP2-active badge / running exe / installed binaries with
+    // a tick on the AP2-capable one so the operator can spot at a
+    // glance which build the daemon picked up.
+    const modeBadge = runAp2
+      ? '<span style="color:var(--green);font-weight:700">AP2 active</span>'
+      : '<span style="color:var(--yellow);font-weight:700">AP1 only</span>';
+    const installedLines = (v.installed || []).map(inst => {
+      const isRun = inst.path === runExe;
+      const mark = isRun ? '▶' : ' ';
+      const ap2 = inst.ap2_capable
+        ? '<span style="color:var(--green)">AP2 ✓</span>'
+        : '<span style="color:var(--text-fade)">no AP2</span>';
+      return `<div>${mark} <code>${escapeHtml(inst.path)}</code> · ${ap2}</div>`;
+    }).join('');
+    slot.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+        <span>${modeBadge}</span>
+        <span style="color:var(--text-dim)">PID ${v.running.pid}</span>
+        <span style="color:var(--text-dim)">→ <code>${escapeHtml(runExe)}</code></span>
+      </div>
+      <div style="color:var(--text-fade);font-size:9px">${escapeHtml(runFeat)}</div>
+      <div style="margin-top:4px;color:var(--text-dim);font-size:9px">
+        <div style="margin-bottom:1px">Installed binaries (▶ = currently running):</div>
+        ${installedLines}
+      </div>`;
+  } catch (e) {
+    slot.innerHTML = `<span style="color:var(--red)">version probe failed: ${escapeHtml(e.message)}</span>`;
+  }
 }
 
 async function pluginAction(name, action) {

@@ -313,3 +313,81 @@ async def put_settings(request: Request, name: str, body: dict[str, Any]) -> dic
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return validated.model_dump()
+
+
+@router.get("/airplay-v1/version")
+async def get_airplay_version() -> dict[str, Any]:
+    """Inspect the shairport-sync binaries available on this host
+    and the one currently running. Surfaces the AP2 feature flag so
+    the UI can show "you're really running AP2" vs "still on AP1".
+
+    On Ubuntu/Debian there are typically TWO binaries:
+      * /usr/bin/shairport-sync          (apt, AP1-only)
+      * /usr/local/bin/shairport-sync    (our --with-airplay-2 build)
+    The systemd drop-in points ExecStart at /usr/local/bin/, but if
+    the daemon was started before the drop-in landed it may still be
+    running the apt one. This endpoint shows both so the operator
+    can tell at a glance which one is live.
+    """
+    import asyncio
+    import os
+    import re
+
+    AP2_RE = re.compile(r"airplay[-]?2", re.IGNORECASE)
+
+    async def probe(path: str) -> dict[str, Any] | None:
+        if not os.path.isfile(path):
+            return None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                path, "-V",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            features = out_b.decode("utf-8", errors="replace").strip().splitlines()[0]
+        except Exception:
+            return {"path": path, "features": "", "ap2_capable": False, "error": "probe failed"}
+        return {
+            "path": path,
+            "features": features,
+            "ap2_capable": bool(AP2_RE.search(features)),
+        }
+
+    installed: list[dict[str, Any]] = []
+    for p in ("/usr/local/bin/shairport-sync", "/usr/bin/shairport-sync"):
+        info = await probe(p)
+        if info:
+            installed.append(info)
+
+    # Running binary: find the pid, dereference /proc/<pid>/exe.
+    running: dict[str, Any] = {"pid": 0, "exe": "", "ap2_active": False}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pidof", "shairport-sync",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        pids = out_b.decode().strip().split()
+        if pids:
+            running["pid"] = int(pids[0])
+            try:
+                running["exe"] = os.readlink(f"/proc/{pids[0]}/exe")
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    # ap2_active = the binary CURRENTLY running has AP2 in its features
+    if running["exe"]:
+        for inst in installed:
+            if inst["path"] == running["exe"]:
+                running["ap2_active"] = inst["ap2_capable"]
+                running["features"] = inst["features"]
+                break
+
+    return {
+        "installed": installed,
+        "running": running,
+    }

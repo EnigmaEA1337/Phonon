@@ -938,22 +938,35 @@ class MixerService:
             # Decide on the master→output bridge. Filter-chains stay
             # loaded across mute/solo gates — they're heavy to reload
             # (restarts filter-chain.service, glitches every chain on
-            # the host) so we don't drop them just because the output
-            # is temporarily silenced; the audio is silenced by the
-            # sink's own mute. Loopbacks, by contrast, are cheap to
-            # tear down so we still skip them under those gates to
-            # save the user a mute → audio path.
+            # the host) so we don't drop them on a temporary mute.
+            # Instead, we hard-mute the destination sink via PW's
+            # `set_node_mute` so the chain keeps running but no audio
+            # reaches the speaker. Loopbacks are cheap so we still
+            # skip them entirely under mute/solo gates.
+            output_silenced = out_solo_active and not o.solo
+            silenced = o.mute or self.master.mute or output_silenced
             if o.receives_master and o.insert is not None and o.insert.enabled:
                 wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
                     o, o.insert, MASTER_SINK_NAME
                 )
-                continue  # chain replaces the loopback; nothing else to do
-            # Solo gating on the output side: when any output is
-            # solo'd (and not muted), only the solo group keeps its
-            # master loopback and its receive of direct sends. The
-            # rest are silenced structurally (no link).
-            output_silenced = out_solo_active and not o.solo
-            if o.mute or self.master.mute or output_silenced:
+                # When the chain path is in use, mute manifests
+                # through PW set_node_mute on the sink — the chain
+                # itself isn't gated.
+                try:
+                    await self._pw.set_node_mute(sink_node.id, silenced)
+                except Exception:
+                    logger.warning(
+                        "mixer.output_mute_failed", output_id=o.id, exc_info=True
+                    )
+                continue
+            # Loopback path: clear any leftover PW-level mute from
+            # a previous chain era on this output, then gate by mute
+            # structurally (no loopback = no audio).
+            try:
+                await self._pw.set_node_mute(sink_node.id, False)
+            except Exception:
+                pass
+            if silenced:
                 continue
             if o.receives_master:
                 mid = await self._pw.load_loopback(

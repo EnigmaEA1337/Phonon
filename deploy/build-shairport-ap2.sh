@@ -35,10 +35,14 @@ log() {
 }
 
 short_circuit_ok() {
-    # Already built + AP2 in the feature string + nqptp present
+    # Already built + AP2 in the feature string + nqptp present.
+    # nqptp's Makefile installs to /usr/local/bin/ (not sbin); accept
+    # either location for forward-compat. Feature string can read
+    # `AirPlay2` (capital) on shairport >= 4.3 or `airplay-2`
+    # (dashed lowercase) on older builds — accept either.
     [ -x /usr/local/bin/shairport-sync ] || return 1
-    [ -x /usr/local/sbin/nqptp ] || return 1
-    /usr/local/bin/shairport-sync -V 2>&1 | grep -q "airplay-2" || return 1
+    [ -x /usr/local/bin/nqptp ] || [ -x /usr/local/sbin/nqptp ] || return 1
+    /usr/local/bin/shairport-sync -V 2>&1 | grep -qiE "airplay[-]?2" || return 1
     return 0
 }
 
@@ -80,7 +84,16 @@ autoreconf -fi >>"$LOG" 2>&1
 ./configure --with-systemd-startup >>"$LOG" 2>&1
 make -j"$(nproc)" >>"$LOG" 2>&1
 make install >>"$LOG" 2>&1
-log "nqptp installed → /usr/local/sbin/nqptp"
+# nqptp's Makefile installs to /usr/local/bin (not sbin). Log
+# whichever path actually has the binary so the message is honest.
+if [ -x /usr/local/bin/nqptp ]; then
+    log "nqptp installed → /usr/local/bin/nqptp"
+elif [ -x /usr/local/sbin/nqptp ]; then
+    log "nqptp installed → /usr/local/sbin/nqptp"
+else
+    log "ERROR: nqptp build claimed success but binary not found"
+    exit 4
+fi
 
 # ─── shairport-sync ─────────────────────────────────────────────
 cd "$WORK"
@@ -128,7 +141,7 @@ log "shairport-sync AP2 installed → /usr/local/bin/shairport-sync"
 # its `-V` feature string. If it doesn't, the build silently
 # fell back to AP1-only (missing libplist / libsodium / etc.) and
 # we want install.sh to fail loudly here.
-if ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "airplay-2"; then
+if ! /usr/local/bin/shairport-sync -V 2>&1 | grep -qiE "airplay[-]?2"; then
     log "ERROR: build completed but binary doesn't report airplay-2 — see log above"
     exit 3
 fi

@@ -12,12 +12,20 @@ import pytest
 
 from phonon_stage.api.network import (
     IfaceConfig,
+    NetworkState,
+    VlanConfig,
     _valid_iface_name,
     _valid_ipv4,
     _valid_ipv4_cidr,
-    _validate_config,
+    _validate_iface_cfg,
+    _validate_vlan_cfg,
     render_netplan_yaml,
 )
+
+
+def _single(name: str, cfg: IfaceConfig) -> NetworkState:
+    """Helper — wrap one iface into a NetworkState for the renderer."""
+    return NetworkState(ethernets={name: cfg})
 
 
 # ─── validators ──────────────────────────────────────────
@@ -67,78 +75,126 @@ def test_valid_iface_name_rejects_garbage():
     assert not _valid_iface_name("eth0`whoami`")
 
 
-# ─── full config validation ──────────────────────────────
+# ─── iface config validation ─────────────────────────────
 
 
 def test_validate_dhcp_config_passes():
-    assert _validate_config("enp1s0", IfaceConfig(dhcp4=True)) is None
+    assert _validate_iface_cfg("enp1s0", IfaceConfig(dhcp4=True)) is None
 
 
-def test_validate_static_requires_address4():
-    err = _validate_config("enp1s0", IfaceConfig(dhcp4=False))
+def test_validate_static_requires_address():
+    err = _validate_iface_cfg("enp1s0", IfaceConfig(dhcp4=False))
     assert err is not None
-    assert "address4" in err
+    assert "address" in err
 
 
 def test_validate_static_accepts_cidr_only():
-    cfg = IfaceConfig(dhcp4=False, address4="192.168.1.21/24")
-    assert _validate_config("enp1s0", cfg) is None
+    cfg = IfaceConfig(dhcp4=False, addresses4=["192.168.1.21/24"])
+    assert _validate_iface_cfg("enp1s0", cfg) is None
 
 
-def test_validate_static_rejects_bare_ip():
-    cfg = IfaceConfig(dhcp4=False, address4="192.168.1.21")  # missing prefix
-    err = _validate_config("enp1s0", cfg)
+def test_validate_accepts_multiple_addresses():
+    cfg = IfaceConfig(
+        dhcp4=False, addresses4=["192.168.1.21/24", "192.168.1.50/24"]
+    )
+    assert _validate_iface_cfg("enp1s0", cfg) is None
+
+
+def test_validate_rejects_too_many_addresses():
+    cfg = IfaceConfig(addresses4=[f"10.0.0.{i}/24" for i in range(1, 10)])
+    err = _validate_iface_cfg("enp1s0", cfg)
+    assert err and "too many" in err
+
+
+def test_validate_rejects_bare_ip_in_addresses():
+    cfg = IfaceConfig(dhcp4=False, addresses4=["192.168.1.21"])  # missing prefix
+    err = _validate_iface_cfg("enp1s0", cfg)
     assert err is not None
     assert "CIDR" in err
 
 
 def test_validate_rejects_bad_gateway():
-    cfg = IfaceConfig(dhcp4=False, address4="192.168.1.21/24", gateway4="not-an-ip")
-    err = _validate_config("enp1s0", cfg)
+    cfg = IfaceConfig(dhcp4=False, addresses4=["192.168.1.21/24"], gateway4="not-an-ip")
+    err = _validate_iface_cfg("enp1s0", cfg)
     assert err is not None
     assert "gateway" in err
 
 
 def test_validate_rejects_bad_dns():
     cfg = IfaceConfig(dns=["1.1.1.1", "not-an-ip"])
-    err = _validate_config("enp1s0", cfg)
+    err = _validate_iface_cfg("enp1s0", cfg)
     assert err is not None
     assert "DNS" in err
 
 
 def test_validate_rejects_bad_iface_name():
-    err = _validate_config("eth0;rm", IfaceConfig())
+    err = _validate_iface_cfg("eth0;rm", IfaceConfig())
     assert err is not None
     assert "iface name" in err
 
 
 def test_validate_mtu_range():
-    assert _validate_config("eth0", IfaceConfig(mtu=1500)) is None
-    assert _validate_config("eth0", IfaceConfig(mtu=9216)) is None
-    err = _validate_config("eth0", IfaceConfig(mtu=500))
+    assert _validate_iface_cfg("eth0", IfaceConfig(mtu=1500)) is None
+    assert _validate_iface_cfg("eth0", IfaceConfig(mtu=9216)) is None
+    err = _validate_iface_cfg("eth0", IfaceConfig(mtu=500))
     assert err and "MTU" in err
-    err = _validate_config("eth0", IfaceConfig(mtu=10000))
+    err = _validate_iface_cfg("eth0", IfaceConfig(mtu=10000))
     assert err and "MTU" in err
 
 
 def test_validate_timeout_range():
-    assert _validate_config("eth0", IfaceConfig(timeout_s=120)) is None
-    err = _validate_config("eth0", IfaceConfig(timeout_s=10))
+    assert _validate_iface_cfg("eth0", IfaceConfig(timeout_s=120)) is None
+    err = _validate_iface_cfg("eth0", IfaceConfig(timeout_s=10))
     assert err and "timeout" in err
-    err = _validate_config("eth0", IfaceConfig(timeout_s=900))
+    err = _validate_iface_cfg("eth0", IfaceConfig(timeout_s=900))
     assert err and "timeout" in err
+
+
+# ─── VLAN config validation ──────────────────────────────
+
+
+def test_validate_vlan_dhcp_passes():
+    cfg = VlanConfig(parent="enp1s0", vlan_id=10, dhcp4=True)
+    assert _validate_vlan_cfg("enp1s0.10", cfg) is None
+
+
+def test_validate_vlan_static_full():
+    cfg = VlanConfig(
+        parent="enp1s0", vlan_id=42,
+        dhcp4=False, addresses4=["10.42.0.21/24"], gateway4="10.42.0.1",
+    )
+    assert _validate_vlan_cfg("enp1s0.42", cfg) is None
+
+
+def test_validate_vlan_id_out_of_range():
+    for bad in (0, 4095, 5000, -1):
+        cfg = VlanConfig(parent="enp1s0", vlan_id=bad)
+        err = _validate_vlan_cfg(f"enp1s0.{bad}", cfg)
+        assert err and "VLAN id" in err
+
+
+def test_validate_vlan_rejects_bad_parent():
+    cfg = VlanConfig(parent="eth0;rm", vlan_id=10)
+    err = _validate_vlan_cfg("enp1s0.10", cfg)
+    assert err and "parent" in err
+
+
+def test_validate_vlan_static_requires_address():
+    cfg = VlanConfig(parent="enp1s0", vlan_id=10, dhcp4=False)
+    err = _validate_vlan_cfg("enp1s0.10", cfg)
+    assert err and "address" in err
 
 
 # ─── YAML renderer ───────────────────────────────────────
 
 
 def test_render_dhcp_minimal():
-    yaml = render_netplan_yaml({"enp1s0": IfaceConfig(dhcp4=True)})
+    yaml = render_netplan_yaml(_single("enp1s0", IfaceConfig(dhcp4=True)))
     assert "version: 2" in yaml
     assert "renderer: networkd" in yaml
     assert "enp1s0:" in yaml
     assert "dhcp4: true" in yaml
-    # Static-only fields must be absent on a pure DHCP config.
+    # No addresses / routes blocks on a pure DHCP config without aliases.
     assert "addresses:" not in yaml
     assert "routes:" not in yaml
 
@@ -146,46 +202,98 @@ def test_render_dhcp_minimal():
 def test_render_static_full():
     cfg = IfaceConfig(
         dhcp4=False,
-        address4="10.0.0.21/24",
+        addresses4=["10.0.0.21/24"],
         gateway4="10.0.0.1",
         dns=["1.1.1.1", "8.8.8.8"],
         mtu=1500,
     )
-    yaml = render_netplan_yaml({"enp1s0": cfg})
+    yaml = render_netplan_yaml(_single("enp1s0", cfg))
     assert "dhcp4: false" in yaml
     assert "addresses: [10.0.0.21/24]" in yaml
     assert "to: default" in yaml
     assert "via: 10.0.0.1" in yaml
+    # DNS uses a separate addresses key under nameservers — distinct
+    # from the iface-level addresses; check both surfaces are present.
+    assert "nameservers:" in yaml
     assert "addresses: [1.1.1.1, 8.8.8.8]" in yaml
     assert "mtu: 1500" in yaml
 
 
-def test_render_dns_on_dhcp():
-    # DHCP-leased iface that overrides DNS — netplan accepts this and
-    # treats the manual DNS as additional/overriding.
-    cfg = IfaceConfig(dhcp4=True, dns=["1.1.1.1"])
-    yaml = render_netplan_yaml({"enp1s0": cfg})
+def test_render_aliases_as_address_list():
+    # The point of slice 5 — multiple IPv4 addresses on one iface
+    # become one comma-joined `addresses:` line in YAML.
+    cfg = IfaceConfig(
+        dhcp4=False,
+        addresses4=["10.0.0.21/24", "10.0.0.50/24", "10.0.0.51/24"],
+    )
+    yaml = render_netplan_yaml(_single("enp1s0", cfg))
+    assert "addresses: [10.0.0.21/24, 10.0.0.50/24, 10.0.0.51/24]" in yaml
+
+
+def test_render_aliases_alongside_dhcp():
+    # netplan accepts manual addresses on top of a DHCP-leased iface —
+    # the manuals act as aliases additive to the DHCP lease.
+    cfg = IfaceConfig(dhcp4=True, addresses4=["10.0.0.50/24"])
+    yaml = render_netplan_yaml(_single("enp1s0", cfg))
     assert "dhcp4: true" in yaml
+    assert "addresses: [10.0.0.50/24]" in yaml
+
+
+def test_render_dns_on_dhcp():
+    cfg = IfaceConfig(dhcp4=True, dns=["1.1.1.1"])
+    yaml = render_netplan_yaml(_single("enp1s0", cfg))
+    assert "dhcp4: true" in yaml
+    assert "nameservers:" in yaml
     assert "addresses: [1.1.1.1]" in yaml
 
 
 def test_render_no_gateway_when_omitted():
-    cfg = IfaceConfig(dhcp4=False, address4="10.0.0.21/24")
-    yaml = render_netplan_yaml({"enp1s0": cfg})
+    cfg = IfaceConfig(dhcp4=False, addresses4=["10.0.0.21/24"])
+    yaml = render_netplan_yaml(_single("enp1s0", cfg))
     assert "routes:" not in yaml
     assert "to: default" not in yaml
 
 
 def test_render_managed_header():
-    yaml = render_netplan_yaml({"eth0": IfaceConfig()})
+    yaml = render_netplan_yaml(_single("eth0", IfaceConfig()))
     assert yaml.startswith("# Managed by phonon-stage")
 
 
 def test_render_multiple_ifaces():
-    yaml = render_netplan_yaml({
+    state = NetworkState(ethernets={
         "enp1s0": IfaceConfig(dhcp4=True),
-        "enp2s0": IfaceConfig(dhcp4=False, address4="10.0.0.10/24"),
+        "enp2s0": IfaceConfig(dhcp4=False, addresses4=["10.0.0.10/24"]),
     })
+    yaml = render_netplan_yaml(state)
     assert "enp1s0:" in yaml
     assert "enp2s0:" in yaml
     assert "10.0.0.10/24" in yaml
+
+
+def test_render_vlan_block():
+    state = NetworkState(
+        ethernets={"enp1s0": IfaceConfig(dhcp4=True)},
+        vlans={
+            "enp1s0.10": VlanConfig(
+                parent="enp1s0", vlan_id=10,
+                dhcp4=False, addresses4=["10.10.0.21/24"], gateway4="10.10.0.1",
+            ),
+        },
+    )
+    yaml = render_netplan_yaml(state)
+    assert "vlans:" in yaml
+    assert "enp1s0.10:" in yaml
+    assert "id: 10" in yaml
+    assert "link: enp1s0" in yaml
+    assert "addresses: [10.10.0.21/24]" in yaml
+
+
+def test_render_empty_state():
+    # Empty state still yields a parseable netplan body (header only)
+    # so the applier never feeds netplan an invalid file.
+    yaml = render_netplan_yaml(NetworkState())
+    assert "network:" in yaml
+    assert "version: 2" in yaml
+    # No section headers without content
+    assert "ethernets:" not in yaml
+    assert "vlans:" not in yaml

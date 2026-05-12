@@ -3,17 +3,23 @@
 Phase 1:
   * slice 1: read-only NTP status panel
   * slice 2: edit NTP server list + manual sync
-  * slice 3a: read-only interface table ← this commit
-  * slice 3b: edit interface IP / DHCP / static via netplan try
-  * slice 4: VLAN tagged iface + IP aliases via netplan
-  * slice 5: WiFi scan + connect (netplan or wpa_cli)
+  * slice 3a: read-only interface table
+  * slice 3b: edit interface IP / DHCP / static
+  * slice 5: VLAN tagged iface + IP aliases ← this commit
+  * slice 4: WiFi scan + connect
   * slice 6: PTP interface binding UI
   * slice 7: DSCP marking for AES67/PTP via nftables
 
 Write paths use sudoers-granted scripts (`/usr/local/sbin/phonon-ntp`,
-`phonon-net`) so we don't run the API server as root. netplan write
-paths use `netplan try` with a 120-second auto-revert window to
-make the mgmt iface effectively un-brickable.
+`phonon-net`) so we don't run the API server as root. The netplan
+write path uses a systemd-run rollback timer for an auto-revert
+window that makes the mgmt iface effectively un-brickable.
+
+State management: every phonon-managed iface override + every VLAN
+lives in /var/lib/phonon/network-state.json. Every apply rewrites
+/etc/netplan/99-phonon-managed.yaml from this state in full — that
+way adding a VLAN doesn't clobber a sibling iface override, and
+the state file is the single source of truth for the UI.
 """
 
 from __future__ import annotations
@@ -628,18 +634,81 @@ _PENDING_STATE_FILE = "/run/phonon-net/pending.json"
 
 
 class IfaceConfig(BaseModel):
-    """One iface's desired netplan state. Single static address per
-    iface in this slice — VLAN tagging and IP aliases ship later as
-    their own sections (different netplan keys + different UI flows
-    so collapsing them here would muddy the model)."""
+    """One iface's desired netplan state.
+
+    `addresses4` is a list of CIDR strings — the FIRST element is the
+    primary, the rest are IP aliases (which networkd just renders as
+    additional addresses on the same interface). DHCP and static
+    aren't mutually exclusive in netplan: you can keep dhcp4=true
+    AND add manual addresses as aliases.
+    """
 
     model_config = ConfigDict(extra="forbid")
     dhcp4: bool = True
-    address4: str = ""        # "192.168.1.21/24"  — used iff dhcp4=False
-    gateway4: str = ""        # "192.168.1.254"    — optional even on static
-    dns: list[str] = []       # ["1.1.1.1", "192.168.1.254"]
-    mtu: int = 0              # 0 = leave kernel default
-    timeout_s: int = 120      # rollback window — clamped 30-600 by the helper
+    addresses4: list[str] = []   # CIDR list — [0] = primary, [1:] = aliases
+    gateway4: str = ""           # IPv4 default gateway
+    dns: list[str] = []          # ["1.1.1.1", "192.168.1.254"]
+    mtu: int = 0                 # 0 = leave kernel default
+    timeout_s: int = 120         # rollback window — clamped 30-600 by the helper
+
+
+class VlanConfig(BaseModel):
+    """A VLAN-tagged child interface. Lives in netplan's `vlans:`
+    section alongside its IPv4 config — the child can be DHCP or
+    static, just like a regular ethernet."""
+
+    model_config = ConfigDict(extra="forbid")
+    parent: str                  # parent iface (must exist as ether)
+    vlan_id: int                 # 1-4094
+    dhcp4: bool = True
+    addresses4: list[str] = []
+    gateway4: str = ""
+    dns: list[str] = []
+    mtu: int = 0
+    timeout_s: int = 120
+
+
+class NetworkState(BaseModel):
+    """Phonon-managed network overrides. Whatever is here gets
+    rewritten verbatim into /etc/netplan/99-phonon-managed.yaml on
+    every apply."""
+
+    model_config = ConfigDict(extra="forbid")
+    ethernets: dict[str, IfaceConfig] = {}   # iface name → cfg
+    vlans: dict[str, VlanConfig] = {}        # vlan child name → cfg
+
+
+# Module-level singleton. Loaded by init() at app startup so the
+# JSON file's owner stays phonon — main.py wires this from the
+# lifespan handler so we don't conditionally import config at module
+# scope.
+_state: NetworkState = NetworkState()
+_state_path: Path | None = None
+
+
+def init(data_dir: Path) -> None:
+    """Load persisted network state. Called once from main.py's
+    lifespan startup so the path resolves to the same data root as
+    plugins/mixer/settings."""
+    global _state, _state_path
+    _state_path = data_dir / "network-state.json"
+    if _state_path.exists():
+        try:
+            _state = NetworkState.model_validate_json(_state_path.read_text())
+            logger.info("network.state_loaded", path=str(_state_path))
+        except Exception:
+            logger.warning("network.state_load_failed", path=str(_state_path), exc_info=True)
+
+
+def _save_state() -> None:
+    if _state_path is None:
+        return
+    import contextlib
+    _state_path.parent.mkdir(parents=True, exist_ok=True)
+    _state_path.write_text(_state.model_dump_json(indent=2))
+    with contextlib.suppress(OSError):
+        _state_path.chmod(0o600)
+    logger.info("network.state_saved", path=str(_state_path))
 
 
 class ApplyResult(BaseModel):
@@ -687,53 +756,73 @@ def _valid_iface_name(name: str) -> bool:
     return bool(re.match(r"^[A-Za-z0-9._-]{1,15}$", name))
 
 
-def render_netplan_yaml(ifaces: dict[str, IfaceConfig]) -> str:
-    """Produce a minimal netplan YAML for the given ifaces. Caller
-    has already validated the IPv4 / iface name; this just emits
-    canonical YAML the parser is happy with.
+def _render_iface_body(lines: list[str], cfg: IfaceConfig | VlanConfig, indent: str) -> None:
+    """Emit dhcp4 / addresses / routes / nameservers / mtu lines into
+    `lines`. Shared between ethernet and VLAN renderers — VLANs have
+    extra `id:` / `link:` lines on top of an otherwise identical
+    body, so factoring the body keeps both render paths in sync."""
+    lines.append(f"{indent}dhcp4: {'true' if cfg.dhcp4 else 'false'}")
+    # `addresses` covers BOTH the primary static IP and any aliases.
+    # When dhcp4 is on the addresses are additive (manual aliases on
+    # top of the DHCP lease) — netplan handles that natively.
+    if cfg.addresses4:
+        lines.append(f"{indent}addresses: [{', '.join(cfg.addresses4)}]")
+    if cfg.gateway4:
+        lines.append(f"{indent}routes:")
+        lines.append(f"{indent}  - to: default")
+        lines.append(f"{indent}    via: {cfg.gateway4}")
+    if cfg.dns:
+        lines.append(f"{indent}nameservers:")
+        lines.append(f"{indent}  addresses: [{', '.join(cfg.dns)}]")
+    if cfg.mtu:
+        lines.append(f"{indent}mtu: {cfg.mtu}")
 
-    Note: we intentionally don't use PyYAML — the structure is tiny
-    + fully under our control, and pulling in a dep just to dump 12
-    lines of YAML is overkill. The format is hand-stable.
-    """
+
+def render_netplan_yaml(state: NetworkState) -> str:
+    """Produce the full netplan YAML body from the in-memory state.
+    Hand-rendered (no PyYAML dep) — the format is tiny and fully
+    under our control."""
     lines = [
         "# Managed by phonon-stage. Edits here are overwritten.",
         "network:",
         "  version: 2",
         "  renderer: networkd",
-        "  ethernets:",
     ]
-    for name, cfg in ifaces.items():
-        lines.append(f"    {name}:")
-        if cfg.dhcp4:
-            lines.append("      dhcp4: true")
-        else:
-            lines.append("      dhcp4: false")
-            if cfg.address4:
-                lines.append(f"      addresses: [{cfg.address4}]")
-            if cfg.gateway4:
-                lines.append("      routes:")
-                lines.append("        - to: default")
-                lines.append(f"          via: {cfg.gateway4}")
-        if cfg.dns:
-            lines.append("      nameservers:")
-            lines.append(f"        addresses: [{', '.join(cfg.dns)}]")
-        if cfg.mtu:
-            lines.append(f"      mtu: {cfg.mtu}")
+    if state.ethernets:
+        lines.append("  ethernets:")
+        for name, cfg in state.ethernets.items():
+            lines.append(f"    {name}:")
+            _render_iface_body(lines, cfg, indent="      ")
+    if state.vlans:
+        lines.append("  vlans:")
+        for name, cfg in state.vlans.items():
+            lines.append(f"    {name}:")
+            lines.append(f"      id: {cfg.vlan_id}")
+            lines.append(f"      link: {cfg.parent}")
+            _render_iface_body(lines, cfg, indent="      ")
     return "\n".join(lines) + "\n"
 
 
-def _validate_config(name: str, cfg: IfaceConfig) -> str | None:
+def _validate_addresses(addresses4: list[str]) -> str | None:
+    if len(addresses4) > 8:
+        return "too many addresses (max 8 per interface)"
+    for a in addresses4:
+        if not _valid_ipv4_cidr(a):
+            return f"invalid IPv4 CIDR: {a!r}"
+    return None
+
+
+def _validate_iface_cfg(name: str, cfg: IfaceConfig) -> str | None:
     """Return None if cfg is valid, else an error string."""
     if not _valid_iface_name(name):
         return f"invalid iface name: {name!r}"
-    if not cfg.dhcp4:
-        if not cfg.address4:
-            return "static config requires address4 (CIDR form like 192.168.1.21/24)"
-        if not _valid_ipv4_cidr(cfg.address4):
-            return f"invalid IPv4 CIDR: {cfg.address4!r}"
-        if cfg.gateway4 and not _valid_ipv4(cfg.gateway4):
-            return f"invalid IPv4 gateway: {cfg.gateway4!r}"
+    if not cfg.dhcp4 and not cfg.addresses4:
+        return "static config requires at least one address (CIDR form)"
+    err = _validate_addresses(cfg.addresses4)
+    if err:
+        return err
+    if cfg.gateway4 and not _valid_ipv4(cfg.gateway4):
+        return f"invalid IPv4 gateway: {cfg.gateway4!r}"
     for d in cfg.dns:
         if not _valid_ipv4(d):
             return f"invalid DNS address: {d!r} (IPv4 only in this slice)"
@@ -742,6 +831,38 @@ def _validate_config(name: str, cfg: IfaceConfig) -> str | None:
     if not (30 <= cfg.timeout_s <= 600):
         return f"timeout out of range (30-600s): {cfg.timeout_s}"
     return None
+
+
+def _validate_vlan_cfg(name: str, cfg: VlanConfig) -> str | None:
+    if not _valid_iface_name(name):
+        return f"invalid VLAN name: {name!r}"
+    if not _valid_iface_name(cfg.parent):
+        return f"invalid parent iface name: {cfg.parent!r}"
+    if not (1 <= cfg.vlan_id <= 4094):
+        return f"VLAN id out of range (1-4094): {cfg.vlan_id}"
+    # Reuse the iface-cfg validator for the IP/DNS/MTU bits — minus
+    # the iface-name check we just did, since the VLAN name has
+    # different rules (dot allowed) which _valid_iface_name accepts.
+    if not cfg.dhcp4 and not cfg.addresses4:
+        return "static VLAN requires at least one address (CIDR form)"
+    err = _validate_addresses(cfg.addresses4)
+    if err:
+        return err
+    if cfg.gateway4 and not _valid_ipv4(cfg.gateway4):
+        return f"invalid IPv4 gateway: {cfg.gateway4!r}"
+    for d in cfg.dns:
+        if not _valid_ipv4(d):
+            return f"invalid DNS address: {d!r}"
+    if cfg.mtu and not (576 <= cfg.mtu <= 9216):
+        return f"MTU out of range (576-9216): {cfg.mtu}"
+    if not (30 <= cfg.timeout_s <= 600):
+        return f"timeout out of range (30-600s): {cfg.timeout_s}"
+    return None
+
+
+# Back-compat shim — older tests still reference _validate_config
+# under the slice-3b name. Routes to the iface validator.
+_validate_config = _validate_iface_cfg
 
 
 @router.get("/interfaces/pending", response_model=PendingApply)
@@ -771,27 +892,14 @@ async def get_pending_apply() -> PendingApply:
         return PendingApply(pending=True)
 
 
-@router.put("/interfaces/{name}", response_model=ApplyResult)
-async def apply_iface_config(name: str, cfg: IfaceConfig) -> ApplyResult:
-    """Apply a new netplan config to one iface with an auto-revert
-    window. The change is live immediately; if the operator doesn't
-    POST /interfaces/confirm within `timeout_s` seconds, a systemd-run
-    timer trips `phonon-net rollback` which restores the previous
-    /etc/netplan/*.yaml and reloads networkd.
-
-    Idempotent on a pending apply — if a prior pending apply exists,
-    the helper rolls it back BEFORE applying the new one. Otherwise
-    the new "backup" would capture the about-to-be-undone state.
-    """
-    err = _validate_config(name, cfg)
-    if err:
-        return ApplyResult(ok=False, message=err)
-    body = render_netplan_yaml({name: cfg})
-    # YAML body via stdin — sudoers rejects multi-line wildcards
-    # when the body would otherwise live on the command line.
+async def _apply_state(timeout_s: int) -> ApplyResult:
+    """Render the current state to YAML, invoke the helper with the
+    given rollback window, and return the result. Single place that
+    does helper invocation so PUT/POST/DELETE all behave the same."""
+    body = render_netplan_yaml(_state)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "sudo", "-n", _PHONON_NET_BIN, "apply-iface", str(cfg.timeout_s),
+            "sudo", "-n", _PHONON_NET_BIN, "apply-iface", str(timeout_s),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -807,14 +915,129 @@ async def apply_iface_config(name: str, cfg: IfaceConfig) -> ApplyResult:
     if rc != 0:
         msg = (err_out or out).strip()[:300] or "helper failed"
         return ApplyResult(ok=False, message=f"rc={rc}: {msg}")
-    # Re-read the pending state so we can echo back the rollback
-    # deadline (the UI uses this for its countdown).
     pending = await get_pending_apply()
     return ApplyResult(
         ok=True,
-        message=f"Applied. Rollback in {cfg.timeout_s}s if not confirmed.",
+        message=f"Applied. Rollback in {timeout_s}s if not confirmed.",
         expires_at=pending.expires_at,
     )
+
+
+@router.get("/managed", response_model=NetworkState)
+async def get_managed_state() -> NetworkState:
+    """Return the phonon-managed iface + VLAN overrides. Anything
+    not in here falls back to the distro / installer-supplied
+    netplan defaults."""
+    return _state
+
+
+@router.put("/interfaces/{name}", response_model=ApplyResult)
+async def apply_iface_config(name: str, cfg: IfaceConfig) -> ApplyResult:
+    """Apply a new netplan config to one iface (DHCP/static, primary
+    + aliases, gateway, DNS, MTU) with an auto-revert window.
+
+    Idempotent on a pending apply — if a prior pending apply exists,
+    the helper rolls it back BEFORE applying the new one. Otherwise
+    the new "backup" would capture the about-to-be-undone state.
+    """
+    err = _validate_iface_cfg(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    # Stage the change in memory first, then render+apply.
+    prev = _state.ethernets.get(name)
+    _state.ethernets[name] = cfg
+    _save_state()
+    result = await _apply_state(cfg.timeout_s)
+    if not result.ok:
+        # Roll the in-memory state back so a failed apply doesn't
+        # leave us with state.json out of sync with what's on disk.
+        if prev is None:
+            _state.ethernets.pop(name, None)
+        else:
+            _state.ethernets[name] = prev
+        _save_state()
+    return result
+
+
+@router.delete("/interfaces/{name}", response_model=ApplyResult)
+async def delete_iface_override(name: str, timeout_s: int = 120) -> ApplyResult:
+    """Drop the phonon-managed override for this iface so it falls
+    back to the distro defaults (typically DHCP from the installer
+    config). Same auto-revert window as PUT."""
+    if name not in _state.ethernets:
+        return ApplyResult(ok=False, message=f"no managed override for {name!r}")
+    if not (30 <= timeout_s <= 600):
+        return ApplyResult(ok=False, message="timeout out of range (30-600s)")
+    prev = _state.ethernets.pop(name)
+    _save_state()
+    result = await _apply_state(timeout_s)
+    if not result.ok:
+        _state.ethernets[name] = prev
+        _save_state()
+    return result
+
+
+@router.post("/vlans", response_model=ApplyResult)
+async def create_vlan(cfg: VlanConfig) -> ApplyResult:
+    """Create a VLAN-tagged child interface. The child name is
+    derived as `<parent>.<vlan_id>` — netplan's canonical form, also
+    matches what `ip link add` produces by default."""
+    name = f"{cfg.parent}.{cfg.vlan_id}"
+    err = _validate_vlan_cfg(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    if name in _state.vlans:
+        return ApplyResult(ok=False, message=f"VLAN {name} already managed (use PUT to update)")
+    _state.vlans[name] = cfg
+    _save_state()
+    result = await _apply_state(cfg.timeout_s)
+    if not result.ok:
+        _state.vlans.pop(name, None)
+        _save_state()
+    return result
+
+
+@router.put("/vlans/{name}", response_model=ApplyResult)
+async def update_vlan(name: str, cfg: VlanConfig) -> ApplyResult:
+    """Update an existing VLAN's IP / DNS / MTU. The name must match
+    the existing entry — to change parent or vlan_id, DELETE + POST
+    a fresh one (renaming a netplan child is a destructive op)."""
+    if name not in _state.vlans:
+        return ApplyResult(ok=False, message=f"VLAN {name!r} not found")
+    expected = f"{cfg.parent}.{cfg.vlan_id}"
+    if expected != name:
+        return ApplyResult(
+            ok=False,
+            message=f"cannot rename VLAN ({expected} ≠ {name}) — delete and recreate instead",
+        )
+    err = _validate_vlan_cfg(name, cfg)
+    if err:
+        return ApplyResult(ok=False, message=err)
+    prev = _state.vlans[name]
+    _state.vlans[name] = cfg
+    _save_state()
+    result = await _apply_state(cfg.timeout_s)
+    if not result.ok:
+        _state.vlans[name] = prev
+        _save_state()
+    return result
+
+
+@router.delete("/vlans/{name}", response_model=ApplyResult)
+async def delete_vlan(name: str, timeout_s: int = 120) -> ApplyResult:
+    """Remove a phonon-managed VLAN child. Triggers netplan reload
+    so the kernel-level vlan device is destroyed."""
+    if name not in _state.vlans:
+        return ApplyResult(ok=False, message=f"VLAN {name!r} not found")
+    if not (30 <= timeout_s <= 600):
+        return ApplyResult(ok=False, message="timeout out of range (30-600s)")
+    prev = _state.vlans.pop(name)
+    _save_state()
+    result = await _apply_state(timeout_s)
+    if not result.ok:
+        _state.vlans[name] = prev
+        _save_state()
+    return result
 
 
 @router.post("/interfaces/confirm", response_model=ApplyResult)

@@ -151,6 +151,14 @@ def create_app(
         except Exception:
             logger.warning("stage.settings_init_failed", exc_info=True)
 
+        # Load persisted network state (managed iface overrides + VLANs)
+        try:
+            from phonon_stage.api import network as network_mod
+
+            network_mod.init(cfg.standalone_conf_path.parent)
+        except Exception:
+            logger.warning("stage.network_init_failed", exc_info=True)
+
         # Restore persisted mappings
         try:
             await svc.restore_mappings()

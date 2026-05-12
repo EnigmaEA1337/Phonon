@@ -899,6 +899,62 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- VLANs (slice 5) -->
+    <div class="section">
+      <div class="section-head" style="display:flex;align-items:center;gap:8px">
+        VLANs
+        <span style="font-weight:400;color:var(--text-dim);font-size:10px">
+          tagged child interfaces — created on top of an existing physical iface, safe to add even on the MGMT one
+        </span>
+        <span style="flex:1"></span>
+        <button class="btn btn-primary" style="font-size:9px;padding:2px 8px" onclick="openVlanCreateModal()">+ Add VLAN</button>
+      </div>
+      <div class="section-body" id="vlans-list">
+        <div style="color:var(--text-fade);font-size:11px">Loading...</div>
+      </div>
+    </div>
+
+    <!-- VLAN create / edit modal -->
+    <div id="vlan-modal" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-head">
+          <span id="vlan-modal-title">Add VLAN</span>
+          <button class="modal-close" onclick="closeVlanModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;align-items:center;font-family:var(--font-m);font-size:11px">
+            <label>Parent iface</label>
+            <select id="vlan-parent" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px"></select>
+            <label>VLAN id</label>
+            <input type="number" id="vlan-id" min="1" max="4094" placeholder="10"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;width:90px">
+            <label>Mode</label>
+            <div style="display:flex;gap:10px">
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="vlan-mode" value="dhcp"> DHCP</label>
+              <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="vlan-mode" value="static" checked> Static</label>
+            </div>
+            <label>IP/CIDR</label>
+            <input type="text" id="vlan-addr" placeholder="10.10.0.21/24"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Gateway</label>
+            <input type="text" id="vlan-gw" placeholder="10.10.0.1 (optional)"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>DNS</label>
+            <input type="text" id="vlan-dns" placeholder="1.1.1.1 (optional)"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>MTU</label>
+            <input type="number" id="vlan-mtu" placeholder="1500" min="576" max="9216"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;width:90px">
+          </div>
+          <div id="vlan-status" style="margin-top:10px;font-family:var(--font-m);font-size:10px;color:var(--text-dim);min-height:14px"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" onclick="closeVlanModal()">Cancel</button>
+          <button class="btn btn-primary" id="vlan-create-btn" onclick="vlanCreate()">Create</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Iface edit modal (slice 3b) -->
     <div id="iface-edit-modal" class="modal-overlay" style="display:none">
       <div class="modal" style="max-width:520px">
@@ -920,9 +976,10 @@ body.mode-live .edit-only select { opacity: 0.4; }
               <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="iface-mode" value="dhcp" onchange="ifaceModeChanged()"> DHCP</label>
               <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="iface-mode" value="static" onchange="ifaceModeChanged()"> Static</label>
             </div>
-            <label>IP/CIDR</label>
-            <input type="text" id="iface-addr" placeholder="192.168.1.21/24" disabled
-              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+            <label>Addresses</label>
+            <div id="iface-addrs-list" style="display:flex;flex-direction:column;gap:4px">
+              <!-- _renderAddrsList() injects rows of [input][−] + a final [+ Add alias] button -->
+            </div>
             <label>Gateway</label>
             <input type="text" id="iface-gw" placeholder="192.168.1.254" disabled
               style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
@@ -1095,7 +1152,7 @@ function switchTab(name) {
   if (name === 'general') fetchMixer();
   if (name === 'plugins') fetchPlugins();
   if (name === 'graph') fetchGraph();
-  if (name === 'network') { fetchNtp(); fetchIfaces(); }
+  if (name === 'network') { fetchNtp(); fetchIfaces(); fetchVlans(); }
 }
 
 // ── Source plugins (AirPlay / Spotify / MPD / ...) ──
@@ -5550,6 +5607,144 @@ function renderIfaces(list) {
   host.innerHTML = cards;
 }
 
+/* ─── VLANs (slice 5) ─── */
+
+async function fetchVlans() {
+  const host = document.getElementById('vlans-list');
+  if (!host) return;
+  try {
+    const r = await fetch(API + '/network/managed');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const state = await r.json();
+    renderVlans(state.vlans || {});
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--red);font-size:11px">VLANs fetch failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderVlans(vlans) {
+  const host = document.getElementById('vlans-list');
+  if (!host) return;
+  const names = Object.keys(vlans);
+  if (names.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-fade);font-size:11px">No VLANs managed by phonon. Click + Add VLAN to create one.</div>';
+    return;
+  }
+  host.innerHTML = names.map(name => {
+    const v = vlans[name];
+    const ipLine = v.addresses4 && v.addresses4.length
+      ? v.addresses4.join(', ')
+      : (v.dhcp4 ? '(DHCP)' : '—');
+    return `
+      <div style="background:var(--bg-1);padding:10px 12px;border-radius:4px;border-left:3px solid var(--yellow);margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+          <div style="font-family:var(--font-d);font-size:14px;font-weight:600">${escapeHtml(name)}</div>
+          <span style="color:var(--yellow);font-weight:600">VLAN</span>
+          <span style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)">id ${v.vlan_id} on ${escapeHtml(v.parent)}</span>
+          <span style="flex:1"></span>
+          <button class="btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="vlanDelete('${escapeHtml(name)}')">Delete</button>
+        </div>
+        <div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-family:var(--font-m);font-size:10px">
+          <div style="color:var(--text-dim)">IPv4</div><div>${escapeHtml(ipLine)}${v.dhcp4 ? ' <span style="color:var(--green);font-size:9px">DHCP</span>' : ''}</div>
+          ${v.gateway4 ? `<div style="color:var(--text-dim)">Gateway</div><div>${escapeHtml(v.gateway4)}</div>` : ''}
+          ${v.dns && v.dns.length ? `<div style="color:var(--text-dim)">DNS</div><div>${v.dns.map(escapeHtml).join(' · ')}</div>` : ''}
+          ${v.mtu ? `<div style="color:var(--text-dim)">MTU</div><div>${v.mtu}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openVlanCreateModal() {
+  // Populate parent select from current iface list. Only ether
+  // ifaces are valid VLAN parents.
+  const sel = document.getElementById('vlan-parent');
+  sel.innerHTML = (_ifaceList || [])
+    .filter(i => i.type === 'ether')
+    .map(i => `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)}</option>`)
+    .join('');
+  document.getElementById('vlan-id').value = '';
+  document.getElementById('vlan-addr').value = '';
+  document.getElementById('vlan-gw').value = '';
+  document.getElementById('vlan-dns').value = '';
+  document.getElementById('vlan-mtu').value = '';
+  document.getElementById('vlan-status').textContent = '';
+  document.querySelector('input[name="vlan-mode"][value="static"]').checked = true;
+  document.getElementById('vlan-modal').style.display = 'flex';
+}
+
+function closeVlanModal() {
+  document.getElementById('vlan-modal').style.display = 'none';
+}
+
+async function vlanCreate() {
+  const status = document.getElementById('vlan-status');
+  const parent = document.getElementById('vlan-parent').value;
+  const vlanId = parseInt(document.getElementById('vlan-id').value, 10);
+  if (!parent || !Number.isFinite(vlanId) || vlanId < 1 || vlanId > 4094) {
+    status.textContent = 'Parent + VLAN id (1-4094) are required';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  const mode = document.querySelector('input[name="vlan-mode"]:checked')?.value || 'static';
+  const addr = document.getElementById('vlan-addr').value.trim();
+  const dns = document.getElementById('vlan-dns').value
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const body = {
+    parent,
+    vlan_id: vlanId,
+    dhcp4: (mode === 'dhcp'),
+    addresses4: addr ? [addr] : [],
+    gateway4: document.getElementById('vlan-gw').value.trim(),
+    dns,
+    mtu: parseInt(document.getElementById('vlan-mtu').value, 10) || 0,
+    timeout_s: 120,
+  };
+  const btn = document.getElementById('vlan-create-btn');
+  btn.disabled = true;
+  status.textContent = 'creating…';
+  status.style.color = 'var(--text-dim)';
+  try {
+    const r = await fetch(API + '/network/vlans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      status.textContent = j.message || ('HTTP ' + r.status);
+      status.style.color = 'var(--red)';
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = j.message;
+    status.style.color = 'var(--green)';
+    setTimeout(() => {
+      closeVlanModal();
+      fetchVlans();
+      fetchIfaces();
+    }, 800);
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+async function vlanDelete(name) {
+  if (!confirm(`Delete VLAN ${name}? This will tear down the kernel device. (120s auto-revert applies)`)) return;
+  try {
+    const r = await fetch(API + '/network/vlans/' + encodeURIComponent(name) + '?timeout_s=120', { method: 'DELETE' });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      alert('Delete failed: ' + (j.message || r.status));
+      return;
+    }
+  } catch (e) {
+    alert('Delete error: ' + e.message);
+  }
+  setTimeout(() => { fetchVlans(); fetchIfaces(); refreshPendingBanner(); }, 800);
+}
+
 /* ─── Iface edit modal (slice 3b) ─── */
 
 let _ifaceEditing = null;   // iface name being edited
@@ -5560,12 +5755,19 @@ function openIfaceEditModal(name) {
   _ifaceEditing = name;
   document.getElementById('iface-edit-title').textContent = `Edit ${name}` + (i.is_mgmt ? ' (MGMT)' : '');
   document.getElementById('iface-edit-mgmt-warn').style.display = i.is_mgmt ? 'block' : 'none';
-  // Pre-fill from current state — guess DHCP from the "dynamic" flag
-  // on the primary IPv4 address.
-  const v4 = i.addresses.find(a => a.family === 'inet' && a.scope === 'global');
-  const isDhcp = v4 ? v4.dynamic : true;
+  // Pre-fill from current state. Static manual addresses live in
+  // state.ethernets[name].addresses4 (slice 5 state); when phonon
+  // hasn't taken over the iface yet, fall back to whatever the kernel
+  // reports (and assume DHCP if the lease is dynamic).
+  const v4Global = i.addresses.filter(a => a.family === 'inet' && a.scope === 'global');
+  const isDhcp = v4Global.length === 0 ? true : v4Global[0].dynamic;
   document.querySelector(`input[name="iface-mode"][value="${isDhcp ? 'dhcp' : 'static'}"]`).checked = true;
-  document.getElementById('iface-addr').value = v4 ? `${v4.address}/${v4.prefix}` : '';
+  // Address rows: copy current globals as initial values; alias rows
+  // appear by clicking + Add alias.
+  const addrs = v4Global.map(a => `${a.address}/${a.prefix}`);
+  if (addrs.length === 0) addrs.push("");
+  _ifaceAddrs = addrs;
+  _renderAddrsList();
   document.getElementById('iface-gw').value = i.gateway4 || '';
   document.getElementById('iface-dns').value = (i.dns || []).join(', ');
   document.getElementById('iface-mtu').value = i.mtu || '';
@@ -5575,16 +5777,52 @@ function openIfaceEditModal(name) {
   document.getElementById('iface-edit-modal').style.display = 'flex';
 }
 
+// Internal: current addresses array shown in the edit modal. Kept
+// out of the DOM so we can rebuild the list (add/remove a row)
+// without losing focus on the field the user was typing in.
+let _ifaceAddrs = [];
+
+function _renderAddrsList() {
+  const host = document.getElementById('iface-addrs-list');
+  if (!host) return;
+  const mode = document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp';
+  const disabled = (mode === 'dhcp' && _ifaceAddrs.length <= 1);  // pure DHCP, no aliases
+  host.innerHTML = _ifaceAddrs.map((a, idx) => `
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="text" value="${escapeHtml(a)}" placeholder="${idx === 0 ? '192.168.1.21/24' : '192.168.1.50/24 (alias)'}"
+        oninput="_ifaceAddrs[${idx}] = this.value"
+        ${mode === 'dhcp' && idx === 0 ? 'disabled' : ''}
+        style="flex:1;background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px">
+      ${idx > 0 || mode === 'static' ? `<button class="btn" style="font-size:11px;padding:2px 8px" onclick="_ifaceRemoveAddr(${idx})" title="Remove">−</button>` : ''}
+    </div>`).join('') +
+    `<button class="btn" style="font-size:10px;padding:3px 10px;width:max-content;margin-top:2px" onclick="_ifaceAddAlias()">+ Add alias</button>`;
+}
+
+function _ifaceAddAlias() {
+  _ifaceAddrs.push("");
+  _renderAddrsList();
+  // Focus the new input so the operator can type right away.
+  const inputs = document.querySelectorAll('#iface-addrs-list input');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function _ifaceRemoveAddr(idx) {
+  _ifaceAddrs.splice(idx, 1);
+  if (_ifaceAddrs.length === 0) _ifaceAddrs.push("");
+  _renderAddrsList();
+}
+
 function closeIfaceEditModal() {
   document.getElementById('iface-edit-modal').style.display = 'none';
   _ifaceEditing = null;
 }
 
 function ifaceModeChanged() {
-  const mode = document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp';
-  const dhcp = mode === 'dhcp';
-  // Static-only fields go disabled in DHCP mode (visually clear they're inactive).
-  document.getElementById('iface-addr').disabled = dhcp;
+  // Re-render the addresses block so the primary input goes
+  // disabled in DHCP mode (and aliases stay editable — manual
+  // aliases on top of a DHCP lease are legit netplan).
+  _renderAddrsList();
+  const dhcp = (document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp') === 'dhcp';
   document.getElementById('iface-gw').disabled = dhcp;
 }
 
@@ -5594,9 +5832,16 @@ async function ifaceApplyEdit() {
   const mode = document.querySelector('input[name="iface-mode"]:checked')?.value || 'dhcp';
   const dns = document.getElementById('iface-dns').value
     .split(',').map(s => s.trim()).filter(Boolean);
+  // Filter out empty rows in the addresses list. In DHCP mode, the
+  // first row is empty (disabled) and we only keep the alias rows
+  // the operator filled in. In Static mode, the first row IS the
+  // primary so we keep it.
+  const addresses4 = _ifaceAddrs
+    .map((a, idx) => (mode === 'dhcp' && idx === 0) ? '' : a.trim())
+    .filter(Boolean);
   const body = {
     dhcp4: (mode === 'dhcp'),
-    address4: mode === 'static' ? document.getElementById('iface-addr').value.trim() : '',
+    addresses4,
     gateway4: mode === 'static' ? document.getElementById('iface-gw').value.trim() : '',
     dns,
     mtu: parseInt(document.getElementById('iface-mtu').value, 10) || 0,

@@ -239,6 +239,14 @@ cmd_apply_macvlans() {
 
     local managed_dir=/etc/systemd/network
     local prefix=30-phonon-macvlan-
+    # Legacy: pre-fix builds wrote a sibling .network file to attach
+    # children to their parent, but systemd-networkd only applies the
+    # FIRST .network matching a given iface — netplan's
+    # 10-netplan-<parent>.network in /run/ wins, our 35-...-attach
+    # was ignored. Switched to drop-ins under <basename>.network.d/
+    # which systemd-networkd merges into the matched file regardless
+    # of which dir (etc / run / lib) hosts the base. The old prefix
+    # is still tracked so we wipe stale sibling files on upgrade.
     local attach_prefix=35-phonon-macvlan-attach-
     mkdir -p "$managed_dir"
 
@@ -279,8 +287,11 @@ for name, cfg in data.items():
     print(f"D\t{name}\t{parent}\t{base64.b64encode(netdev.encode()).decode()}\t{base64.b64encode(network.encode()).decode()}")
     attach_by_parent[parent].append(name)
 for parent, children in attach_by_parent.items():
-    body = ["# Managed by phonon-stage. Auto-attach macvlan children.",
-            "[Match]", f"Name={parent}", "", "[Network]"]
+    # Drop-in body: extends the parent .network with MACVLAN= keys
+    # WITHOUT overriding the rest of the [Network] section. A drop-in
+    # only needs the section header + the keys being added.
+    body = ["# Managed by phonon-stage. Drop-in: attaches macvlan children to " + parent + ".",
+            "[Network]"]
     for c in children:
         body.append(f"MACVLAN={c}")
     print(f"A\t{parent}\t{base64.b64encode((chr(10).join(body) + chr(10)).encode()).decode()}")
@@ -321,19 +332,47 @@ for parent, children in attach_by_parent.items():
             ip link delete "$iface_name" 2>/dev/null || true
         fi
     done
-    # Sweep stale parent-attach files
+    # Sweep stale LEGACY parent-attach sibling files (pre-drop-in fix)
     for f in "${managed_dir}/${attach_prefix}"*.network; do
         [ -f "$f" ] || continue
-        local fname parent_name keep
-        fname=$(basename "$f")
-        parent_name=$(echo "$fname" | sed -E "s/^${attach_prefix}//; s/\.network$//")
+        log "apply-macvlans: removing legacy sibling attach $f (now using drop-ins)"
+        rm -f "$f"
+    done
+    # Sweep stale drop-ins: any /etc/systemd/network/*.network.d/30-phonon-macvlan.conf
+    # whose parent isn't in the wanted set anymore. We can't enumerate
+    # by parent name directly — the dir is named after the .network
+    # basename. Walk every *.network.d/ in managed_dir and drop the
+    # phonon file when stale.
+    local dropin_base=30-phonon-macvlan.conf
+    for d in "${managed_dir}"/*.network.d; do
+        [ -d "$d" ] || continue
+        local conf="${d}/${dropin_base}"
+        [ -f "$conf" ] || continue
+        # The drop-in mentions the parent iface in its header comment;
+        # also the .network it extends is .network.d's parent dir.
+        # Derive parent by looking at the .network file's [Match] Name
+        # — but for netplan's `10-netplan-<iface>.network`, the iface
+        # is in the dir name. Easier: parse `Name=` from the matched
+        # .network file if present, or fall back to the dir-name
+        # heuristic for netplan.
+        local base_network parent_name keep
+        base_network="${d%.d}"     # /etc/systemd/network/10-netplan-enp1s0.network
+        if [ -f "$base_network" ]; then
+            parent_name=$(grep -E '^Name=' "$base_network" 2>/dev/null | head -1 | cut -d= -f2)
+        fi
+        # /run/ baseline (netplan): the file is in /run/systemd/network/.
+        if [ -z "$parent_name" ] && [ -f "/run/systemd/network/$(basename "$base_network")" ]; then
+            parent_name=$(grep -E '^Name=' "/run/systemd/network/$(basename "$base_network")" 2>/dev/null | head -1 | cut -d= -f2)
+        fi
         keep=0
         for w in $wanted_parents; do
             if [ "$w" = "$parent_name" ]; then keep=1; break; fi
         done
         if [ "$keep" -eq 0 ]; then
-            log "apply-macvlans: removing stale attach $f"
-            rm -f "$f"
+            log "apply-macvlans: removing stale drop-in $conf (parent=$parent_name)"
+            rm -f "$conf"
+            # Empty drop-in dir → remove it.
+            rmdir "$d" 2>/dev/null || true
         fi
     done
 
@@ -356,19 +395,60 @@ for parent, children in attach_by_parent.items():
                 ;;
             A)
                 local parent="$a"
-                local attach_path="${managed_dir}/${attach_prefix}${parent}.network"
-                local tmp_attach
-                tmp_attach="$(mktemp --tmpdir="$managed_dir" ${attach_prefix}${parent}.XXXXXX.network)"
-                echo "$b" | base64 -d > "$tmp_attach"
-                chmod 0644 "$tmp_attach"
-                mv -f "$tmp_attach" "$attach_path"
-                log "apply-macvlans: wrote attach for parent ${parent}"
+                # Drop-in approach: locate the .network currently
+                # managing the parent (typically netplan's
+                # /run/systemd/network/10-netplan-<parent>.network)
+                # and write our additive [Network] block into
+                # /etc/systemd/network/<basename>.d/30-phonon-macvlan.conf.
+                # systemd-networkd merges drop-ins into the base file,
+                # so MACVLAN= adds to whatever else netplan has set
+                # without colliding on which .network wins the match.
+                local parent_network_file basename_only
+                parent_network_file=$(networkctl status "$parent" --no-pager 2>/dev/null \
+                    | grep -oP 'Network File:\s*\K\S+' | head -1)
+                if [ -z "$parent_network_file" ]; then
+                    # No managed file → can't drop-in. Write a sibling
+                    # .network as a last resort (numbered HIGHER than
+                    # netplan's 10- so it doesn't win the first-match
+                    # contest — only works on systems where there IS
+                    # no other .network for the parent).
+                    local fallback_path="${managed_dir}/${attach_prefix}${parent}.network"
+                    local tmp_fb
+                    tmp_fb="$(mktemp --tmpdir="$managed_dir" ${attach_prefix}${parent}.XXXXXX.network)"
+                    echo "$b" | base64 -d > "$tmp_fb"
+                    # The drop-in body has [Network] only; for a
+                    # standalone file we need [Match] too — splice in.
+                    sed -i "1a [Match]\nName=${parent}\n" "$tmp_fb"
+                    chmod 0644 "$tmp_fb"
+                    mv -f "$tmp_fb" "$fallback_path"
+                    log "apply-macvlans: parent ${parent} has no .network, wrote standalone ${fallback_path}"
+                else
+                    basename_only=$(basename "$parent_network_file")
+                    local dropin_dir="${managed_dir}/${basename_only}.d"
+                    local dropin_path="${dropin_dir}/30-phonon-macvlan.conf"
+                    mkdir -p "$dropin_dir"
+                    local tmp_dropin
+                    tmp_dropin="$(mktemp --tmpdir="$dropin_dir" 30-phonon-macvlan.XXXXXX.conf)"
+                    echo "$b" | base64 -d > "$tmp_dropin"
+                    chmod 0644 "$tmp_dropin"
+                    mv -f "$tmp_dropin" "$dropin_path"
+                    log "apply-macvlans: wrote drop-in ${dropin_path} for parent ${parent} (base=${parent_network_file})"
+                fi
                 ;;
         esac
     done <<< "$plan"
 
-    # Tell networkd to pick up the new files.
+    # Tell networkd to pick up the new files. `reload` reads the new
+    # config files BUT doesn't always re-apply them to already-active
+    # devices — that's `reconfigure`'s job. We reconfigure each
+    # parent that has wanted children so the kernel actually creates
+    # the macvlan devices (which needs MACVLAN= from the parent's
+    # drop-in to be honoured).
     networkctl reload >>"$LOG" 2>&1 || log "apply-macvlans: networkctl reload reported errors (continuing)"
+    for parent in $wanted_parents; do
+        networkctl reconfigure "$parent" >>"$LOG" 2>&1 \
+            || log "apply-macvlans: networkctl reconfigure $parent failed (continuing)"
+    done
     log "apply-macvlans: done"
 }
 

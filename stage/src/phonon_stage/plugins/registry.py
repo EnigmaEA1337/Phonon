@@ -138,6 +138,45 @@ class PluginRegistry:
             )
         return out
 
+    async def heal_null_sinks(self) -> dict[str, str]:
+        """For each enabled+running source plugin, make sure its
+        null-sink is present in PW. Loads the module if missing.
+
+        Why: source-plugin daemons (shairport-sync, spotifyd) are
+        user systemd units that auto-start at boot, but their target
+        null-sinks (`airplay_in`, `spotify_in`) live as pactl modules
+        in the user's pipewire session — which gets wiped on every
+        reboot OR every filter-chain.service reload cascade. Without
+        this heal, the daemon writes into a sink that doesn't exist,
+        the mixer can't link the source, and audio silently dies.
+
+        Returns a per-plugin status map for diag visibility."""
+        result: dict[str, str] = {}
+        for plugin in self._by_name.values():
+            try:
+                runtime = await plugin.runtime()
+            except Exception:
+                result[plugin.name] = "runtime-check-failed"
+                continue
+            if not runtime.enabled:
+                result[plugin.name] = "disabled-skipped"
+                continue
+            ensure = getattr(plugin, "_ensure_null_sink", None)
+            if ensure is None:
+                result[plugin.name] = "no-null-sink-concept"
+                continue
+            try:
+                await ensure()
+                result[plugin.name] = "ok"
+            except Exception:
+                logger.warning(
+                    "plugins.heal_null_sink_failed",
+                    plugin=plugin.name,
+                    exc_info=True,
+                )
+                result[plugin.name] = "heal-failed"
+        return result
+
     async def _matching_pw_nodes(self, pattern: str) -> list[str]:
         try:
             nodes = await self._pw.list_nodes()

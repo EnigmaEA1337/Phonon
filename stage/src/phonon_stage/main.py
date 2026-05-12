@@ -163,6 +163,25 @@ def create_app(
         except Exception:
             logger.warning("stage.mixer_init_failed", exc_info=True)
 
+        # Source-plugin null-sinks (airplay_in, spotify_in) get wiped
+        # whenever the user's pipewire session restarts — reboot or a
+        # filter-chain.service reload cascade. The daemons stay
+        # running but write into a sink that doesn't exist, so audio
+        # silently dies until something recreates the module. Heal
+        # now so the mixer reconcile that follows can wire them.
+        try:
+            heal_status = await plugin_registry.heal_null_sinks()
+            logger.info("stage.plugin_null_sinks_healed", status=heal_status)
+        except Exception:
+            logger.warning("stage.plugin_null_sink_heal_failed", exc_info=True)
+
+        # Re-run mixer reconcile now that the source null-sinks are
+        # present so the source→master links get created.
+        try:
+            await mixer_service._reconcile()
+        except Exception:
+            logger.warning("stage.mixer_post_heal_reconcile_failed", exc_info=True)
+
         # Wire the mixer into the WS levels loop so it can meter the
         # master bus + every output on every tick. Cheap to set even
         # if init() above failed — the loop's `for o in svc.outputs`

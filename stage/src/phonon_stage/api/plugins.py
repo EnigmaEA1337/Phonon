@@ -147,9 +147,7 @@ async def restart_plugin(request: Request, name: str) -> PluginResponse:
 
 
 @router.get("/{name}/journal")
-async def get_plugin_journal(
-    request: Request, name: str, lines: int = 50
-) -> dict[str, str]:
+async def get_plugin_journal(request: Request, name: str, lines: int = 50) -> dict[str, str]:
     """Return the last N journalctl lines for the plugin's user unit.
     Pure diagnostic — used when a daemon is `running: true` but
     misbehaves (drops connections, crashes mid-session, silent
@@ -185,9 +183,17 @@ async def get_plugin_journal(
             "stderr": stderr_b.decode("utf-8", errors="replace"),
         }
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/admin/heal-null-sinks")
+async def heal_null_sinks(request: Request) -> dict[str, str]:
+    """Manually trigger the source-plugin null-sink heal. Same logic
+    that runs at phonon-stage boot — useful when the user's pipewire
+    session just restarted and you want airplay_in / spotify_in /
+    etc. back without a daemon restart. Returns per-plugin status."""
+    reg = _registry(request)
+    return await reg.heal_null_sinks()
 
 
 @router.get("/diag/clock")

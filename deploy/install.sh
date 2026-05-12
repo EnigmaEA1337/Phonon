@@ -98,18 +98,45 @@ if ! apt-get install -y -qq \
     exit 1
 fi
 
-# librespot — Spotify Connect daemon. Available in `universe` on
-# Ubuntu Studio 26.04 but not always pre-enabled, so we try and
-# warn (not fail) — the Spotify plugin reports itself as 'last_error'
-# when librespot is missing rather than blocking the whole install.
+# librespot — Spotify Connect daemon. First try apt (some Ubuntu
+# variants carry it in `universe`). On failure, fall back to the
+# prebuilt binary from the upstream GitHub release — the package
+# isn't reliably available on Ubuntu Studio 26.04 yet but the
+# Rust binary is statically linked and works on any glibc host.
 if ! command -v librespot >/dev/null 2>&1; then
     echo "  Installing librespot (Spotify plugin)..."
-    apt-get install -y -qq librespot 2>/dev/null || {
-        echo "  WARN: librespot install failed (probably not in repos). The"
-        echo "        Spotify plugin will be installed but inert until a librespot"
-        echo "        binary is on PATH. Download from"
-        echo "        https://github.com/librespot-org/librespot/releases"
-    }
+    if ! apt-get install -y -qq librespot; then
+        echo "  apt doesn't carry librespot here, falling back to GitHub release binary..."
+        case "${PLATFORM}" in
+            x86_64)  LR_ARCH="x86_64-unknown-linux-gnu" ;;
+            arm64)   LR_ARCH="aarch64-unknown-linux-gnu" ;;
+            *)       LR_ARCH="" ;;
+        esac
+        if [ -n "${LR_ARCH}" ]; then
+            # Resolve the latest stable release via GitHub API, pick the
+            # tarball matching our arch. Stream-extract just the binary
+            # straight to /usr/bin so the unit's ConditionPathExists
+            # check passes.
+            LR_LATEST="$(curl -fsSL https://api.github.com/repos/librespot-org/librespot/releases/latest \
+                | grep '"browser_download_url".*'"${LR_ARCH}"'\.tar\.xz' \
+                | head -1 \
+                | cut -d'"' -f4 || true)"
+            if [ -n "${LR_LATEST}" ]; then
+                echo "  Downloading ${LR_LATEST}..."
+                if curl -fsSL "${LR_LATEST}" | tar -xJ -C /tmp/ librespot 2>/dev/null \
+                   && mv /tmp/librespot /usr/bin/librespot \
+                   && chmod +x /usr/bin/librespot; then
+                    echo "  librespot binary installed to /usr/bin/librespot"
+                else
+                    echo "  WARN: download or extract failed — Spotify plugin will stay inert"
+                fi
+            else
+                echo "  WARN: no GitHub release found for arch ${LR_ARCH}"
+            fi
+        else
+            echo "  WARN: unsupported arch ${PLATFORM} for librespot binary download"
+        fi
+    fi
 fi
 
 # Verify the binaries the rest of install.sh expects to find. Catches

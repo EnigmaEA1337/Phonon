@@ -908,6 +908,11 @@ wireplumber.profiles = {
 WPCONF
 
 chown -R "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}/.config"
+# Plugin data dirs (created above with mkdir -p as root) need to be
+# writable by the daemon — it renders settings into env/conf files
+# via write_text_atomic which uses a temp file in the same dir.
+# Without this, the first enable of any plugin hits PermissionError.
+chown -R "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}/plugins"
 echo "  User service installed"
 
 # -- Step 11/11: Start everything ---------------------------------------------

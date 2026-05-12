@@ -5573,14 +5573,18 @@ function renderGraph() {
   }
 
   // ── Layout: one box per group, position persists per name ──
-  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, transport: 0, output: 0, other: 0 };
+  // fx and transport share an X column → share the slot counter so
+  // they stack instead of overlapping.
+  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, output: 0, other: 0 };
+  const slotKeyFor = (r) => (r === 'transport' ? 'fx' : r);
   const boxes = [];           // ordered list for render loop
   const nodeIdToBox = new Map();  // for cable lookup
   for (const [key, members] of groupsByKey) {
     const role = roleByNode[members[0].id];
+    const sk = slotKeyFor(role);
     let pos = graphPositions[key];
-    if (!pos) pos = _autoPositionLane(role, laneSlots[role]++);
-    else      laneSlots[role]++;
+    if (!pos) pos = _autoPositionLane(role, laneSlots[sk]++);
+    else      laneSlots[sk]++;
     // Merge ports across members. Each port keeps its real PW id so
     // cable lookup still works — it's purely a visual coalescing.
     const ins = [];

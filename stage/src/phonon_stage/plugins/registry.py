@@ -45,7 +45,7 @@ def _build_plugins(
     Conf paths land under <plugin_data_root>/<plugin-name>/ so each
     plugin gets its own scratch area without colliding."""
     airplay_conf = plugin_data_root / "airplay-v1" / "shairport-sync.conf"
-    spotify_env = plugin_data_root / "spotify-v1" / "librespot.env"
+    spotify_env = plugin_data_root / "spotify-v1" / "spotifyd.conf"
     return [
         AirplayV1Plugin(system=system, pw_backend=pw_backend, conf_path=airplay_conf),
         SpotifyV1Plugin(system=system, pw_backend=pw_backend, conf_path=spotify_env),

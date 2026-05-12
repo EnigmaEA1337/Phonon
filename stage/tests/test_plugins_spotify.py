@@ -30,7 +30,7 @@ def fake_pw_plugin() -> FakePipeWireBackend:
 
 @pytest.fixture()
 def conf_path(tmp_path: Path) -> Path:
-    return tmp_path / "librespot.env"
+    return tmp_path / "spotifyd.conf"
 
 
 @pytest.fixture()
@@ -52,22 +52,24 @@ class TestSpotifyV1Lifecycle:
         assert rt.running is False
         assert rt.last_error == ""
 
-    async def test_enable_writes_default_env_if_missing(
+    async def test_enable_writes_default_conf_if_missing(
         self, plugin: SpotifyV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
-        """librespot.service refuses to start without LIBRESPOT_ARGS —
+        """spotifyd.service refuses to start without a config file —
         provisioning defaults on enable means the user never hits a
         'unit failed' on first enable."""
         assert fake_sys.file_exists(conf_path) is False
         await plugin.enable()
         assert fake_sys.file_exists(conf_path) is True
-        assert "LIBRESPOT_ARGS=" in fake_sys.read_text(conf_path)
+        body = fake_sys.read_text(conf_path)
+        assert "[global]" in body
+        assert "device_name" in body
         assert await fake_sys.systemctl_is_enabled(plugin.UNIT) is True
 
-    async def test_enable_preserves_existing_env(
+    async def test_enable_preserves_existing_conf(
         self, plugin: SpotifyV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
-        fake_sys.write_text_atomic(conf_path, "LIBRESPOT_ARGS=--name Custom\n")
+        fake_sys.write_text_atomic(conf_path, '[global]\ndevice_name = "Custom"\nbitrate = 96\n')
         await plugin.enable()
         assert "Custom" in fake_sys.read_text(conf_path)
 
@@ -116,46 +118,45 @@ class TestSpotifyV1Settings:
             autoplay=False,
             disable_audio_cache=False,
             zeroconf_port=4321,
-            quiet=False,
         )
         await plugin.put_settings(custom)
         loaded = await plugin.get_settings()
         assert loaded == custom
 
-    async def test_rendered_conf_contains_required_args(
+    async def test_rendered_conf_contains_required_keys(
         self, plugin: SpotifyV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
-        """--device must point at our null-sink so librespot's output is
+        """`device` must point at our null-sink so spotifyd's output is
         contained in the Phonon routing matrix, never auto-routed to the
         default sink."""
         await plugin.put_settings(SpotifyV1Settings())
         body = fake_sys.read_text(conf_path)
-        assert "--device" in body
-        assert NULL_SINK_NAME in body
-        assert "--backend pulseaudio" in body
+        assert "[global]" in body
+        assert f'device = "{NULL_SINK_NAME}"' in body
+        assert 'backend = "pulseaudio"' in body
 
-    async def test_name_with_space_is_quoted(
+    async def test_name_with_special_chars_round_trips(
         self, plugin: SpotifyV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
-        """systemd's $VAR expansion splits on whitespace, so a name
-        with a space must be quoted in the env file or it'd land as
-        two args."""
-        await plugin.put_settings(SpotifyV1Settings(name="Living Room"))
+        """TOML escapes a `\"` as `\\\"` inside a double-quoted string;
+        the parse path must reverse that so the operator gets the
+        original string back."""
+        await plugin.put_settings(SpotifyV1Settings(name='Living "Room"'))
         body = fake_sys.read_text(conf_path)
-        # shlex.quote wraps it in single quotes
-        assert "'Living Room'" in body
-        # Round-trip should still recover the original name
+        # backslash-escaped quote in the rendered TOML
+        assert r"\"Room\"" in body
         loaded = await plugin.get_settings()
-        assert loaded.name == "Living Room"
+        assert loaded.name == 'Living "Room"'
 
-    async def test_unknown_token_doesnt_break_parse(
+    async def test_unknown_keys_dont_break_parse(
         self, plugin: SpotifyV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
-        """Future librespot versions may add flags we don't model — the
-        parser should ignore them and recover what it does understand."""
+        """Future spotifyd versions may add TOML keys we don't model —
+        the parser should ignore them and recover what it does
+        understand."""
         fake_sys.write_text_atomic(
             conf_path,
-            "LIBRESPOT_ARGS=--name Phonon --some-future-flag value --bitrate 320\n",
+            '[global]\ndevice_name = "Phonon"\nbitrate = 320\nsome_future_key = "future-value"\n',
         )
         loaded = await plugin.get_settings()
         assert loaded.name == "Phonon"

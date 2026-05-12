@@ -80,9 +80,7 @@ async def enable_plugin(request: Request, name: str) -> PluginResponse:
     except Exception as exc:
         # Surface unexpected failures (unit file missing, conf dir
         # unwritable, etc.) instead of an opaque 500.
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return _to_response(await reg.info(name))
 
 
@@ -98,9 +96,7 @@ async def disable_plugin(request: Request, name: str) -> PluginResponse:
     except SystemBackendError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return _to_response(await reg.info(name))
 
 
@@ -116,9 +112,7 @@ async def start_plugin(request: Request, name: str) -> PluginResponse:
     except SystemBackendError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return _to_response(await reg.info(name))
 
 
@@ -134,9 +128,7 @@ async def stop_plugin(request: Request, name: str) -> PluginResponse:
     except SystemBackendError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return _to_response(await reg.info(name))
 
 
@@ -186,7 +178,5 @@ async def put_settings(request: Request, name: str, body: dict[str, Any]) -> dic
     except SystemBackendError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return validated.model_dump()

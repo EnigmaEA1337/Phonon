@@ -260,9 +260,7 @@ class MixerService:
                 await self._pw.unload_module(mid)
                 logger.info("mixer.master_duplicate_unloaded", module_id=mid, kept=keep)
             except Exception:
-                logger.warning(
-                    "mixer.master_dedupe_unload_failed", module_id=mid, exc_info=True
-                )
+                logger.warning("mixer.master_dedupe_unload_failed", module_id=mid, exc_info=True)
 
     # ── Master mutations ────────────────────────────────────────
 
@@ -515,9 +513,7 @@ class MixerService:
         try:
             return await self._pw.read_filter_node_controls(chain)
         except Exception:
-            logger.info(
-                "mixer.read_insert_live_failed", output_id=output_id, exc_info=False
-            )
+            logger.info("mixer.read_insert_live_failed", output_id=output_id, exc_info=False)
             return {}
 
     async def update_output_insert_control(
@@ -956,9 +952,7 @@ class MixerService:
             try:
                 await self._pw.set_node_mute(sink_node.id, silenced)
             except Exception:
-                logger.warning(
-                    "mixer.output_mute_failed", output_id=o.id, exc_info=True
-                )
+                logger.warning("mixer.output_mute_failed", output_id=o.id, exc_info=True)
             if o.receives_master and o.insert is not None and o.insert.enabled:
                 wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
                     o, o.insert, MASTER_SINK_NAME

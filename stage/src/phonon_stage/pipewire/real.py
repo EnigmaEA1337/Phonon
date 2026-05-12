@@ -205,18 +205,23 @@ class RealPipeWireBackend:
         last = {"node_id": node_id, "muted": muted}
         try:
             proc = await _asyncio.create_subprocess_exec(
-                "wpctl", "set-mute", str(node_id), flag,
+                "wpctl",
+                "set-mute",
+                str(node_id),
+                flag,
                 stdout=_asyncio.subprocess.PIPE,
                 stderr=_asyncio.subprocess.PIPE,
                 env=env,
             )
             stdout_b, stderr_b = await _asyncio.wait_for(proc.communicate(), timeout=3)
-            last.update({
-                "cmd": f"wpctl set-mute {node_id} {flag}",
-                "rc": proc.returncode,
-                "stdout": stdout_b.decode("utf-8", errors="replace"),
-                "stderr": stderr_b.decode("utf-8", errors="replace"),
-            })
+            last.update(
+                {
+                    "cmd": f"wpctl set-mute {node_id} {flag}",
+                    "rc": proc.returncode,
+                    "stdout": stdout_b.decode("utf-8", errors="replace"),
+                    "stderr": stderr_b.decode("utf-8", errors="replace"),
+                }
+            )
             if not hasattr(self, "_set_mute_log"):
                 self._set_mute_log: dict[int, dict] = {}  # type: ignore[attr-defined]
             self._set_mute_log[node_id] = last  # type: ignore[attr-defined]
@@ -225,7 +230,9 @@ class RealPipeWireBackend:
                 return
             logger.warning(
                 "pipewire.mute_set_wpctl_failed",
-                node_id=node_id, rc=proc.returncode, stderr=last["stderr"],
+                node_id=node_id,
+                rc=proc.returncode,
+                stderr=last["stderr"],
             )
         except Exception:
             logger.warning("pipewire.mute_set_exception", node_id=node_id, exc_info=True)
@@ -437,9 +444,7 @@ class RealPipeWireBackend:
             logger.warning("pipewire.filter_chain_reload_failed", exc_info=True)
 
     @staticmethod
-    def _resolve_filter_chain_node(
-        nodes: list[PwNode], chain_name: str
-    ) -> PwNode | None:
+    def _resolve_filter_chain_node(nodes: list[PwNode], chain_name: str) -> PwNode | None:
         """PW module-filter-chain exposes the plugin's control ports
         on one of the two streams it creates (`input.<chain>` and
         `output.<chain>`), not on a node literally named after the
@@ -586,7 +591,11 @@ class RealPipeWireBackend:
 
             env = {**_os.environ, "LC_ALL": "C", "LANG": "C"}
             proc = await _asyncio.create_subprocess_exec(
-                "pw-cli", "set-param", str(target.id), "Props", payload,
+                "pw-cli",
+                "set-param",
+                str(target.id),
+                "Props",
+                payload,
                 stdout=_asyncio.subprocess.PIPE,
                 stderr=_asyncio.subprocess.PIPE,
                 env=env,

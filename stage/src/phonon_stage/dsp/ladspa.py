@@ -136,9 +136,7 @@ class RealLadspaIntrospector:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=10.0
-            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=10.0)
         except FileNotFoundError as exc:
             logger.warning(
                 "dsp.analyseplugin_missing",
@@ -157,8 +155,11 @@ class RealLadspaIntrospector:
             raise
         # Combine streams — analyseplugin in some SDK builds writes
         # the descriptor to stderr, in others to stdout. We feed both.
-        text = (stdout_bytes.decode("utf-8", errors="replace") + "\n"
-                + stderr_bytes.decode("utf-8", errors="replace"))
+        text = (
+            stdout_bytes.decode("utf-8", errors="replace")
+            + "\n"
+            + stderr_bytes.decode("utf-8", errors="replace")
+        )
         if proc.returncode != 0 and not text.strip():
             logger.warning(
                 "dsp.analyseplugin_nonzero",

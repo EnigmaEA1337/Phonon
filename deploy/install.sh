@@ -98,44 +98,37 @@ if ! apt-get install -y -qq \
     exit 1
 fi
 
-# librespot — Spotify Connect daemon. First try apt (some Ubuntu
-# variants carry it in `universe`). On failure, fall back to the
-# prebuilt binary from the upstream GitHub release — the package
-# isn't reliably available on Ubuntu Studio 26.04 yet but the
-# Rust binary is statically linked and works on any glibc host.
-if ! command -v librespot >/dev/null 2>&1; then
-    echo "  Installing librespot (Spotify plugin)..."
-    if ! apt-get install -y -qq librespot; then
-        echo "  apt doesn't carry librespot here, falling back to GitHub release binary..."
-        case "${PLATFORM}" in
-            x86_64)  LR_ARCH="x86_64-unknown-linux-gnu" ;;
-            arm64)   LR_ARCH="aarch64-unknown-linux-gnu" ;;
-            *)       LR_ARCH="" ;;
-        esac
-        if [ -n "${LR_ARCH}" ]; then
-            # Resolve the latest stable release via GitHub API, pick the
-            # tarball matching our arch. Stream-extract just the binary
-            # straight to /usr/bin so the unit's ConditionPathExists
-            # check passes.
-            LR_LATEST="$(curl -fsSL https://api.github.com/repos/librespot-org/librespot/releases/latest \
-                | grep '"browser_download_url".*'"${LR_ARCH}"'\.tar\.xz' \
-                | head -1 \
-                | cut -d'"' -f4 || true)"
-            if [ -n "${LR_LATEST}" ]; then
-                echo "  Downloading ${LR_LATEST}..."
-                if curl -fsSL "${LR_LATEST}" | tar -xJ -C /tmp/ librespot 2>/dev/null \
-                   && mv /tmp/librespot /usr/bin/librespot \
-                   && chmod +x /usr/bin/librespot; then
-                    echo "  librespot binary installed to /usr/bin/librespot"
-                else
-                    echo "  WARN: download or extract failed — Spotify plugin will stay inert"
-                fi
+# spotifyd — Spotify Connect daemon. Built on top of librespot but
+# unlike librespot it ships prebuilt binaries for every release.
+# Download the `-full` flavour (alsa + pulseaudio + dbus_mpris) for
+# the host's arch and drop the binary at /usr/bin/spotifyd so the
+# unit's ConditionPathExists passes. Skip if already present.
+if ! command -v spotifyd >/dev/null 2>&1; then
+    echo "  Installing spotifyd (Spotify plugin)..."
+    case "${PLATFORM}" in
+        x86_64)  SPD_ARCH="x86_64" ;;
+        arm64)   SPD_ARCH="aarch64" ;;
+        *)       SPD_ARCH="" ;;
+    esac
+    if [ -n "${SPD_ARCH}" ]; then
+        SPD_URL="$(curl -fsSL https://api.github.com/repos/Spotifyd/spotifyd/releases/latest \
+            | grep '"browser_download_url".*spotifyd-linux-'"${SPD_ARCH}"'-full\.tar\.gz' \
+            | head -1 \
+            | cut -d'"' -f4 || true)"
+        if [ -n "${SPD_URL}" ]; then
+            echo "  Downloading ${SPD_URL}..."
+            if curl -fsSL "${SPD_URL}" | tar -xz -C /tmp/ spotifyd 2>/dev/null \
+               && mv /tmp/spotifyd /usr/bin/spotifyd \
+               && chmod +x /usr/bin/spotifyd; then
+                echo "  spotifyd binary installed to /usr/bin/spotifyd"
             else
-                echo "  WARN: no GitHub release found for arch ${LR_ARCH}"
+                echo "  WARN: download or extract failed — Spotify plugin will stay inert"
             fi
         else
-            echo "  WARN: unsupported arch ${PLATFORM} for librespot binary download"
+            echo "  WARN: no GitHub release found for arch ${SPD_ARCH}"
         fi
+    else
+        echo "  WARN: unsupported arch ${PLATFORM} for spotifyd binary download"
     fi
 fi
 
@@ -894,33 +887,36 @@ RestartSec=2
 WantedBy=default.target
 APV1SVC
 
-# Spotify Connect — librespot. Same After/Wants pattern as
-# shairport-sync (pipewire-pulse provides the PA socket librespot
-# writes into). The EnvironmentFile is rendered by SpotifyV1Plugin
-# on enable; ExecStart uses \$LIBRESPOT_ARGS without braces so
-# systemd's shell word-splitting expands it into individual args.
-# `ConditionPathExists=` on the binary keeps the unit out of the
-# `failed` state when librespot wasn't installable (apt couldn't
-# find it) — the plugin's runtime check surfaces that as
-# `last_error` to the UI.
+# Spotify Connect — spotifyd. Same After/Wants pattern as
+# shairport-sync (pipewire-pulse provides the PA socket spotifyd
+# writes into). spotifyd reads its TOML config via --config-path,
+# rendered by SpotifyV1Plugin on first enable. --no-daemon keeps it
+# in foreground so systemd manages the lifecycle.
+# `ConditionPathExists=` on the binary keeps the unit clean when
+# spotifyd wasn't installable — the plugin's runtime check surfaces
+# the inert state as `last_error` to the UI.
 mkdir -p "${DATA_DIR}/plugins/spotify-v1"
-cat > "${DATA_DIR}/.config/systemd/user/librespot.service" <<LRSPSVC
+cat > "${DATA_DIR}/.config/systemd/user/spotifyd.service" <<SPDSVC
 [Unit]
-Description=Spotify Connect receiver via librespot (Phonon plugin)
+Description=Spotify Connect receiver via spotifyd (Phonon plugin)
 After=pipewire-pulse.service
 Wants=pipewire-pulse.service
-ConditionPathExists=/usr/bin/librespot
+ConditionPathExists=/usr/bin/spotifyd
 
 [Service]
 Type=simple
-EnvironmentFile=-${DATA_DIR}/plugins/spotify-v1/librespot.env
-ExecStart=/usr/bin/librespot \$LIBRESPOT_ARGS
+ExecStart=/usr/bin/spotifyd --no-daemon --config-path ${DATA_DIR}/plugins/spotify-v1/spotifyd.conf
 Restart=on-failure
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-LRSPSVC
+SPDSVC
+
+# Remove the legacy librespot.service from earlier dev iterations —
+# the plugin no longer references it; leaving it on disk would just
+# clutter `systemctl --user list-unit-files`.
+rm -f "${DATA_DIR}/.config/systemd/user/librespot.service"
 
 # WirePlumber config (disable bluez5, use bluealsa instead)
 mkdir -p "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d"

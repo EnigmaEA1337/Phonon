@@ -319,9 +319,7 @@ async def patch_output_insert(request: Request, output_id: str, body: InsertSet)
 
 
 @router.post("/admin/cleanup-orphan-chain")
-async def cleanup_orphan_chain(
-    request: Request, filename: str
-) -> dict[str, object]:
+async def cleanup_orphan_chain(request: Request, filename: str) -> dict[str, object]:
     """Operator escape hatch: delete any file in the filter-chain
     conf drop-in directory (not restricted to `phonon-*.conf`) and
     reload filter-chain.service. Useful for clearing test confs

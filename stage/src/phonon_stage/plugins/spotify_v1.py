@@ -1,45 +1,51 @@
-"""Spotify Connect plugin — wraps librespot.
+"""Spotify Connect plugin — wraps spotifyd.
 
-librespot is the open-source Spotify Connect implementation (Rust).
-When running it appears as a Connect-capable speaker in the Spotify
-clients, and writes received audio to a PulseAudio sink.
+spotifyd is a headless Spotify Connect daemon (Rust) built on top
+of librespot. We use it instead of plain librespot because:
+
+  * spotifyd ships prebuilt binaries for x86_64 / aarch64 / armv7
+    in every GitHub release; librespot's release artifacts have
+    been source-only since v0.4. No Rust toolchain needed at
+    install time.
+  * The TOML config file model fits our render/parse pattern more
+    naturally than librespot's CLI-args-only approach.
+  * Featureset for our use case (zeroconf-discovered Connect speaker
+    writing to a PulseAudio sink) is identical. MPRIS / on_song_change
+    hooks / keyring extras are unused — Phonon does control + routing.
 
 Routing model
 -------------
 
-Same idea as airplay_v1: librespot's `--device <pa-sink>` argument
-pins its output, and we own a dedicated null-sink named
-`spotify_in` so the audio is contained in the Phonon routing matrix
-instead of leaking to whatever PW happens to consider the default
-sink. The null-sink's monitor port surfaces as a routable source
-in the patch bay just like `airplay_in` / `bt_<name>_in`.
+Same as airplay_v1: spotifyd's `device = "spotify_in"` pins its
+output to a dedicated null-sink we own; its monitor port surfaces
+as a routable source in the patch bay alongside `airplay_in` /
+`bt_<name>_in`. No auto-routing to the default sink.
 
 Daemon control
 --------------
 
-librespot is configured entirely via command-line args (no curly-
-brace conf like shairport-sync). We render the settings into a
-single `LIBRESPOT_ARGS=...` line in an EnvironmentFile that the
-user systemd unit sources; the unit's ExecStart uses
-`$LIBRESPOT_ARGS` (no braces) so systemd's shell-style word
-splitting expands it into individual args. `systemctl --user
-restart` picks up the new env on the next start.
+spotifyd reads its config from a TOML file (`spotifyd.conf`) at the
+path passed via `--config-path`. The plugin renders settings into
+that file and bounces the unit on changes via `systemctl --user
+restart`. The systemd unit's `ConditionPathExists=/usr/bin/spotifyd`
+keeps the unit inert when the binary is missing.
 
-Premium-only note
------------------
+User experience
+---------------
 
-Spotify Connect (the protocol librespot speaks) requires a Premium
-account on the *controlling* device. The Free tier doesn't expose
-the "send to a different speaker" affordance — the device shows up
-in Connect picker only for Premium users. Not a plugin bug, just
-a Spotify business rule.
+  1. Operator enables the plugin in the Phonon UI
+  2. spotifyd appears in any Spotify mobile/desktop app's Connect
+     picker (no login on the Stage — zeroconf delegation)
+  3. Premium account required on the controlling app (Spotify
+     business rule, not a plugin limitation)
+  4. Audio routes through `spotify_in` → user maps it in the Mix
+     Console like any other source
 """
 
 from __future__ import annotations
 
 import contextlib
 import re
-import shlex
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import ConfigDict, Field
@@ -53,9 +59,6 @@ if TYPE_CHECKING:
     from phonon_stage.plugins.system import SystemBackend
 
 
-# Dedicated null-sink the plugin owns. librespot writes here via
-# `--device spotify_in` and its monitor port becomes the routable
-# source in the patch bay.
 NULL_SINK_NAME = "spotify_in"
 NULL_SINK_DESCRIPTION = "Spotify-In"
 
@@ -63,11 +66,12 @@ NULL_SINK_DESCRIPTION = "Spotify-In"
 class SpotifyV1Settings(PluginSettings):
     """User-tunable surface for the Spotify Connect receiver.
 
-    Maps directly onto librespot's CLI options. Defaults reflect the
-    librespot upstream defaults except for `device_name` (we want it
-    visible as "Phonon" in Connect, not the host's hostname) and
-    `quiet` (we suppress the chatty info logs by default — the user
-    can flip it for troubleshooting)."""
+    Field names mirror the Phonon-side semantics; the renderer maps
+    them onto spotifyd's TOML keys (which use slightly different
+    naming: `device_name` vs our `name`, `audio_format` vs `format`,
+    `no_audio_cache` vs `disable_audio_cache`). The mapping is
+    centralised in `_render_conf` / `_parse_conf` so the API surface
+    stays stable if we ever swap daemons again."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -78,27 +82,15 @@ class SpotifyV1Settings(PluginSettings):
         max_length=63,
         description="Name visible to Spotify clients in their Connect picker.",
     )
-    # Zeroconf hint Spotify clients display next to the device name.
-    # `speaker` matches the use case best; the others are listed as
-    # informational so the operator can match the icon shown in
-    # Spotify Mobile / Desktop if they care.
     device_type: Literal[
-        "speaker",
         "computer",
         "tablet",
         "smartphone",
+        "speaker",
         "tv",
         "avr",
         "stb",
         "audiodongle",
-        "gameconsole",
-        "castaudio",
-        "castvideo",
-        "automobile",
-        "smartwatch",
-        "chromebook",
-        "carthing",
-        "homething",
     ] = Field(
         default="speaker",
         description="Device-type hint shown to Spotify clients (icon + label).",
@@ -109,9 +101,6 @@ class SpotifyV1Settings(PluginSettings):
         default=320,
         description="Spotify stream bitrate in kbps. 320 = high quality.",
     )
-    # librespot's PulseAudio backend supports several sample formats;
-    # F32 is the widest dynamic range and matches what PW's filter
-    # graph expects natively without conversion.
     format: Literal["F32", "F64", "S32", "S24", "S24_3", "S16"] = Field(
         default="F32",
         description="Sample format written into the PA sink.",
@@ -121,7 +110,7 @@ class SpotifyV1Settings(PluginSettings):
         ge=0,
         le=100,
         description=(
-            "Volume librespot applies to its output (0-100). The Phonon "
+            "Volume spotifyd applies to its output (0-100). The Phonon "
             "mixer's source gain is independent and stacks on top."
         ),
     )
@@ -131,8 +120,7 @@ class SpotifyV1Settings(PluginSettings):
         default=True,
         description=(
             "When the current track ends and the user's queue is empty, "
-            "ask Spotify to autoplay similar music. Off = the stream "
-            "goes silent until the user picks something new."
+            "ask Spotify to autoplay similar music."
         ),
     )
     disable_audio_cache: bool = Field(
@@ -150,39 +138,26 @@ class SpotifyV1Settings(PluginSettings):
         ge=0,
         le=65535,
         description=(
-            "TCP port librespot's mDNS responder binds to. 0 = the "
-            "kernel picks a free one. Set explicitly if you have a "
-            "firewall rule that needs a stable port."
-        ),
-    )
-
-    # ── Diagnostics ─────────────────────────────────────────────
-    quiet: bool = Field(
-        default=True,
-        description=(
-            "Suppress librespot's info-level chatter (every track change "
-            "logs a line otherwise). Turn off when troubleshooting."
+            "TCP port spotifyd's mDNS responder binds to. 0 = the kernel picks a free one."
         ),
     )
 
 
 class SpotifyV1Plugin:
-    """Concrete `SourcePlugin` implementation for librespot."""
+    """Concrete `SourcePlugin` implementation for spotifyd."""
 
     name: str = "spotify-v1"
     title: str = "Spotify Connect"
     description: str = (
-        "Spotify Connect receiver via librespot. Appears in the "
-        "Spotify app's device picker (Premium account required)."
+        "Spotify Connect receiver via spotifyd. Appears in the Spotify "
+        "app's device picker (Premium account required)."
     )
     family: str = "source"
-    # The routable surface is the null-sink's monitor — match on its
-    # name so /plugins reports the right PW node.
     pw_node_pattern: str = rf"(?i){NULL_SINK_NAME}"
 
     settings_model: type[PluginSettings] = SpotifyV1Settings
 
-    UNIT: str = "librespot.service"
+    UNIT: str = "spotifyd.service"
 
     def __init__(
         self,
@@ -192,8 +167,7 @@ class SpotifyV1Plugin:
     ) -> None:
         self._system = system
         self._pw = pw_backend
-        # EnvironmentFile path read by librespot.service. Owned by
-        # the phonon user — install.sh creates the parent dir.
+        # TOML config path read by spotifyd.service via --config-path.
         self._conf_path = conf_path
 
     # ── Lifecycle ──────────────────────────────────────────────
@@ -207,9 +181,6 @@ class SpotifyV1Plugin:
         return PluginRuntime(enabled=enabled, running=running, last_error=last_error)
 
     async def enable(self) -> None:
-        # Order matters: env file first (so librespot starts with the
-        # configured args), null-sink (so --device spotify_in resolves
-        # on first start), then enable the unit. Mirrors airplay_v1.
         if not self._system.file_exists(self._conf_path):
             await self.put_settings(SpotifyV1Settings())
         await self._ensure_null_sink()
@@ -230,8 +201,6 @@ class SpotifyV1Plugin:
         await self._system.systemctl_stop(self.UNIT)
 
     async def restart(self) -> None:
-        # Keep the null-sink around — the goal is a daemon bounce
-        # with the current env, mappings to spotify_in stay intact.
         await self._ensure_null_sink()
         await self._system.systemctl_restart(self.UNIT)
 
@@ -261,7 +230,6 @@ class SpotifyV1Plugin:
     # ── Null-sink management ───────────────────────────────────
 
     async def _ensure_null_sink(self) -> None:
-        """Idempotent: load only if no node with our name exists in PW."""
         try:
             nodes = await self._pw.list_nodes()
         except Exception:
@@ -275,15 +243,11 @@ class SpotifyV1Plugin:
             nodes = await self._pw.list_nodes()
         except Exception:
             return
-        target = next((n for n in nodes if n.name == NULL_SINK_NAME), None)
-        if target is None:
+        if not any(n.name == NULL_SINK_NAME for n in nodes):
             return
         await self._unload_null_sink_by_name()
 
     async def _unload_null_sink_by_name(self) -> None:
-        """Locate our null-sink module by sink_name and unload it.
-        Same Real/Fake split as airplay_v1 — the Fake exposes its
-        `null_sinks` dict directly, the Real backend queries pactl."""
         from phonon_stage.pipewire.fake import FakePipeWireBackend
 
         if isinstance(self._pw, FakePipeWireBackend):
@@ -296,128 +260,115 @@ class SpotifyV1Plugin:
             return
         await _real_unload_null_sink_by_name(self._pw)
 
-    # ── EnvironmentFile rendering / parsing ────────────────────
+    # ── TOML config rendering / parsing ────────────────────────
 
     @staticmethod
     def _render_conf(s: SpotifyV1Settings) -> str:
-        """Render settings as an EnvironmentFile that librespot.service
-        sources. The whole CLI is squeezed into a single
-        `LIBRESPOT_ARGS=...` line; systemd's `$VAR` (no braces) splits
-        on whitespace in ExecStart so each arg lands as expected.
+        """Render settings into spotifyd's TOML format.
 
-        Args are quoted with `shlex.quote` so a `name` containing
-        spaces or shell metacharacters stays in one piece. Boolean
-        flags appear or don't (no `--flag false` form — librespot
-        flags are presence-only)."""
-        args: list[str] = [
-            "--name",
-            s.name,
-            "--device-type",
-            s.device_type,
-            "--backend",
-            "pulseaudio",
-            "--device",
-            NULL_SINK_NAME,
-            "--bitrate",
-            str(s.bitrate),
-            "--format",
-            s.format,
-            "--initial-volume",
-            str(s.initial_volume),
-        ]
-        if s.zeroconf_port > 0:
-            args += ["--zeroconf-port", str(s.zeroconf_port)]
-        # Boolean flags — order doesn't matter to librespot but we
-        # keep it deterministic for clean diffs in /etc/passwd-style
-        # ops review.
-        if s.autoplay:
-            args += ["--autoplay", "on"]
-        else:
-            args += ["--autoplay", "off"]
-        if s.disable_audio_cache:
-            args.append("--disable-audio-cache")
-        if s.quiet:
-            args.append("--quiet")
-
-        joined = " ".join(shlex.quote(a) for a in args)
+        Mapping (Phonon → spotifyd):
+          name                  → device_name
+          format                → audio_format
+          disable_audio_cache   → no_audio_cache
+          (other keys match 1:1)
+        """
         return (
             "# Generated by phonon-stage SpotifyV1Plugin. Do not edit by hand —\n"
             "# changes are overwritten on the next /plugins/spotify-v1/settings PUT.\n"
-            f"LIBRESPOT_ARGS={joined}\n"
+            "[global]\n"
+            'backend = "pulseaudio"\n'
+            f'device = "{NULL_SINK_NAME}"\n'
+            f'device_name = "{_toml_escape(s.name)}"\n'
+            f'device_type = "{s.device_type}"\n'
+            f"bitrate = {s.bitrate}\n"
+            f'audio_format = "{s.format}"\n'
+            f'initial_volume = "{s.initial_volume}"\n'
+            f"autoplay = {_toml_bool(s.autoplay)}\n"
+            f"no_audio_cache = {_toml_bool(s.disable_audio_cache)}\n"
+            f"zeroconf_port = {s.zeroconf_port}\n"
         )
 
     @staticmethod
     def _parse_conf(raw: str) -> SpotifyV1Settings:
-        """Reverse-parse the EnvironmentFile into a SpotifyV1Settings.
-        Defaults cover every field the user hasn't set or the file
-        doesn't carry — if parsing fails on any specific arg we just
-        leave that field at default rather than refusing to load."""
+        """Reverse-parse the TOML body into a SpotifyV1Settings. A
+        bad / missing key falls back to the model default rather
+        than rejecting the whole file — small forward-compat cushion
+        if a future spotifyd version adds keys we don't model yet."""
         defaults = SpotifyV1Settings()
-        m = re.search(r"^LIBRESPOT_ARGS=(.*)$", raw, re.MULTILINE)
-        if not m:
-            return defaults
-        try:
-            tokens = shlex.split(m.group(1))
-        except ValueError:
-            return defaults
-        # Walk tokens as a flag/value stream. Each `--key value` pair
-        # consumes two tokens; presence-only boolean flags one.
-        # Build a dict-of-fields and feed it into pydantic at the end
-        # so a single bad token doesn't poison everything.
         out: dict[str, object] = {}
-        # Map of `--cli-flag` → settings field name for the value-pair
-        # flags. Order doesn't matter — handled below by a lookup.
-        str_flags = {"--name": "name", "--device-type": "device_type", "--format": "format"}
-        int_flags = {
-            "--bitrate": "bitrate",
-            "--initial-volume": "initial_volume",
-            "--zeroconf-port": "zeroconf_port",
-        }
-        i = 0
-        n = len(tokens)
-        while i < n:
-            tok = tokens[i]
-            if tok in str_flags and i + 1 < n:
-                out[str_flags[tok]] = tokens[i + 1]
-                i += 2
-                continue
-            if tok in int_flags and i + 1 < n:
-                with contextlib.suppress(ValueError):
-                    out[int_flags[tok]] = int(tokens[i + 1])
-                i += 2
-                continue
-            if tok == "--autoplay" and i + 1 < n:
-                out["autoplay"] = tokens[i + 1].lower() == "on"
-                i += 2
-                continue
-            if tok == "--disable-audio-cache":
-                out["disable_audio_cache"] = True
-                i += 1
-                continue
-            if tok == "--quiet":
-                out["quiet"] = True
-                i += 1
-                continue
-            # Unknown token — librespot upstream may have added flags
-            # we don't model. Skip without erroring.
-            i += 1
-        # Presence-only boolean flags: when the flag is absent from the
-        # args we must record `False` explicitly, otherwise pydantic
-        # would fall back to the model's default (True for both) and
-        # the parser would round-trip the wrong value.
-        out.setdefault("disable_audio_cache", False)
-        out.setdefault("quiet", False)
+        name = _extract_string(raw, "device_name")
+        if name is not None:
+            out["name"] = name
+        dtype = _extract_string(raw, "device_type")
+        if dtype is not None:
+            out["device_type"] = dtype
+        br = _extract_int(raw, "bitrate")
+        if br is not None:
+            out["bitrate"] = br
+        fmt = _extract_string(raw, "audio_format")
+        if fmt is not None:
+            out["format"] = fmt
+        # spotifyd quotes initial_volume as a string in TOML
+        iv = _extract_string(raw, "initial_volume")
+        if iv is not None:
+            with contextlib.suppress(ValueError):
+                out["initial_volume"] = int(iv)
+        ap = _extract_bool(raw, "autoplay")
+        if ap is not None:
+            out["autoplay"] = ap
+        nc = _extract_bool(raw, "no_audio_cache")
+        if nc is not None:
+            out["disable_audio_cache"] = nc
+        zp = _extract_int(raw, "zeroconf_port")
+        if zp is not None:
+            out["zeroconf_port"] = zp
         try:
             return SpotifyV1Settings(**out)
         except Exception:
             return defaults
 
 
+def _toml_bool(b: bool) -> str:
+    return "true" if b else "false"
+
+
+def _toml_escape(s: str) -> str:
+    """Escape a string for a TOML double-quoted value."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_STRING_RE_TMPL = r'^\s*{key}\s*=\s*"((?:[^"\\]|\\.)*)"\s*$'
+_INT_RE_TMPL = r"^\s*{key}\s*=\s*(-?\d+)\s*$"
+_BOOL_RE_TMPL = r"^\s*{key}\s*=\s*(true|false)\s*$"
+
+
+def _extract_string(raw: str, key: str) -> str | None:
+    m = re.search(_STRING_RE_TMPL.format(key=re.escape(key)), raw, re.MULTILINE)
+    if not m:
+        return None
+    return m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _extract_int(raw: str, key: str) -> int | None:
+    m = re.search(_INT_RE_TMPL.format(key=re.escape(key)), raw, re.MULTILINE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_bool(raw: str, key: str) -> bool | None:
+    m = re.search(_BOOL_RE_TMPL.format(key=re.escape(key)), raw, re.MULTILINE)
+    if not m:
+        return None
+    return m.group(1) == "true"
+
+
 async def _real_unload_null_sink_by_name(pw: PipeWireBackend) -> None:
-    """Same shape as the airplay_v1 helper — locate our null-sink
-    module by sink_name in pactl's module list and unload it. Errors
-    are logged, never raised: disable() shouldn't fail just because
-    pactl didn't surface our module any more."""
+    """Locate our null-sink module by sink_name in pactl's module list
+    and unload it. Errors are logged, never raised."""
     import structlog
 
     log = structlog.get_logger()

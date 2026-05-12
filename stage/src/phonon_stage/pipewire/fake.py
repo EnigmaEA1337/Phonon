@@ -238,8 +238,4 @@ class FakePipeWireBackend:
         """Return everything the test has set on this chain via
         set_filter_node_control. Tests that need to assert on monitoring
         behaviour pre-populate `filter_chain_controls` themselves."""
-        return {
-            ctl: v
-            for (n, ctl), v in self.filter_chain_controls.items()
-            if n == node_name
-        }
+        return {ctl: v for (n, ctl), v in self.filter_chain_controls.items() if n == node_name}

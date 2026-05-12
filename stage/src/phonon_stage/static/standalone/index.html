@@ -614,6 +614,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
 .g-node-rect.role-source  { stroke: #fbbf24; }
 .g-node-rect.role-master  { stroke: #f87171; }
 .g-node-rect.role-fx      { stroke: #a855f7; }
+.g-node-rect.role-transport { stroke: #94a3b8; stroke-dasharray: 3 2; }
 .g-node-rect.role-output  { stroke: #e879f9; }
 .g-node-rect.role-other   { stroke: #6a8294; }
 .g-node-rect.dragging { stroke-width: 2; filter: drop-shadow(0 0 6px rgba(34,211,238,0.45)); }
@@ -623,6 +624,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
 .g-node-titlebar.role-source  { fill: rgba(251,191,36,0.18); }
 .g-node-titlebar.role-master  { fill: rgba(248,113,113,0.22); }
 .g-node-titlebar.role-fx      { fill: rgba(168,85,247,0.18); }
+.g-node-titlebar.role-transport { fill: rgba(148,163,184,0.15); }
 .g-node-titlebar.role-output  { fill: rgba(232,121,249,0.18); }
 .g-node-title { font-family: var(--font-d); font-size: 12px; font-weight: 600; fill: var(--text); pointer-events: none; }
 .g-node-sub   { font-family: var(--font-m); font-size: 9px; fill: var(--text-dim); pointer-events: none; }
@@ -931,6 +933,7 @@ body.mode-live .edit-only select { opacity: 0.4; }
           <span class="leg-dot" style="background:#fbbf24"></span>Source (mixer)
           <span class="leg-dot" style="background:#f87171"></span>Master
           <span class="leg-dot" style="background:#a855f7"></span>FX
+          <span class="leg-dot" style="background:#94a3b8"></span>Transport
           <span class="leg-dot" style="background:#e879f9"></span>Output
           <span class="leg-dot" style="background:#6a8294"></span>Other
           <span style="flex:1"></span>
@@ -5276,11 +5279,12 @@ const GRAPH_NODE_W = 220;
 const GRAPH_TITLE_H = 24;
 const GRAPH_PORT_H = 16;
 const GRAPH_LANE_X = {
-  daemon:   60,
+  daemon:    60,
   srcsink:  340,
   source:   620,
   master:   900,
   fx:      1180,
+  transport: 1180,  // loopbacks sit at the FX lane when no FX is attached
   output:  1460,
   other:   1740,
 };
@@ -5366,6 +5370,12 @@ function _classifyNode(node, mixer, plugins, daemonNodeIds) {
     }
   }
   if (daemonNodeIds.has(node.id)) return 'daemon';
+  // Anything still unclassified that PW reports as a Stream is most
+  // likely a transport bridge brought in by the one-hop expansion
+  // (module-loopback playback/capture, bluez bridge stream, etc.).
+  // Putting them in their own role keeps them visually between
+  // master and outputs.
+  if ((node.media_class || '').startsWith('Stream/')) return 'transport';
   return 'other';
 }
 
@@ -5482,6 +5492,31 @@ function renderGraph() {
   const nameToNode = new Map();
   for (const n of allNodes) nameToNode.set(n.name, n);
 
+  // ── Expand by one hop along live links ──
+  // The mixer routes master → output through module-loopback, which
+  // creates an intermediate PW node. That node isn't in any mixer
+  // field, so the strict relevantNames filter would drop it — and we
+  // see master and DG60 as two disconnected boxes. Add any node
+  // that touches a relevant node via a link, so transport modules
+  // (loopback, bluez-bridge, etc.) become visible. One hop is
+  // enough for everything we currently use.
+  {
+    const portToNodeName = new Map();
+    for (const p of allPorts) {
+      const nd = allNodes.find(x => x.id === p.node_id);
+      if (nd) portToNodeName.set(p.id, nd.name);
+    }
+    const neighbours = new Set();
+    for (const lk of allLinks) {
+      const outName = portToNodeName.get(lk.output_port_id);
+      const inName  = portToNodeName.get(lk.input_port_id);
+      if (!outName || !inName) continue;
+      if (relevantNames.has(outName)) neighbours.add(inName);
+      if (relevantNames.has(inName))  neighbours.add(outName);
+    }
+    for (const n of neighbours) relevantNames.add(n);
+  }
+
   // Source-plugin null-sink node ids — used to discover the daemons
   // writing into them (lane 0).
   const srcSinkIds = new Set();
@@ -5512,7 +5547,7 @@ function renderGraph() {
   }
 
   // ── Layout: assign positions to nodes that don't have saved ones ──
-  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, output: 0, other: 0 };
+  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, transport: 0, output: 0, other: 0 };
   const nodeBoxes = {};
   for (const n of visibleNodes) {
     const role = roleByNode[n.id];

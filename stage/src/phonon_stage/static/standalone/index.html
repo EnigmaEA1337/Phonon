@@ -5546,38 +5546,64 @@ function renderGraph() {
     graphRoles[n.name] = role;
   }
 
-  // ── Layout: assign positions to nodes that don't have saved ones ──
-  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, transport: 0, output: 0, other: 0 };
-  const nodeBoxes = {};
+  // ── Group nodes by name (= same logical unit) ──
+  // PW spawns one node per stream side for module-loopback and
+  // module-filter-chain: a "capture" stream (output ports only,
+  // feeding downstream) and a "playback" stream (input ports only,
+  // sinking upstream). They share the same node.name. Treating them
+  // as ONE box per name kills the duplicate-box clutter and gives
+  // the bridge a real input-left / output-right shape.
+  const groupsByKey = new Map();
   for (const n of visibleNodes) {
-    const role = roleByNode[n.id];
-    let pos = graphPositions[n.name];
-    if (!pos) {
-      pos = _autoPositionLane(role, laneSlots[role]++);
-      // Don't persist auto positions — only user drags get saved.
-    } else {
-      // Still bump the lane slot so unsaved nodes don't collide.
-      laneSlots[role]++;
+    const k = n.name;
+    if (!groupsByKey.has(k)) groupsByKey.set(k, []);
+    groupsByKey.get(k).push(n);
+  }
+
+  // ── Layout: one box per group, position persists per name ──
+  const laneSlots = { daemon: 0, srcsink: 0, source: 0, master: 0, fx: 0, transport: 0, output: 0, other: 0 };
+  const boxes = [];           // ordered list for render loop
+  const nodeIdToBox = new Map();  // for cable lookup
+  for (const [key, members] of groupsByKey) {
+    const role = roleByNode[members[0].id];
+    let pos = graphPositions[key];
+    if (!pos) pos = _autoPositionLane(role, laneSlots[role]++);
+    else      laneSlots[role]++;
+    // Merge ports across members. Each port keeps its real PW id so
+    // cable lookup still works — it's purely a visual coalescing.
+    const ins = [];
+    const outs = [];
+    for (const m of members) {
+      const r = _buildPortRows(m, allPorts);
+      for (const p of r.ins)  ins.push(p);
+      for (const p of r.outs) outs.push(p);
     }
-    const portRows = _buildPortRows(n, allPorts);
-    nodeBoxes[n.id] = {
+    ins.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    outs.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const portRows = { ins, outs };
+    const box = {
+      key,
       x: pos.x, y: pos.y,
       w: GRAPH_NODE_W,
       h: _nodeHeightFor(portRows),
-      role, node: n, ports: portRows,
+      role,
+      members,                  // every PW node that maps to this box
+      representative: members[0],
+      ports: portRows,
     };
+    for (const m of members) nodeIdToBox.set(m.id, box);
+    boxes.push(box);
   }
 
   // ── Render cables FIRST so node boxes sit on top ──
   let cableCount = 0;
   for (const lk of allLinks) {
-    // Resolve port → node.
     const outPort = allPorts.find(p => p.id === lk.output_port_id);
     const inPort  = allPorts.find(p => p.id === lk.input_port_id);
     if (!outPort || !inPort) continue;
-    const outBox = nodeBoxes[outPort.node_id];
-    const inBox  = nodeBoxes[inPort.node_id];
-    if (!outBox || !inBox) continue;   // either endpoint is filtered out
+    const outBox = nodeIdToBox.get(outPort.node_id);
+    const inBox  = nodeIdToBox.get(inPort.node_id);
+    if (!outBox || !inBox) continue;
     const a = _portCoords(outBox, outPort.id, 'out', outBox.ports.outs);
     const b = _portCoords(inBox,  inPort.id,  'in',  inBox.ports.ins);
     if (!a || !b) continue;
@@ -5591,12 +5617,10 @@ function renderGraph() {
   }
 
   // ── Render node boxes ──
-  for (const id in nodeBoxes) {
-    const box = nodeBoxes[id];
+  for (const box of boxes) {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', 'g-node');
-    g.setAttribute('data-node-id', String(box.node.id));
-    g.setAttribute('data-node-name', box.node.name);
+    g.setAttribute('data-node-key', box.key);
     g.setAttribute('transform', `translate(${box.x}, ${box.y})`);
 
     // Outer rect
@@ -5615,21 +5639,32 @@ function renderGraph() {
     tb.setAttribute('rx', '4');
     g.appendChild(tb);
 
-    // Title text
+    // Title text — short label + "(N)" hint if this box coalesces
+    // several PW nodes (typical for module-loopback + filter-chain).
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     title.setAttribute('class', 'g-node-title');
     title.setAttribute('x', '8');
     title.setAttribute('y', '16');
-    title.textContent = _nodeShortLabel(box.node);
+    const baseLabel = _nodeShortLabel(box.representative);
+    title.textContent = box.members.length > 1
+      ? `${baseLabel} ×${box.members.length}`
+      : baseLabel;
     g.appendChild(title);
 
-    // Subtitle (media_class + state)
+    // Subtitle: worst-case state across members so SUSPENDED on any
+    // side surfaces as the visible state, not RUNNING from the other.
+    const stateOrder = ['error', 'suspended', 'idle', 'running'];
+    let worst = 'running';
+    for (const m of box.members) {
+      const s = (m.state || '').toLowerCase();
+      if (stateOrder.indexOf(s) < stateOrder.indexOf(worst)) worst = s || worst;
+    }
     const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     sub.setAttribute('class', 'g-node-sub');
     sub.setAttribute('x', String(box.w - 6));
     sub.setAttribute('y', '16');
     sub.setAttribute('text-anchor', 'end');
-    sub.textContent = (box.node.state || '?').slice(0, 4);
+    sub.textContent = worst.slice(0, 4);
     g.appendChild(sub);
 
     // Drag handle = the title bar area
@@ -5675,19 +5710,20 @@ function renderGraph() {
     });
 
     // Drag wiring on the title-bar handle
-    _attachDrag(handle, g, box, nodeBoxes);
+    _attachDrag(handle, g, box, boxes);
     gNodes.appendChild(g);
   }
 
   // Status line
   const status = document.getElementById('graph-status');
   if (status) {
-    status.textContent = `${Object.keys(nodeBoxes).length} nodes · ${cableCount} cables`
+    const memberCount = boxes.reduce((s, b) => s + b.members.length, 0);
+    status.textContent = `${boxes.length} boxes (${memberCount} PW nodes) · ${cableCount} cables`
       + (showAll ? '' : ` · mixer-relevant only`);
   }
 }
 
-function _attachDrag(handleEl, groupEl, box, nodeBoxes) {
+function _attachDrag(handleEl, groupEl, box, allBoxes) {
   let dragging = false;
   let dx = 0, dy = 0;
   let svgPt;
@@ -5720,16 +5756,14 @@ function _attachDrag(handleEl, groupEl, box, nodeBoxes) {
     box.x = Math.max(0, p.x - dx);
     box.y = Math.max(0, p.y - dy);
     groupEl.setAttribute('transform', `translate(${box.x}, ${box.y})`);
-    // Live-update cables tied to this node — cheap walk since the
-    // SVG link group is shallow.
-    _redrawCablesForNode(box, nodeBoxes);
+    _redrawCablesForBox(box, allBoxes);
   }
 
   function onUp() {
     if (!dragging) return;
     dragging = false;
     groupEl.querySelector('.g-node-rect')?.classList.remove('dragging');
-    graphPositions[box.node.name] = { x: box.x, y: box.y };
+    graphPositions[box.key] = { x: box.x, y: box.y };
     _saveGraphPositions();
   }
 
@@ -5737,13 +5771,19 @@ function _attachDrag(handleEl, groupEl, box, nodeBoxes) {
   window.addEventListener('mouseup', onUp);
 }
 
-function _redrawCablesForNode(movedBox, nodeBoxes) {
+function _redrawCablesForBox(movedBox, allBoxes) {
   const allPorts = graphData.ports || [];
   const allLinks = graphData.links || [];
   const movedPortIds = new Set([
     ...movedBox.ports.ins.map(p => p.id),
     ...movedBox.ports.outs.map(p => p.id),
   ]);
+  // Build a port_id → box lookup once for this drag tick.
+  const portToBox = new Map();
+  for (const b of allBoxes) {
+    for (const p of b.ports.ins)  portToBox.set(p.id, b);
+    for (const p of b.ports.outs) portToBox.set(p.id, b);
+  }
   const gLinks = document.getElementById('graph-links');
   if (!gLinks) return;
   for (const cable of gLinks.querySelectorAll('path.g-cable')) {
@@ -5751,14 +5791,11 @@ function _redrawCablesForNode(movedBox, nodeBoxes) {
     const lk = allLinks.find(x => x.id === linkId);
     if (!lk) continue;
     if (!movedPortIds.has(lk.input_port_id) && !movedPortIds.has(lk.output_port_id)) continue;
-    const outPort = allPorts.find(p => p.id === lk.output_port_id);
-    const inPort  = allPorts.find(p => p.id === lk.input_port_id);
-    if (!outPort || !inPort) continue;
-    const outBox = nodeBoxes[outPort.node_id];
-    const inBox  = nodeBoxes[inPort.node_id];
+    const outBox = portToBox.get(lk.output_port_id);
+    const inBox  = portToBox.get(lk.input_port_id);
     if (!outBox || !inBox) continue;
-    const a = _portCoords(outBox, outPort.id, 'out', outBox.ports.outs);
-    const b = _portCoords(inBox,  inPort.id,  'in',  inBox.ports.ins);
+    const a = _portCoords(outBox, lk.output_port_id, 'out', outBox.ports.outs);
+    const b = _portCoords(inBox,  lk.input_port_id,  'in',  inBox.ports.ins);
     cable.setAttribute('d', _bezierPath(a, b));
   }
 }

@@ -980,29 +980,6 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
-    <!-- FX plugin picker modal — multi-plugin chain catalogue picker.
-         Used by both "+ FX" (replace slot 0 on an empty chain) and
-         the chain-row "+" button (append a new slot). The state
-         `fxPickerState` carries the target output id + mode. -->
-    <div id="fx-picker-modal" class="modal-overlay" style="display:none">
-      <div class="modal" style="max-width:680px;width:96%">
-        <div class="modal-head">
-          <span id="fx-picker-title">Choose a plugin</span>
-          <button class="modal-close" onclick="closeFxPicker()">×</button>
-        </div>
-        <div class="modal-body" style="padding:8px 12px">
-          <input type="text" id="fx-picker-search" placeholder="Search plugin name or label…"
-                 oninput="renderFxPickerList()"
-                 style="width:100%;background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;margin-bottom:8px">
-          <div id="fx-picker-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg-2);font-family:var(--font-m);font-size:11px"></div>
-          <div id="fx-picker-status" style="margin-top:6px;font-family:var(--font-m);font-size:10px;color:var(--text-fade);min-height:14px"></div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" onclick="closeFxPicker()">Cancel</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Macvlan create / edit modal -->
     <div id="macvlan-modal" class="modal-overlay" style="display:none">
       <div class="modal" style="max-width:520px">
@@ -1296,6 +1273,28 @@ body.mode-live .edit-only select { opacity: 0.4; }
   <div class="statusbar" id="statusbar">
     <span id="status-ip">—</span>
     <span id="status-mode">—</span>
+  </div>
+</div>
+
+<!-- FX plugin picker modal — page-root level so it works from any tab.
+     Triggered from the Mix Console's "+ FX" buttons and chain "+" badge.
+     State carried by `fxPickerState`. -->
+<div id="fx-picker-modal" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:680px;width:96%">
+    <div class="modal-head">
+      <span id="fx-picker-title">Choose a plugin</span>
+      <button class="modal-close" onclick="closeFxPicker()">×</button>
+    </div>
+    <div class="modal-body" style="padding:8px 12px">
+      <input type="text" id="fx-picker-search" placeholder="Search plugin name or label…"
+             oninput="renderFxPickerList()"
+             style="width:100%;background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;margin-bottom:8px">
+      <div id="fx-picker-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg-2);font-family:var(--font-m);font-size:11px"></div>
+      <div id="fx-picker-status" style="margin-top:6px;font-family:var(--font-m);font-size:10px;color:var(--text-fade);min-height:14px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeFxPicker()">Cancel</button>
+    </div>
   </div>
 </div>
 

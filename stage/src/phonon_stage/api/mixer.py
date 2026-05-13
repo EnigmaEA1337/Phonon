@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import math
+import random
+import struct
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
@@ -334,7 +338,7 @@ async def reconcile(request: Request) -> dict[str, str]:
     state to whatever the store says.
     """
     svc: MixerService = request.app.state.mixer_service
-    await svc._reconcile()  # noqa: SLF001 — service exposes no public hook
+    await svc._reconcile()
     return {"status": "reconciled"}
 
 
@@ -501,3 +505,151 @@ async def delete_source(request: Request, source_id: str) -> None:
         await svc.remove_source(source_id)
     except MixerError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ── Test tone injection (TEST AUDIO button) ─────────────────────────
+#
+# Generates a signal in-process and pipes it to `pacat` writing into
+# phonon_master, so the signal travels the full Master → loopbacks /
+# filter-chains → real outputs chain. Useful to verify whether audio
+# is actually reaching the speakers when the user reports intermittent
+# silence.
+
+_TEST_TONE_KINDS = ("click", "tone", "pink")
+_TEST_TONE_SR = 48000
+
+_test_tone_proc: asyncio.subprocess.Process | None = None
+_test_tone_kind: str | None = None
+_test_tone_writer: asyncio.Task[None] | None = None
+
+
+def _build_loop_buffer(kind: str) -> bytes:
+    """One second of stereo s16le @ 48 kHz. Looped by the writer."""
+    sr = _TEST_TONE_SR
+    buf = bytearray(sr * 4)  # stereo, 2 bytes/sample
+    if kind == "click":
+        # 120 BPM = 2 ticks/sec. Each tick = 50 ms of 1 kHz sine,
+        # cosine-windowed so it doesn't itself click.
+        period = sr // 2
+        tick = int(sr * 0.05)
+        for i in range(sr):
+            pos = i % period
+            if pos < tick:
+                env = math.sin(math.pi * pos / tick)
+                s = int(0.5 * 32767 * env * math.sin(2 * math.pi * 1000 * pos / sr))
+            else:
+                s = 0
+            struct.pack_into("<hh", buf, i * 4, s, s)
+    elif kind == "tone":
+        # Continuous 440 Hz sine at -10 dBFS.
+        amp = int(32767 * 0.316)
+        for i in range(sr):
+            s = int(amp * math.sin(2 * math.pi * 440 * i / sr))
+            struct.pack_into("<hh", buf, i * 4, s, s)
+    elif kind == "pink":
+        # Cheap white noise at -14 dBFS. "Pink" is a UI label —
+        # accurate pink filtering isn't worth the code here.
+        amp_f = 32767 * 0.2
+        for i in range(sr):
+            s = int(amp_f * (random.random() * 2 - 1))
+            struct.pack_into("<hh", buf, i * 4, s, s)
+    else:
+        raise ValueError(f"unknown kind: {kind}")
+    return bytes(buf)
+
+
+async def _feed_test_tone(proc: asyncio.subprocess.Process, kind: str) -> None:
+    """Stream the loop buffer to pacat's stdin until cancelled or pacat exits."""
+    buf = _build_loop_buffer(kind)
+    chunk = 4096  # ~21 ms — keeps drain latency low
+    try:
+        while True:
+            for off in range(0, len(buf), chunk):
+                if proc.stdin is None or proc.returncode is not None:
+                    return
+                proc.stdin.write(buf[off : off + chunk])
+                try:
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+    except asyncio.CancelledError:
+        return
+
+
+async def _stop_test_tone_locked() -> None:
+    """Tear down the running tone, if any. Caller holds no lock — we
+    just zero the module-level state. Single-worker app so it's fine."""
+    global _test_tone_proc, _test_tone_kind, _test_tone_writer
+    writer = _test_tone_writer
+    proc = _test_tone_proc
+    _test_tone_writer = None
+    _test_tone_proc = None
+    _test_tone_kind = None
+    if writer is not None and not writer.done():
+        writer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await writer
+    if proc is not None and proc.returncode is None:
+        with contextlib.suppress(Exception):
+            if proc.stdin is not None:
+                proc.stdin.close()
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+
+
+@router.post("/admin/test-tone/start")
+async def start_test_tone(kind: str = "click") -> dict[str, str]:
+    """Inject a test signal into phonon_master so the operator can
+    hear whether audio is reaching the outputs. Kinds:
+      - click: 120 BPM metronome (1 kHz windowed bursts)
+      - tone:  steady 440 Hz sine
+      - pink:  white-noise bed
+    Calling start while already running stops the previous one first."""
+    global _test_tone_proc, _test_tone_kind, _test_tone_writer
+    if kind not in _TEST_TONE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind must be one of {_TEST_TONE_KINDS}",
+        )
+    await _stop_test_tone_locked()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pacat",
+            "--playback",
+            "--device=phonon_master",
+            "--rate=48000",
+            "--format=s16le",
+            "--channels=2",
+            "--stream-name=phonon-test-tone",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="pacat not installed (apt install pulseaudio-utils)",
+        ) from exc
+    _test_tone_proc = proc
+    _test_tone_kind = kind
+    _test_tone_writer = asyncio.create_task(_feed_test_tone(proc, kind))
+    return {"status": "started", "kind": kind}
+
+
+@router.post("/admin/test-tone/stop")
+async def stop_test_tone() -> dict[str, str]:
+    await _stop_test_tone_locked()
+    return {"status": "stopped"}
+
+
+@router.get("/admin/test-tone/status")
+async def status_test_tone() -> dict[str, object]:
+    running = _test_tone_proc is not None and _test_tone_proc.returncode is None
+    return {"running": running, "kind": _test_tone_kind if running else None}

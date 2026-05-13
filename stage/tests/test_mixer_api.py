@@ -236,3 +236,41 @@ class TestProductionScenario:
         assert labels_to_delays == {"Pulse 3": 115.0, "Xtreme 4": 0.0}
         # Quiet unused-var.
         assert dg1["id"] != dg2["id"]
+
+
+class TestTestTone:
+    """The TEST AUDIO button — generated signal injected into the master
+    so the operator can audibly verify the Master → outputs chain."""
+
+    async def test_rejects_unknown_kind(self, client: AsyncClient) -> None:
+        resp = await client.post("/mixer/admin/test-tone/start?kind=banana")
+        assert resp.status_code == 400
+
+    async def test_status_idle(self, client: AsyncClient) -> None:
+        resp = await client.get("/mixer/admin/test-tone/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["running"] is False
+        assert body["kind"] is None
+
+    async def test_stop_is_idempotent_when_idle(self, client: AsyncClient) -> None:
+        # Stop while nothing is running should still answer cleanly.
+        resp = await client.post("/mixer/admin/test-tone/stop")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "stopped"}
+
+    def test_loop_buffer_shape_matches_one_second(self) -> None:
+        # Buffer math: 1s * 48 kHz * stereo * 2 bytes = 384 000 bytes.
+        from phonon_stage.api.mixer import _TEST_TONE_SR, _build_loop_buffer
+
+        for kind in ("click", "tone", "pink"):
+            buf = _build_loop_buffer(kind)
+            assert len(buf) == _TEST_TONE_SR * 4
+
+    def test_loop_buffer_unknown_kind_raises(self) -> None:
+        import pytest
+
+        from phonon_stage.api.mixer import _build_loop_buffer
+
+        with pytest.raises(ValueError, match="unknown kind"):
+            _build_loop_buffer("banana")

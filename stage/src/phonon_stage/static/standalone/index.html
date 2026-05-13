@@ -1628,8 +1628,14 @@ async function fetchMixer() {
   try {
     const r = await fetch(API + '/mixer');
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    mixerState = await r.json();
+    const fresh = await r.json();
+    // Carry over the test-tone state since /mixer doesn't return it
+    // and a separate poll keeps it fresh.
+    const carryTT = mixerState.testTone;
+    mixerState = fresh;
+    if (carryTT) mixerState.testTone = carryTT;
     renderMixer();
+    refreshTestToneStatus();
   } catch (e) {
     const el = document.getElementById('mix-sources');
     if (el) el.innerHTML = `<div style="color:var(--red);font-size:11px">Failed: ${escapeHtml(e.message)}</div>`;
@@ -2493,6 +2499,12 @@ function renderMixMaster() {
   // master is in the signal path at all (vs everyone going direct).
   const sourcesIn = (mixerState.sources || []).filter(s => s.to_master && !s.mute).length;
   const outputsOut = (mixerState.outputs || []).filter(o => o.receives_master && !o.mute).length;
+  const tt = mixerState.testTone || { running: false, kind: null };
+  const ttActive = tt.running ? ' active' : '';
+  const ttLabel = tt.running ? `TEST ${tt.kind || ''}`.trim() : 'TEST AUDIO';
+  const ttTitle = tt.running
+    ? `Stop test signal (currently: ${tt.kind})`
+    : 'Inject a test signal into the master to verify outputs (click=metronome, tone=440Hz, pink=noise)';
   el.innerHTML = `<div class="strip mix-master">
     <div class="row-action" style="display:flex;align-items:center;gap:3px">
       <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
@@ -2501,7 +2513,13 @@ function renderMixMaster() {
     <div class="row-route mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="row-extra1"></div>
     <div class="row-extra2"></div>
-    <div class="row-fx empty"></div>
+    <div class="row-fx">
+      <button class="fx-btn${ttActive}" onclick="mixerTestToneToggle(event)"
+              oncontextmenu="mixerTestToneCycle(event); return false;"
+              title="${escapeHtml(ttTitle)} — right-click to cycle kind">
+        <span class="fx-led"></span><span class="fx-name">${escapeHtml(ttLabel)}</span>
+      </button>
+    </div>
     ${mrlsRow('mix-master', '', m)}
     <div class="row-fader fader-area">
       ${MIX_VU_TICKS}
@@ -2916,6 +2934,66 @@ async function mixerResync() {
     alert('Resync error: ' + e.message);
   }
   await fetchMixer();
+}
+
+// ── TEST AUDIO (master test-tone injection) ─────────────
+// Injects a generated signal into phonon_master so the operator can
+// hear whether audio reaches the outputs without needing a real
+// upstream source. Three kinds: click (metronome), tone (440Hz),
+// pink (noise). Toggle on the button; right-click cycles the kind
+// while running (or sets the next-start kind while idle).
+
+const TEST_TONE_KINDS = ['click', 'tone', 'pink'];
+let testTonePreferredKind = 'click';
+
+async function refreshTestToneStatus() {
+  try {
+    const r = await fetch(API + '/mixer/admin/test-tone/status');
+    if (!r.ok) return;
+    mixerState.testTone = await r.json();
+    renderMixMaster();
+  } catch { /* button stays in last-known state */ }
+}
+
+async function mixerTestToneToggle(event) {
+  if (event) event.stopPropagation();
+  const tt = mixerState.testTone || { running: false };
+  try {
+    if (tt.running) {
+      await fetch(API + '/mixer/admin/test-tone/stop', { method: 'POST' });
+    } else {
+      const r = await fetch(
+        API + '/mixer/admin/test-tone/start?kind=' + encodeURIComponent(testTonePreferredKind),
+        { method: 'POST' });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        alert('TEST AUDIO failed: ' + (e.detail || r.status));
+      }
+    }
+  } catch (e) {
+    alert('TEST AUDIO error: ' + e.message);
+  }
+  await refreshTestToneStatus();
+}
+
+async function mixerTestToneCycle(event) {
+  if (event) event.stopPropagation();
+  const idx = TEST_TONE_KINDS.indexOf(testTonePreferredKind);
+  testTonePreferredKind = TEST_TONE_KINDS[(idx + 1) % TEST_TONE_KINDS.length];
+  const tt = mixerState.testTone || { running: false };
+  if (tt.running) {
+    // Restart with the new kind so the operator hears the change.
+    try {
+      await fetch(
+        API + '/mixer/admin/test-tone/start?kind=' + encodeURIComponent(testTonePreferredKind),
+        { method: 'POST' });
+    } catch { /* status refresh below will surface the failure */ }
+    await refreshTestToneStatus();
+  } else {
+    // Update the button label to preview the next-start kind.
+    mixerState.testTone = { running: false, kind: testTonePreferredKind };
+    renderMixMaster();
+  }
 }
 
 // ── + Add pickers ───────────────────────────────────────

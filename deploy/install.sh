@@ -774,9 +774,14 @@ fi
 # Daemon needs to be able to rewrite this file when settings change.
 # install.sh runs as root, so the cat-redirect above writes it as root.
 # Hand it to phonon so the user-space daemon can overwrite atomically
-# via tmp+rename without sudo.
+# via tmp+rename without sudo. The directory also needs phonon group
+# write so the daemon's tempfile.NamedTemporaryFile lands here for
+# the atomic rename — without that, conf_write_failed with
+# PermissionError on /etc/linuxptp/phonon-aes67.tmp on every save.
 chown "${PHONON_USER}:${PHONON_GROUP}" /etc/linuxptp/phonon-aes67.conf
 chmod 0644 /etc/linuxptp/phonon-aes67.conf
+chown "root:${PHONON_GROUP}" /etc/linuxptp
+chmod 0775 /etc/linuxptp
 
 # Default interface override comes from /etc/default/phonon-ptp.
 # Uses a DIFFERENT variable name than the unit's runtime PTP_IFACE

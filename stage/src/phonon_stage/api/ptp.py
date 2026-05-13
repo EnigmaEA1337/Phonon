@@ -486,13 +486,20 @@ async def apply_settings() -> None:
     # service later in step 3 makes a conf-change-induced restart moot.
     conf_changed = False
     if cfg.enabled:
-        conf_changed = await _write_ptp4l_conf(cfg)
+        # _write_ptp4l_conf and set-iface are INDEPENDENT — a perm
+        # error on the conf file shouldn't block the iface override.
+        # Run them as separate try blocks and OR their "changed"
+        # signals so the restart fires if either changed.
+        try:
+            conf_changed = await _write_ptp4l_conf(cfg)
+        except Exception:
+            # Already logged in _write_ptp4l_conf
+            pass
         # Write the iface to /etc/default/phonon-ptp via the sudoed
-        # helper. The systemd unit reads PTP_IFACE from there; without
-        # this write the iface picker was cosmetic and the unit's
-        # ExecStartPre auto-picked the first UP iface (usually enp1s0
-        # instead of the user's intended mvl-ptp).
-        rc_env, _ = await _sudo_helper(
+        # helper. The systemd unit reads PHONON_PTP_IFACE_OVERRIDE
+        # from there; without this write the iface picker is cosmetic
+        # and the unit's ExecStartPre auto-picks the first UP iface.
+        rc_env, env_err = await _sudo_helper(
             "/usr/local/sbin/phonon-ptp-query", "set-iface", cfg.interface,
         )
         if rc_env != 0:
@@ -500,12 +507,12 @@ async def apply_settings() -> None:
                 "ptp.set_iface_env_failed",
                 rc=rc_env,
                 iface=cfg.interface,
+                err=env_err.strip()[:200],
             )
         else:
-            # If the env file changed, also force a restart on the
-            # restart path below (otherwise the new PTP_IFACE only
-            # takes effect on the next manual restart).
-            conf_changed = conf_changed or True
+            # Iface env changed → force the restart path below to
+            # fire so the new PHONON_PTP_IFACE_OVERRIDE is picked up.
+            conf_changed = True
 
     if cfg.enabled:
         already_active = await _service_active(PTP4L_SERVICE)

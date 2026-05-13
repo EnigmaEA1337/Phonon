@@ -185,13 +185,17 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    compressing the layout. */
 .strip.mix-src, .strip.mix-master, .strip.mix-out {
   display: grid;
+  /* fx row's height tracks the deepest chain in the console so all
+     strips stay vertically aligned. --fx-rows is set on the
+     mix-console root by JS each renderMixer() pass; default 1 keeps
+     the legacy 22px height for empty / single-plugin chains. */
   grid-template-rows:
     [action]  20px
     [io-in]   16px
     [route]   22px
     [extra1]  28px  /* delay input (out) / direct chips (src) / empty (master) */
     [extra2]  20px  /* HW vol (out) / empty */
-    [fx]      22px  /* FX bar — plugin insert badge on outputs, empty elsewhere */
+    [fx]      calc(var(--fx-rows, 1) * 22px + (var(--fx-rows, 1) - 1) * 2px)
     [mrls]    20px  /* M R L S channel-mute / solo buttons */
     [fader]   160px
     [io-out]  16px
@@ -222,7 +226,15 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
      • amber      — plugin attached but bypassed (enabled=false)
    Click attaches/picks a plugin or focuses an existing one in the
    DSP panel below the Mix Console. */
-.row-fx { display: flex; align-items: stretch; min-width: 0; }
+/* Vertical chain stack: each plugin gets its own 22px-tall badge,
+   listed top→bottom in signal-flow order (slot 0 nearest the master
+   input). Trailing +/⌫ affordances are also stacked at the bottom. */
+.row-fx { display: flex; flex-direction: column; align-items: stretch;
+  min-width: 0; gap: 2px; }
+.row-fx .fx-btn { height: 22px; flex: 0 0 22px; }
+/* Bottom affordances row (+ / ⌫) stays horizontal under the chain. */
+.row-fx .fx-chain-actions { display: flex; gap: 2px; height: 22px; flex: 0 0 22px; }
+.row-fx .fx-chain-actions .fx-btn { height: 22px; flex: 1 1 0; }
 /* Match .strip-io's typography exactly — 8px, no uppercase, no
    letter-spacing — so the FX bar never forces the strip column
    wider than the IN/OUT labels above and below it. */
@@ -1674,6 +1686,22 @@ async function fetchMixer() {
 }
 
 function renderMixer() {
+  // Compute the deepest chain across all outputs so every strip's
+  // fx row gets the same height (otherwise mute/solo/fader rows
+  // wouldn't align horizontally across the console). +1 reserves
+  // a row for the trailing + / ⌫ affordances; clamp to ≥ 2 so
+  // empty-chain outputs still have room for the "+ FX" button.
+  const chainLengths = (mixerState.outputs || []).map(o => {
+    if (Array.isArray(o.inserts)) return o.inserts.length;
+    return o.insert ? 1 : 0;
+  });
+  const maxChain = chainLengths.length ? Math.max(0, ...chainLengths) : 0;
+  // +1 reserves a row for the trailing + / ⌫ buttons. Clamp to ≥ 2
+  // so empty-chain outputs still have room for "+ FX" plus the
+  // affordance row underneath.
+  const fxRows = Math.max(2, maxChain + 1);
+  const console_ = document.querySelector('.mix-console');
+  if (console_) console_.style.setProperty('--fx-rows', String(fxRows));
   renderMixSources();
   renderMixMaster();
   renderMixOutputs();
@@ -1808,16 +1836,13 @@ function fxRow(o) {
       </button>
     </div>`;
   }
-  // One badge per slot. We use `appendChainInsert` to add a new
-  // slot at the end and `removeChainSlot` to remove a specific one.
-  // The DSP panel still focuses by output id (it edits slot 0 controls
-  // — multi-slot control editing is a follow-up).
+  // One badge per slot, stacked top→bottom in signal-flow order
+  // (slot 0 closest to the master input). Each badge has a small
+  // × on the right when the chain has > 1 plugin; the trailing
+  // row hosts the +/⌫ affordances.
   const slotsHtml = chain.map((ins, idx) => {
     const stateCls = ins.enabled ? 'active' : 'bypassed';
     const friendly = fxPluginFriendlyName(ins.library, ins.label);
-    // Slot-remove × only shown when chain has > 1 plugin (single
-    // slot is detached via the existing PATCH /insert null path,
-    // kept for back-compat).
     const removeAffordance = chain.length > 1
       ? `<span class="fx-slot-x edit-only" onclick="event.stopPropagation();removeChainSlot('${o.id}',${idx})" title="Remove this plugin from the chain">×</span>`
       : '';
@@ -1826,12 +1851,15 @@ function fxRow(o) {
       ${removeAffordance}
     </button>`;
   }).join('');
-  // Append + Reset affordances on the right.
-  const trailing = `<button class="fx-btn edit-only" style="flex:0 0 22px;padding:0;justify-content:center"
-                            onclick="appendChainInsert('${o.id}')" title="Add another plugin to the chain">+</button>
-                    <button class="fx-btn edit-only" style="flex:0 0 22px;padding:0;justify-content:center;color:var(--red);border-color:var(--red)"
-                            onclick="resetChain('${o.id}')" title="Reset the whole chain — output reverts to plain loopback">⌫</button>`;
-  return `<div class="row-fx" style="gap:2px">${slotsHtml}${trailing}</div>`;
+  // +/⌫ row, sized to one fx-row height so the column count below
+  // (--fx-rows) accounts for it.
+  const trailing = `<div class="fx-chain-actions edit-only">
+    <button class="fx-btn" style="padding:0;justify-content:center"
+            onclick="appendChainInsert('${o.id}')" title="Add another plugin to the chain">+</button>
+    <button class="fx-btn" style="padding:0;justify-content:center;color:var(--red);border-color:var(--red)"
+            onclick="resetChain('${o.id}')" title="Reset the whole chain — output reverts to plain loopback">⌫</button>
+  </div>`;
+  return `<div class="row-fx">${slotsHtml}${trailing}</div>`;
 }
 
 function fxPluginFriendlyName(library, label) {
@@ -1901,19 +1929,39 @@ function renderFxPickerList() {
     list.innerHTML = '<div style="padding:10px;color:var(--text-fade)">No plugins match</div>';
     return;
   }
-  // Group by category (already sorted server-side by category,name).
+  // Group by category, then pin a synthetic "Phonon Native" group
+  // at the top with every validated plugin (across all categories).
+  // The native plugins also still appear in their real category
+  // below — duplicate listing on purpose so the operator can find
+  // them either way.
   const groups = {};
+  const validated = [];
   for (const e of catalog) {
     const cat = e.category || 'Effect';
     (groups[cat] ||= []).push(e);
+    if (e.validated) validated.push(e);
   }
   const html = [];
-  for (const cat of Object.keys(groups).sort()) {
-    html.push(`<div style="padding:6px 10px;background:var(--bg-1);color:var(--cyan);font-size:9px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);position:sticky;top:0">${escapeHtml(cat)} <span style="color:var(--text-fade)">(${groups[cat].length})</span></div>`);
-    for (const e of groups[cat]) {
+  // Order: synthetic "Phonon Native" first if any, then real
+  // categories alphabetised.
+  const orderedCats = [];
+  if (validated.length) orderedCats.push('Phonon Native');
+  orderedCats.push(...Object.keys(groups).sort());
+  for (const cat of orderedCats) {
+    const items = cat === 'Phonon Native' ? validated : groups[cat];
+    if (!items || !items.length) continue;
+    const headerColor = cat === 'Phonon Native' ? 'var(--cyan)' : 'var(--cyan)';
+    const headerBg = cat === 'Phonon Native' ? 'rgba(6,182,212,0.12)' : 'var(--bg-1)';
+    html.push(`<div style="padding:6px 10px;background:${headerBg};color:${headerColor};font-size:9px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);position:sticky;top:0">${escapeHtml(cat)} <span style="color:var(--text-fade)">(${items.length})</span></div>`);
+    for (const e of items) {
       const stereoTag = e.is_stereo
         ? '<span style="color:var(--green);font-size:9px;margin-left:6px">STEREO</span>'
         : '<span style="color:var(--yellow);font-size:9px;margin-left:6px" title="Mono plugins are not usable in the stereo master path">MONO</span>';
+      // "Phonon Native" badge for plugins we've validated in a
+      // real session. Sorted first server-side, highlighted here.
+      const validatedTag = e.validated
+        ? '<span style="color:var(--cyan);font-size:9px;margin-left:6px;padding:0 4px;border:1px solid var(--cyan);border-radius:3px;letter-spacing:0.5px" title="Tested + signed off for use with the Phonon master chain">PHONON NATIVE</span>'
+        : '';
       const shortLabel = (e.label || '').split('/').pop();
       // Mono plugins are disabled at pick time — they don't fit the
       // 2-in / 2-out chain. We still show them so the operator knows
@@ -1921,10 +1969,11 @@ function renderFxPickerList() {
       const clickable = e.is_stereo
         ? `onclick="fxPickerSelect('${encodeURIComponent(e.backend)}','${encodeURIComponent(e.library)}','${encodeURIComponent(e.label)}')"`
         : 'style="opacity:0.4;cursor:not-allowed"';
+      const rowBgStyle = e.validated ? 'background:rgba(6,182,212,0.06);' : '';
       html.push(`<div class="fx-picker-row" ${clickable}>
-        <div style="display:flex;align-items:center;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.04);cursor:${e.is_stereo ? 'pointer' : 'not-allowed'}">
+        <div style="display:flex;align-items:center;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.04);cursor:${e.is_stereo ? 'pointer' : 'not-allowed'};${rowBgStyle}">
           <div style="flex:1;min-width:0">
-            <div style="color:var(--text)">${escapeHtml(e.name || shortLabel)} ${stereoTag}</div>
+            <div style="color:var(--text)">${escapeHtml(e.name || shortLabel)} ${stereoTag}${validatedTag}</div>
             <div style="color:var(--text-fade);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(shortLabel)}</div>
           </div>
         </div>

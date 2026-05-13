@@ -92,6 +92,24 @@ class PluginDescriptor:
         }
 
 
+# Plugins we've actually tested with the master chain and signed off
+# on. The picker surfaces these with a "Phonon Native" badge so the
+# operator knows which choices are vetted. Keep this list narrow on
+# purpose — every entry implies someone listened to it in a real
+# session and decided it didn't break anything.
+VALIDATED_PLUGINS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Inter-output delay/phase compensation. The first validated
+        # plugin — it's what shipped with v1 of the FX path and was
+        # used to align JBLX vs JBLP arrival times on stage-x99.
+        (
+            "lsp-plugins-ladspa",
+            "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo",
+        ),
+    }
+)
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     """One entry returned by the LADSPA catalog scan. Lightweight
@@ -103,6 +121,10 @@ class CatalogEntry:
     name: str  # human-readable, e.g. "Delay Compensator (Stereo)"
     category: str  # heuristic, e.g. "Dynamics", "Time", "EQ"
     is_stereo: bool  # True if the plugin's audio I/O is 2 in + 2 out
+    # True when the (library, label) pair is in VALIDATED_PLUGINS.
+    # Surfaces a "Phonon Native" badge in the picker + sorts the
+    # plugin to the top of the list.
+    validated: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -111,6 +133,7 @@ class CatalogEntry:
             "name": self.name,
             "category": self.category,
             "is_stereo": self.is_stereo,
+            "validated": self.validated,
         }
 
 
@@ -483,6 +506,7 @@ def parse_listplugins_output(output: str) -> list[CatalogEntry]:
                 name=name,
                 category=category,
                 is_stereo=is_stereo,
+                validated=(current_library, label) in VALIDATED_PLUGINS,
             )
         )
     return entries

@@ -46,6 +46,7 @@ _FALLBACK_CATALOG: list[dict[str, object]] = [
         "name": "Delay Compensator (Stereo)",
         "category": "Time",
         "is_stereo": True,
+        "validated": True,
     },
 ]
 
@@ -64,6 +65,11 @@ class PluginListEntry(BaseModel):
     # usable in the v1 master→output chain. UI shows them all but
     # marks mono ones so the operator doesn't trip.
     is_stereo: bool = True
+    # True when the plugin is in VALIDATED_PLUGINS — we've tested it
+    # with the master chain and signed off on it. Surfaces a "Phonon
+    # Native" badge in the picker + the API sorts validated plugins
+    # to the top of the list.
+    validated: bool = False
 
 
 class PluginControlSchema(BaseModel):
@@ -151,10 +157,13 @@ async def list_plugins(request: Request) -> list[PluginListEntry]:
         except Exception:
             entries = []
         if entries:
-            # Sort by (category, name) so the UI's grouped picker is
-            # stable across reloads — same plugin always at the same
-            # position within its category.
-            entries = sorted(entries, key=lambda e: (e.category, e.name))
+            # Sort key: validated plugins first (descending), then by
+            # category, then by name. Operators almost always want the
+            # vetted ones at the top — exploration of the long tail
+            # happens further down.
+            entries = sorted(
+                entries, key=lambda e: (not e.validated, e.category, e.name)
+            )
             fresh = [{"backend": "ladspa", **e.to_dict()} for e in entries]
     _catalog_cache = fresh
     _catalog_cache_time = now

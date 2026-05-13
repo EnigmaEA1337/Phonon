@@ -291,6 +291,21 @@ class TestListpluginsParser:
         assert by_name["Chorus Stereo"] is True
         assert by_name["Chorus Mono"] is False
 
+    def test_validated_flag_set_from_whitelist(self) -> None:
+        # comp_delay_stereo is in VALIDATED_PLUGINS — it should come
+        # back with validated=True so the picker can flag it.
+        from phonon_stage.dsp.ladspa import parse_listplugins_output
+
+        sample = """\
+/usr/lib/ladspa/lsp-plugins-ladspa.so:
+\tDelay Compensator (Stereo) (5002274/http://lsp-plug.in/plugins/ladspa/comp_delay_stereo)
+\tChorus Stereo (5002315/http://lsp-plug.in/plugins/ladspa/chorus_stereo)
+"""
+        entries = parse_listplugins_output(sample)
+        by_label = {e.label.split("/")[-1]: e.validated for e in entries}
+        assert by_label["comp_delay_stereo"] is True
+        assert by_label["chorus_stereo"] is False
+
 
 class TestDspCatalogScan:
     """End-to-end check that GET /dsp/plugins serves the scan result
@@ -334,6 +349,51 @@ class TestDspCatalogScan:
         names = [e["name"] for e in body]
         assert "Compressor Stereo" in names
         assert "Artistic Delay Stereo" in names
-        # Sorted by (category, name).
-        cats = [e["category"] for e in body]
-        assert cats == sorted(cats)
+        # Validated entries surface in the response — every entry
+        # carries the flag (default False).
+        for e in body:
+            assert "validated" in e
+
+    @pytest.mark.asyncio()
+    async def test_validated_plugins_sort_to_top(
+        self,
+        client: AsyncClient,
+        fake_ladspa_introspector,  # type: ignore[no-untyped-def]
+    ) -> None:
+        # Pair: one validated, one not. The endpoint sorts validated
+        # to the front regardless of category alphabetical order.
+        import phonon_stage.api.dsp as dsp_mod
+        from phonon_stage.dsp.ladspa import CatalogEntry
+
+        dsp_mod._catalog_cache = []
+        dsp_mod._catalog_cache_time = 0.0
+
+        fake_ladspa_introspector.register_catalog(
+            [
+                # "Chorus Stereo" would normally beat "Delay Compensator"
+                # alphabetically AND its category ("Modulation") comes
+                # before "Time", so without the validated-first rule
+                # chorus would lead.
+                CatalogEntry(
+                    library="lsp-plugins-ladspa",
+                    label="http://lsp-plug.in/plugins/ladspa/chorus_stereo",
+                    name="Chorus Stereo",
+                    category="Modulation",
+                    is_stereo=True,
+                    validated=False,
+                ),
+                CatalogEntry(
+                    library="lsp-plugins-ladspa",
+                    label="http://lsp-plug.in/plugins/ladspa/comp_delay_stereo",
+                    name="Delay Compensator (Stereo)",
+                    category="Time",
+                    is_stereo=True,
+                    validated=True,
+                ),
+            ]
+        )
+        r = await client.get("/dsp/plugins")
+        assert r.status_code == 200
+        body = r.json()
+        assert body[0]["validated"] is True
+        assert body[0]["label"].endswith("comp_delay_stereo")

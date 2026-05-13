@@ -661,18 +661,44 @@ async def control_service(name: str, action: str) -> dict[str, str]:
             await asyncio.sleep(1.5)
             from phonon_stage.api.aes67 import replay_audio_state
 
-            replay_summary = await replay_audio_state(reason=f"control.{name}.{action}")
+            try:
+                # 15s ceiling: if the audio state replay is hung
+                # (PipeWire deadlock, pactl unresponsive) we'd rather
+                # return a "partial" response than spin the UI forever.
+                replay_summary = await asyncio.wait_for(
+                    replay_audio_state(reason=f"control.{name}.{action}"),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("system.replay_audio_state_timeout", service=name, action=action)
+                replay_summary = {"timed_out": 1}
         elif name in BT_RUNTIME_SERVICES:
             # Restarting bluealsa kills every `arecord -D bluealsa…` we
             # had piped into pacat. The wrapper `while true` re-spawns
             # both, but the fresh pacat registers a new PW node ID —
             # any user mapping built against the old one is orphan
-            # until a resync. sync_bt_state runs both: bridge reconcile
-            # + mapping re-attach.
+            # until a resync.
+            #
+            # Wait until the systemd unit is actually `active` before
+            # we sync bridges — sync_bt_state queries bluez+pw which
+            # both come back from a service restart on their own clock.
+            # 2s sleep + poll (up to 8s more) covers slow Pi cases
+            # without hardcoding generous waits everywhere.
             await asyncio.sleep(2.0)
+            for _ in range(40):  # 40 × 0.2s = 8s budget
+                if await _service_active_system(f"{name}.service"):
+                    break
+                await asyncio.sleep(0.2)
             from phonon_stage.api.aes67 import sync_bt_state
 
-            sync_summary = await sync_bt_state(reason=f"control.{name}.{action}")
+            try:
+                sync_summary = await asyncio.wait_for(
+                    sync_bt_state(reason=f"control.{name}.{action}"),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("system.sync_bt_state_timeout", service=name, action=action)
+                sync_summary = {"timed_out": 1}
 
     response: dict[str, Any] = {
         "status": "ok" if rc == 0 else "failed",
@@ -878,8 +904,23 @@ async def _collect_resources() -> Resources:
             for line in proc_dev.read_text().splitlines():
                 if line.lstrip().startswith(f"{iface}:"):
                     cols = line.split()
-                    rx_bytes = int(cols[1])
-                    tx_bytes = int(cols[9])
+                    # /proc/net/dev rows have 17 columns: iface +
+                    # 8 rx counters + 8 tx counters. If the kernel
+                    # ever changes that, we'd silently return
+                    # rx_kbps=tx_kbps=0 — visible to the operator
+                    # as "no traffic" instead of "measurement broken".
+                    # Log the parse failure so it's debuggable.
+                    try:
+                        rx_bytes = int(cols[1])
+                        tx_bytes = int(cols[9])
+                    except (IndexError, ValueError):
+                        logger.warning(
+                            "system.net_throughput_parse_failed",
+                            iface=iface,
+                            cols_len=len(cols),
+                            line=line.strip()[:200],
+                        )
+                        break
                     now = time.monotonic()
                     prev = _net_last.get(iface)
                     if prev:

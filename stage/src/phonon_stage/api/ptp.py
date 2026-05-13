@@ -621,8 +621,10 @@ async def ptp_status() -> PtpStatus:
     # to the journal parser if pmc is missing or the sudoers grant
     # hasn't been applied yet.
     role, offset_ns = await _query_pmc_state()
-    if role == "unknown":
+    pmc_unknown = role == "unknown"
+    if pmc_unknown:
         role, offset_ns = await _read_journal_state()
+    journal_unknown = pmc_unknown and role == "unknown"
     via_unit = await _service_active(PTP4L_SERVICE)
     iface = await _ptp4l_interface()
 
@@ -647,6 +649,15 @@ async def ptp_status() -> PtpStatus:
             )
     else:
         note = "ptp4l running (manually launched, not via systemd unit)"
+    # Surface pmc/journal probe state when role is unknown so the UI
+    # can distinguish "BMCA still electing" (transient, no probe data
+    # yet) from "pmc + journal both inconclusive" (a real diagnostic
+    # gap the operator needs to know about). Previously both looked
+    # identical to a caller.
+    if journal_unknown:
+        note = (note + " · " if note else "") + (
+            "pmc timed out AND journal parse inconclusive"
+        )
 
     # Hardware-timestamping capability — useful for the UI to grey out the
     # 'hardware' option if the running interface can't deliver it. Detection

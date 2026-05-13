@@ -425,6 +425,28 @@ async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
                 logger.info("audio_replay.mappings", reason=reason, **final)
         except Exception:
             logger.warning("audio_replay.mappings_failed", exc_info=True)
+
+    # 4 — mixer (master null-sink + per-output filter-chains/loopbacks).
+    # Without this the mixer's persisted state stays in memory but its
+    # live PW resources are gone: phonon_master null-sink, filter-chain
+    # confs and module-loopback entries are all reset by the PA shim
+    # restart. Symptom we caught: VU on the filter-chain output kept
+    # working (filter-chain conf reloaded on its own), but the loopback
+    # output (insert-less) was silent until a manual /mixer/admin/reconcile.
+    try:
+        # mixer service is stored on app.state; we don't have a Request
+        # here, so reach via the app singleton.
+        from phonon_stage.main import app as _app
+
+        svc = getattr(_app.state, "mixer_service", None)
+        if svc is not None:
+            await svc._ensure_master_null_sink()
+            await svc._reconcile()
+            logger.info("audio_replay.mixer_reconciled", reason=reason)
+            summary["mixer_reconciled"] = 1
+    except Exception:
+        logger.warning("audio_replay.mixer_failed", exc_info=True)
+        summary["mixer_reconciled"] = 0
     return summary
 
 

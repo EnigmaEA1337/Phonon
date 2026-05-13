@@ -757,6 +757,9 @@ body.mode-live .edit-only select { opacity: 0.4; }
         <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
         <span style="flex:1"></span>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
+        <button class="btn edit-only" style="font-size:9px;padding:2px 8px;background:rgba(248,113,113,0.10);border-color:var(--red);color:var(--red)"
+                onclick="mixerRestartAudioStack()"
+                title="Restart pipewire + wireplumber + pipewire-pulse, then replay state. Use when audio is fully broken (no devices, all VUs flat, graph dormant).">Restart Audio</button>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="fetchMixer()" title="Refresh from server">Refresh</button>
       </div>
       <div class="section-body">
@@ -2933,6 +2936,35 @@ async function mixerResync() {
   } catch (e) {
     alert('Resync error: ' + e.message);
   }
+  await fetchMixer();
+}
+
+async function mixerRestartAudioStack() {
+  // Heavier hammer than Resync: tears down pipewire + wireplumber +
+  // pipewire-pulse, then replay_audio_state rebuilds bluealsa bridges,
+  // mapping links, mixer state, AES67 streams. Use when the PW graph
+  // itself is dormant (master sink RUNNING but no rate, all VUs flat),
+  // not for graph-edits that aren't reflecting in PW.
+  //
+  // Confirm because it briefly cuts ALL audio system-wide (~3 seconds
+  // of silence even on healthy sinks while services come back).
+  if (!confirm('Restart the whole audio stack (pipewire + wireplumber + pipewire-pulse)? Audio will be briefly cut.')) return;
+  try {
+    const r = await fetch(API + '/system/audio-stack/restart', { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Restart audio failed: ' + (e.detail || r.status));
+      return;
+    }
+    const body = await r.json();
+    if (body.status !== 'ok') {
+      alert('Restart audio reported: ' + JSON.stringify(body));
+    }
+  } catch (e) {
+    alert('Restart audio error: ' + e.message);
+  }
+  // Give the graph a moment to settle before we re-fetch state.
+  await new Promise(r => setTimeout(r, 500));
   await fetchMixer();
 }
 

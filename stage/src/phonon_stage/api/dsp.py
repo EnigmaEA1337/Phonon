@@ -24,21 +24,28 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/dsp", tags=["dsp"])
 
 
-# Curated catalog for v1. Each entry is the minimal set of fields a
-# `set_output_insert` request needs (backend + library + label), plus
-# a friendly name for the UI to render in the FX picker. The schema
-# endpoint resolves the rest dynamically via the introspector.
-#
-# The label strings below are what `analyseplugin lsp-plugins-ladspa`
-# emits for each plugin. They MUST match exactly — filter-chain uses
-# the same string when instantiating the plugin.
-_V1_CATALOG: list[dict[str, str]] = [
+# Catalog cache. Populated lazily on first /dsp/plugins hit and on
+# every restart. listplugins shells out to a subprocess and parses
+# 200+ lines, so we don't want to do it on every request. The TTL
+# is generous (10 min) — operators don't install LADSPA plugins
+# mid-session, and the introspector still works for arbitrary
+# library+label pairs not in the catalog.
+_CATALOG_TTL_SECONDS = 600.0
+_catalog_cache: list[dict[str, object]] = []
+_catalog_cache_time: float = 0.0
+
+# Fallback catalog used when the host has no scanner (Pi 3 without
+# ladspa-sdk) or the scan returns empty. Keeps the picker functional
+# in the most common standalone install — a delay plugin is what 99%
+# of operators reach for first when wiring multi-output codec compensation.
+_FALLBACK_CATALOG: list[dict[str, object]] = [
     {
         "backend": "ladspa",
         "library": "lsp-plugins-ladspa",
         "label": "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo",
         "name": "Delay Compensator (Stereo)",
         "category": "Time",
+        "is_stereo": True,
     },
 ]
 
@@ -53,6 +60,10 @@ class PluginListEntry(BaseModel):
     label: str
     name: str
     category: str
+    # Catalog scans tag stereo-vs-mono since only stereo plugins are
+    # usable in the v1 master→output chain. UI shows them all but
+    # marks mono ones so the operator doesn't trip.
+    is_stereo: bool = True
 
 
 class PluginControlSchema(BaseModel):
@@ -115,10 +126,39 @@ def _to_schema(desc: PluginDescriptor) -> PluginSchema:
 
 
 @router.get("/plugins", response_model=list[PluginListEntry])
-async def list_plugins() -> list[PluginListEntry]:
-    """v1 curated catalog. The UI uses this to populate the FX
-    picker. v2 will replace this with a scan of LADSPA_PATH."""
-    return [PluginListEntry(**e) for e in _V1_CATALOG]
+async def list_plugins(request: Request) -> list[PluginListEntry]:
+    """Dynamic plugin catalog. Shells out to `listplugins` (LADSPA SDK)
+    once, caches the result for _CATALOG_TTL_SECONDS, and returns
+    insert-suitable entries (stereo plugins from LADSPA_PATH, with
+    "Test"/"Analysis"/"Generator" categories filtered out).
+
+    Falls back to the curated _FALLBACK_CATALOG when the host has no
+    introspector wired (Pi Stages) or the scan returns empty — keeps
+    the picker functional everywhere."""
+    import time as _time
+
+    global _catalog_cache, _catalog_cache_time
+
+    now = _time.monotonic()
+    if _catalog_cache and (now - _catalog_cache_time) < _CATALOG_TTL_SECONDS:
+        return [PluginListEntry(**e) for e in _catalog_cache]
+
+    intr = getattr(request.app.state, "ladspa_introspector", None)
+    fresh: list[dict[str, object]] = list(_FALLBACK_CATALOG)
+    if intr is not None:
+        try:
+            entries = await intr.scan_catalog()
+        except Exception:
+            entries = []
+        if entries:
+            # Sort by (category, name) so the UI's grouped picker is
+            # stable across reloads — same plugin always at the same
+            # position within its category.
+            entries = sorted(entries, key=lambda e: (e.category, e.name))
+            fresh = [{"backend": "ladspa", **e.to_dict()} for e in entries]
+    _catalog_cache = fresh
+    _catalog_cache_time = now
+    return [PluginListEntry(**e) for e in fresh]
 
 
 @router.get("/plugins/schema", response_model=PluginSchema)

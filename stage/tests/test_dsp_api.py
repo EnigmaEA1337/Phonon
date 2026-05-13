@@ -215,3 +215,125 @@ class TestInsertControlUpdate:
             json={"value": 1.0},
         )
         assert r.status_code == 404
+
+
+# ── listplugins catalog parser ──────────────────────────────────────
+
+
+class TestListpluginsParser:
+    """Coverage for parse_listplugins_output, the dynamic catalog
+    scan that powers the FX picker. Uses fixture strings shaped like
+    real `listplugins` output (sampled from prod hosts)."""
+
+    def test_parses_lsp_and_filters_test_categories(self) -> None:
+        from phonon_stage.dsp.ladspa import parse_listplugins_output
+
+        sample = """\
+/usr/lib/ladspa/lsp-plugins-ladspa.so:
+\tA/B Tester x2 Stereo (5002217/http://lsp-plug.in/plugins/ladspa/ab_tester_x2_stereo)
+\tArtistic Delay Stereo (5002171/http://lsp-plug.in/plugins/ladspa/art_delay_stereo)
+\tCompressor Stereo (5002233/http://lsp-plug.in/plugins/ladspa/comp_stereo)
+\tParametric Equalizer x16 Stereo (5002188/http://lsp-plug.in/plugins/ladspa/para_equalizer_x16_stereo)
+\tSpectrum Analyzer Stereo (5002277/http://lsp-plug.in/plugins/ladspa/spectrum_analyzer_stereo)
+"""
+        entries = parse_listplugins_output(sample)
+        labels = [e.label for e in entries]
+        # A/B tester (Test category) and Spectrum (Analysis) filtered out.
+        assert all("ab_tester" not in label for label in labels)
+        assert all("spectrum" not in label for label in labels)
+        # Real effects kept.
+        assert any("art_delay_stereo" in label for label in labels)
+        assert any("comp_stereo" in label for label in labels)
+        assert any("para_equalizer" in label for label in labels)
+
+    def test_categorisation_heuristic(self) -> None:
+        from phonon_stage.dsp.ladspa import parse_listplugins_output
+
+        sample = """\
+/usr/lib/ladspa/lsp-plugins-ladspa.so:
+\tCompressor Stereo (5002233/http://lsp-plug.in/plugins/ladspa/comp_stereo)
+\tArtistic Delay Stereo (5002171/http://lsp-plug.in/plugins/ladspa/art_delay_stereo)
+\tParametric Equalizer x16 Stereo (5002188/http://lsp-plug.in/plugins/ladspa/para_equalizer_x16_stereo)
+\tChorus Stereo (5002315/http://lsp-plug.in/plugins/ladspa/chorus_stereo)
+"""
+        entries = parse_listplugins_output(sample)
+        by_label = {e.label.split("/")[-1]: e.category for e in entries}
+        assert by_label["comp_stereo"] == "Dynamics"
+        assert by_label["art_delay_stereo"] == "Time"
+        assert by_label["para_equalizer_x16_stereo"] == "EQ"
+        assert by_label["chorus_stereo"] == "Modulation"
+
+    def test_library_extracted_from_path(self) -> None:
+        from phonon_stage.dsp.ladspa import parse_listplugins_output
+
+        sample = """\
+/usr/lib/ladspa/lsp-plugins-ladspa.so:
+\tDelay Compensator (Stereo) (5002274/http://lsp-plug.in/plugins/ladspa/comp_delay_stereo)
+/usr/lib/ladspa/delay.so:
+\tSimple Delay Line (1043/delay_5s)
+"""
+        entries = parse_listplugins_output(sample)
+        libs = {e.library for e in entries}
+        # Library is the basename minus .so — matches what filter-chain
+        # passes to LADSPA's loader.
+        assert libs == {"lsp-plugins-ladspa", "delay"}
+
+    def test_stereo_flag_set_from_name(self) -> None:
+        from phonon_stage.dsp.ladspa import parse_listplugins_output
+
+        sample = """\
+/usr/lib/ladspa/lsp-plugins-ladspa.so:
+\tChorus Stereo (5002315/http://lsp-plug.in/plugins/ladspa/chorus_stereo)
+\tChorus Mono (5002314/http://lsp-plug.in/plugins/ladspa/chorus_mono)
+"""
+        entries = parse_listplugins_output(sample)
+        by_name = {e.name: e.is_stereo for e in entries}
+        assert by_name["Chorus Stereo"] is True
+        assert by_name["Chorus Mono"] is False
+
+
+class TestDspCatalogScan:
+    """End-to-end check that GET /dsp/plugins serves the scan result
+    when the introspector exposes one, and falls back gracefully."""
+
+    @pytest.mark.asyncio()
+    async def test_uses_introspector_scan(
+        self,
+        client: AsyncClient,
+        fake_ladspa_introspector,  # type: ignore[no-untyped-def]
+    ) -> None:
+        # Seed a catalog directly on the introspector fixture, then
+        # reset the module-level cache so the endpoint re-scans.
+        import phonon_stage.api.dsp as dsp_mod
+        from phonon_stage.dsp.ladspa import CatalogEntry
+
+        dsp_mod._catalog_cache = []
+        dsp_mod._catalog_cache_time = 0.0
+
+        fake_ladspa_introspector.register_catalog(
+            [
+                CatalogEntry(
+                    library="lsp-plugins-ladspa",
+                    label="http://lsp-plug.in/plugins/ladspa/comp_stereo",
+                    name="Compressor Stereo",
+                    category="Dynamics",
+                    is_stereo=True,
+                ),
+                CatalogEntry(
+                    library="lsp-plugins-ladspa",
+                    label="http://lsp-plug.in/plugins/ladspa/art_delay_stereo",
+                    name="Artistic Delay Stereo",
+                    category="Time",
+                    is_stereo=True,
+                ),
+            ]
+        )
+        r = await client.get("/dsp/plugins")
+        assert r.status_code == 200
+        body = r.json()
+        names = [e["name"] for e in body]
+        assert "Compressor Stereo" in names
+        assert "Artistic Delay Stereo" in names
+        # Sorted by (category, name).
+        cats = [e["category"] for e in body]
+        assert cats == sorted(cats)

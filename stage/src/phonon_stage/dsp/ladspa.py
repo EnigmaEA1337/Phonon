@@ -92,10 +92,34 @@ class PluginDescriptor:
         }
 
 
+@dataclass(frozen=True)
+class CatalogEntry:
+    """One entry returned by the LADSPA catalog scan. Lightweight
+    on purpose: name + library + label is enough for the picker UI,
+    full schema is fetched lazily per plugin via describe()."""
+
+    library: str  # e.g. "lsp-plugins-ladspa"
+    label: str  # e.g. "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo"
+    name: str  # human-readable, e.g. "Delay Compensator (Stereo)"
+    category: str  # heuristic, e.g. "Dynamics", "Time", "EQ"
+    is_stereo: bool  # True if the plugin's audio I/O is 2 in + 2 out
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "library": self.library,
+            "label": self.label,
+            "name": self.name,
+            "category": self.category,
+            "is_stereo": self.is_stereo,
+        }
+
+
 class LadspaIntrospector(Protocol):
     """Protocol for plugin introspection backends."""
 
     async def describe(self, library: str, label: str) -> PluginDescriptor: ...
+
+    async def scan_catalog(self) -> list[CatalogEntry]: ...
 
 
 class RealLadspaIntrospector:
@@ -171,6 +195,41 @@ class RealLadspaIntrospector:
             raise RuntimeError(msg)
         return parse_analyseplugin_output(text, library=library, label=label)
 
+    async def scan_catalog(self) -> list[CatalogEntry]:
+        """Run `listplugins` and parse its output into a CatalogEntry
+        list. Plugins are categorised heuristically from their label /
+        name (LSP plugins follow predictable naming conventions). The
+        returned list is filtered to insert-suitable plugins (stereo
+        in + stereo out, no test/analysis tooling) so the UI picker
+        only shows usable choices."""
+        import asyncio
+        import os
+
+        env = {
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "LADSPA_PATH": os.environ.get("LADSPA_PATH") or self._LADSPA_PATH,
+        }
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "listplugins",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=env,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except FileNotFoundError:
+            logger.warning("dsp.listplugins_missing")
+            return []
+        except Exception:
+            logger.warning("dsp.listplugins_failed", exc_info=True)
+            return []
+        if proc.returncode != 0:
+            logger.warning("dsp.listplugins_nonzero", rc=proc.returncode)
+            return []
+        return parse_listplugins_output(out_b.decode("utf-8", errors="replace"))
+
 
 class FakeLadspaIntrospector:
     """Test/Pi fallback. Returns pre-registered descriptors. Raises
@@ -179,9 +238,15 @@ class FakeLadspaIntrospector:
 
     def __init__(self, descriptors: dict[tuple[str, str], PluginDescriptor] | None = None) -> None:
         self._descriptors = dict(descriptors or {})
+        self._catalog: list[CatalogEntry] = []
 
     def register(self, descriptor: PluginDescriptor) -> None:
         self._descriptors[(descriptor.library, descriptor.label)] = descriptor
+
+    def register_catalog(self, entries: list[CatalogEntry]) -> None:
+        """Test seam — let suites pre-load a catalog so scan_catalog
+        returns deterministic content without shelling out to listplugins."""
+        self._catalog = list(entries)
 
     async def describe(self, library: str, label: str) -> PluginDescriptor:
         try:
@@ -189,6 +254,9 @@ class FakeLadspaIntrospector:
         except KeyError as e:
             msg = f"unknown plugin {library!r} / {label!r}"
             raise KeyError(msg) from e
+
+    async def scan_catalog(self) -> list[CatalogEntry]:
+        return list(self._catalog)
 
 
 # ── analyseplugin output parser ─────────────────────────────────────
@@ -325,3 +393,96 @@ def _parse_port_line(line: str) -> PluginControl | None:
         maximum=maximum,
         default=default,
     )
+
+
+# ── listplugins catalog parser ──────────────────────────────────────
+
+
+# Patterns we strip from plugin names to derive a category.
+# LSP plugins follow predictable naming: <effect>_<channel-config>
+# e.g. comp_delay_stereo, para_equalizer_x32_stereo, chorus_mono.
+# The category mapping below is heuristic and intentionally
+# conservative — when in doubt we drop it under "Effect".
+_CATEGORY_RULES: list[tuple[tuple[str, ...], str]] = [
+    # (keywords-in-label-OR-name, category)
+    (("comp_delay",), "Time"),
+    (("delay", "art_delay", "echo"), "Time"),
+    (("reverb", "room_builder"), "Space"),
+    (
+        ("comp_", "compressor", "expander", "gate_", "gott_", "limiter", "autogain"),
+        "Dynamics",
+    ),
+    (("para_equalizer", "graph_equalizer", "filter_", "lpf", "hpf"), "EQ"),
+    (("crossover",), "Crossover"),
+    (("multiband", "mb_dyna"), "Multiband"),
+    (("chorus", "flanger", "phaser", "tremolo"), "Modulation"),
+    (("saturator", "exciter", "distort"), "Saturation"),
+    (("sine_", "sine osc", "noise"), "Generator"),
+    (("ab_tester",), "Test"),
+    (("spectrum_analyzer", "oscilloscope", "loudness_meter"), "Analysis"),
+]
+
+# Plugins we hide from the picker even if they parse — useless or
+# unsuitable as a serial insert in the master→output path.
+_HIDDEN_CATEGORIES: set[str] = {"Test", "Analysis", "Generator"}
+
+
+def _categorize(label: str, name: str) -> str:
+    haystack = (label + " " + name).lower()
+    for keywords, category in _CATEGORY_RULES:
+        if any(k in haystack for k in keywords):
+            return category
+    return "Effect"
+
+
+def parse_listplugins_output(output: str) -> list[CatalogEntry]:
+    """Parse `listplugins` output into a CatalogEntry list.
+
+    listplugins format:
+        /path/to/lib.so:
+            Name (uniqueID/label)
+            Name (uniqueID/label)
+        /path/to/other.so:
+            Name (uniqueID/label)
+
+    Library is the basename minus the `.so` extension because
+    LADSPA_PATH resolves that to the .so. label is the second value
+    inside the parens (after the `/`).
+    """
+    import re
+    from pathlib import Path
+
+    entries: list[CatalogEntry] = []
+    current_library: str | None = None
+    # Plugin line:   <Name> (<id>/<label>)
+    plugin_re = re.compile(r"^\s+(.+?)\s+\((\d+)/(.+)\)\s*$")
+    for raw_line in output.splitlines():
+        if not raw_line.strip():
+            continue
+        if raw_line.endswith(":"):
+            current_library = Path(raw_line.rstrip(":")).stem
+            continue
+        if current_library is None:
+            continue
+        m = plugin_re.match(raw_line)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        label = m.group(3).strip()
+        category = _categorize(label, name)
+        if category in _HIDDEN_CATEGORIES:
+            continue
+        # Stereo heuristic: LSP plugins suffix their channel-config in
+        # the label (..._stereo, ..._mono, ...) — fall back to name
+        # for non-LSP plugins that don't follow that convention.
+        is_stereo = "stereo" in (label + " " + name).lower()
+        entries.append(
+            CatalogEntry(
+                library=current_library,
+                label=label,
+                name=name,
+                category=category,
+                is_stereo=is_stereo,
+            )
+        )
+    return entries

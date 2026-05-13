@@ -980,6 +980,29 @@ body.mode-live .edit-only select { opacity: 0.4; }
       </div>
     </div>
 
+    <!-- FX plugin picker modal — multi-plugin chain catalogue picker.
+         Used by both "+ FX" (replace slot 0 on an empty chain) and
+         the chain-row "+" button (append a new slot). The state
+         `fxPickerState` carries the target output id + mode. -->
+    <div id="fx-picker-modal" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:680px;width:96%">
+        <div class="modal-head">
+          <span id="fx-picker-title">Choose a plugin</span>
+          <button class="modal-close" onclick="closeFxPicker()">×</button>
+        </div>
+        <div class="modal-body" style="padding:8px 12px">
+          <input type="text" id="fx-picker-search" placeholder="Search plugin name or label…"
+                 oninput="renderFxPickerList()"
+                 style="width:100%;background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-family:var(--font-m);font-size:11px;margin-bottom:8px">
+          <div id="fx-picker-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg-2);font-family:var(--font-m);font-size:11px"></div>
+          <div id="fx-picker-status" style="margin-top:6px;font-family:var(--font-m);font-size:10px;color:var(--text-fade);min-height:14px"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" onclick="closeFxPicker()">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Macvlan create / edit modal -->
     <div id="macvlan-modal" class="modal-overlay" style="display:none">
       <div class="modal" style="max-width:520px">
@@ -1822,53 +1845,143 @@ function fxPluginFriendlyName(library, label) {
 
 // Attach picker — single-plugin v1, so as soon as the user picks one
 // it's POSTed and the panel opens on it.
+// Plugin picker state. mode is either:
+//   'set'    — replace slot 0 (PATCH /insert) — used by "+ FX" on an
+//              empty chain to keep back-compat semantics
+//   'append' — POST /inserts to add a new slot at the chain's end
+const fxPickerState = { outputId: null, mode: 'set' };
+
 async function openFxPicker(outputId) {
-  if (!dspState.catalog.length) {
-    alert('No plugins available in the catalog.');
-    return;
-  }
-  // For v1 with one catalog entry, attach the first one without UI.
-  // When v2 introduces multiple entries this becomes a real modal.
-  const choice = dspState.catalog[0];
-  try {
-    const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backend: choice.backend, library: choice.library, label: choice.label }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    dspState.focusedId = outputId;
-    await fetchMixer();
-    await renderDspPanel();
-    startDspMonitorPolling();
-  } catch (e) {
-    alert('Failed to attach plugin: ' + e.message);
-  }
+  fxPickerState.outputId = outputId;
+  fxPickerState.mode = 'set';
+  await _showFxPicker('Attach a plugin');
 }
 
-// Chain operations — multi-plugin socle. The picker UI is still v1
-// (auto-pick catalog[0]); a proper modal lands when the catalogue
-// subtask is done.
 async function appendChainInsert(outputId) {
-  if (!dspState.catalog.length) {
-    alert('No plugins available in the catalog.');
+  fxPickerState.outputId = outputId;
+  fxPickerState.mode = 'append';
+  await _showFxPicker('Add a plugin to the chain');
+}
+
+async function _showFxPicker(title) {
+  // Refresh the catalog every time the modal opens. Catalog endpoint
+  // is cached server-side so this is cheap, and it picks up any
+  // plugin install since the last open.
+  try {
+    const r = await fetch(API + '/dsp/plugins');
+    if (r.ok) dspState.catalog = await r.json();
+  } catch (e) { /* fall back to whatever's cached */ }
+  document.getElementById('fx-picker-title').textContent = title;
+  const search = document.getElementById('fx-picker-search');
+  if (search) search.value = '';
+  const status = document.getElementById('fx-picker-status');
+  if (status) status.textContent = (dspState.catalog || []).length + ' plugins available';
+  renderFxPickerList();
+  document.getElementById('fx-picker-modal').style.display = 'flex';
+}
+
+function closeFxPicker() {
+  document.getElementById('fx-picker-modal').style.display = 'none';
+  fxPickerState.outputId = null;
+}
+
+// Render the catalog as a category-grouped list. Each entry is one
+// row with the plugin name + label badge; clicking applies the
+// current mode (set vs append).
+function renderFxPickerList() {
+  const list = document.getElementById('fx-picker-list');
+  if (!list) return;
+  const search = (document.getElementById('fx-picker-search')?.value || '').toLowerCase().trim();
+  const catalog = (dspState.catalog || []).filter(e => {
+    if (!search) return true;
+    return (e.name || '').toLowerCase().includes(search)
+        || (e.label || '').toLowerCase().includes(search)
+        || (e.category || '').toLowerCase().includes(search);
+  });
+  if (!catalog.length) {
+    list.innerHTML = '<div style="padding:10px;color:var(--text-fade)">No plugins match</div>';
     return;
   }
-  const choice = dspState.catalog[0];
+  // Group by category (already sorted server-side by category,name).
+  const groups = {};
+  for (const e of catalog) {
+    const cat = e.category || 'Effect';
+    (groups[cat] ||= []).push(e);
+  }
+  const html = [];
+  for (const cat of Object.keys(groups).sort()) {
+    html.push(`<div style="padding:6px 10px;background:var(--bg-1);color:var(--cyan);font-size:9px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);position:sticky;top:0">${escapeHtml(cat)} <span style="color:var(--text-fade)">(${groups[cat].length})</span></div>`);
+    for (const e of groups[cat]) {
+      const stereoTag = e.is_stereo
+        ? '<span style="color:var(--green);font-size:9px;margin-left:6px">STEREO</span>'
+        : '<span style="color:var(--yellow);font-size:9px;margin-left:6px" title="Mono plugins are not usable in the stereo master path">MONO</span>';
+      const shortLabel = (e.label || '').split('/').pop();
+      // Mono plugins are disabled at pick time — they don't fit the
+      // 2-in / 2-out chain. We still show them so the operator knows
+      // they exist.
+      const clickable = e.is_stereo
+        ? `onclick="fxPickerSelect('${encodeURIComponent(e.backend)}','${encodeURIComponent(e.library)}','${encodeURIComponent(e.label)}')"`
+        : 'style="opacity:0.4;cursor:not-allowed"';
+      html.push(`<div class="fx-picker-row" ${clickable}>
+        <div style="display:flex;align-items:center;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.04);cursor:${e.is_stereo ? 'pointer' : 'not-allowed'}">
+          <div style="flex:1;min-width:0">
+            <div style="color:var(--text)">${escapeHtml(e.name || shortLabel)} ${stereoTag}</div>
+            <div style="color:var(--text-fade);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(shortLabel)}</div>
+          </div>
+        </div>
+      </div>`);
+    }
+  }
+  list.innerHTML = html.join('');
+  // Add hover affordance via CSS class on the row container.
+  list.querySelectorAll('.fx-picker-row[onclick]').forEach(el => {
+    el.addEventListener('mouseenter', () => el.firstElementChild.style.background = 'rgba(255,255,255,0.04)');
+    el.addEventListener('mouseleave', () => el.firstElementChild.style.background = '');
+  });
+}
+
+async function fxPickerSelect(backendEnc, libraryEnc, labelEnc) {
+  const backend = decodeURIComponent(backendEnc);
+  const library = decodeURIComponent(libraryEnc);
+  const label = decodeURIComponent(labelEnc);
+  const outputId = fxPickerState.outputId;
+  if (!outputId) return;
+  const mode = fxPickerState.mode;
+  closeFxPicker();
   try {
-    const r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backend: choice.backend, library: choice.library, label: choice.label }),
-    });
+    let r;
+    if (mode === 'set') {
+      // Back-compat path: PATCH /insert (replaces slot 0, clears any
+      // following slots — same as the v1 detach + attach flow). The
+      // user is on an empty chain so there's nothing to clobber.
+      r = await fetch(API + '/mixer/outputs/' + outputId + '/insert', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend, library, label }),
+      });
+    } else {
+      r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend, library, label }),
+      });
+    }
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
-      alert('Append failed: ' + (e.detail || r.status));
+      alert((mode === 'set' ? 'Attach' : 'Append') + ' failed: ' + (e.detail || r.status));
       return;
     }
+    // Focus the DSP panel on this output so the user can immediately
+    // tune the plugin they just added (slot 0 controls only — for
+    // v1 the panel still binds to first slot).
+    if (mode === 'set') {
+      dspState.focusedId = outputId;
+    }
     await fetchMixer();
+    await renderDspPanel();
+    if (mode === 'set') startDspMonitorPolling();
   } catch (e) {
-    alert('Append error: ' + e.message);
+    alert('Plugin pick error: ' + e.message);
   }
 }
 

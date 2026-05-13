@@ -778,11 +778,18 @@ fi
 chown "${PHONON_USER}:${PHONON_GROUP}" /etc/linuxptp/phonon-aes67.conf
 chmod 0644 /etc/linuxptp/phonon-aes67.conf
 
-# Default interface comes from /etc/default/phonon-ptp; auto-pick if absent.
+# Default interface override comes from /etc/default/phonon-ptp.
+# Uses a DIFFERENT variable name than the unit's runtime PTP_IFACE
+# (which is regenerated each start in /run/phonon-ptp.env) because
+# systemd merges EnvironmentFile= directives, and the stale
+# /run/phonon-ptp.env from the previous start would otherwise mask
+# any override set here. PHONON_PTP_IFACE_OVERRIDE is read EXPLICITLY
+# by ExecStartPre and never collides with PTP_IFACE.
 cat > /etc/default/phonon-ptp <<'PTPDEFAULTS'
 # Interface ptp4l/phc2sys bind to. Empty = auto-detect first non-lo
-# interface with link UP. Set explicitly for production (eth0, eth1…).
-PTP_IFACE=
+# interface with link UP. Set explicitly for production (eth0, eth1…)
+# via the UI -> CLOCKWORLD -> PTP iface picker.
+PHONON_PTP_IFACE_OVERRIDE=
 
 # Slave mode flag for ptp4l: empty = full BMCA election; "-s" = slave only.
 PTP_MODE_FLAG=
@@ -798,7 +805,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=-/etc/default/phonon-ptp
-ExecStartPre=/bin/sh -c 'if [ -z "$PTP_IFACE" ]; then echo PTP_IFACE=$(ip -o link show up | awk -F: "/state UP/ && \$2 !~ /lo/ {print \$2; exit}" | tr -d " ") > /run/phonon-ptp.env; else echo PTP_IFACE=$PTP_IFACE > /run/phonon-ptp.env; fi'
+ExecStartPre=/bin/sh -c 'if [ -z "$PHONON_PTP_IFACE_OVERRIDE" ]; then resolved=$(ip -o link show up | awk -F: "/state UP/ && \$2 !~ /lo/ {print \$2; exit}" | tr -d " "); else resolved="$PHONON_PTP_IFACE_OVERRIDE"; fi; echo PTP_IFACE=$resolved > /run/phonon-ptp.env'
 EnvironmentFile=-/run/phonon-ptp.env
 ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/phonon-aes67.conf -i ${PTP_IFACE} ${PTP_MODE_FLAG} -m
 Restart=on-failure

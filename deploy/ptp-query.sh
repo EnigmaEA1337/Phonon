@@ -39,16 +39,20 @@ case "${1:-}" in
         # that matters; we preserve the rest of the file's defaults
         # by regenerating the canonical body.
         tmp="$(mktemp --tmpdir=/etc/default phonon-ptp.XXXXXX)"
+        # The variable read by the unit's ExecStartPre is
+        # PHONON_PTP_IFACE_OVERRIDE — distinct from the runtime
+        # PTP_IFACE in /run/phonon-ptp.env so a stale runtime file
+        # from the previous start doesn't shadow this override.
         cat > "$tmp" <<EOF
-# Managed by phonon-stage. Set via UI → CLOCKWORLD → PTP iface picker.
-# Empty PTP_IFACE = let ExecStartPre auto-pick the first UP iface.
-PTP_IFACE=${iface}
-# PTP_MODE_FLAG is auto-managed by the renderer too — keep empty here.
+# Managed by phonon-stage. Set via UI -> CLOCKWORLD -> PTP iface picker.
+# Empty value = ExecStartPre auto-picks the first UP non-lo iface.
+PHONON_PTP_IFACE_OVERRIDE=${iface}
+# PTP_MODE_FLAG is auto-managed by the renderer too.
 PTP_MODE_FLAG=
 EOF
         chmod 0644 "$tmp"
         mv -f "$tmp" /etc/default/phonon-ptp
-        echo "set-iface: PTP_IFACE=${iface:-<auto>} written to /etc/default/phonon-ptp"
+        echo "set-iface: PHONON_PTP_IFACE_OVERRIDE=${iface:-<auto>} written to /etc/default/phonon-ptp"
         ;;
     *)
         echo "usage: $0 {port|current|parent|set-iface <iface>}" >&2

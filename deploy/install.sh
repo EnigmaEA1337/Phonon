@@ -1034,6 +1034,50 @@ wireplumber.profiles = {
 }
 WPCONF
 
+# Pin the audio chain so WP never suspends it. The Phonon graph is made of
+# stacked null-sinks (source plugins → phonon_master → filter-chains → ALSA
+# outputs) — none of the virtual nodes have their own clock, so when the
+# tail (ALSA) suspends, the whole chain freezes. The wake-up sequence
+# across N null-sinks before reaching the hardware sometimes lands in a
+# "node Running but rate=0" state — audio looks fine in pactl/wpctl but no
+# samples flow. Cure: never suspend the critical sinks.
+cat > "${DATA_DIR}/.config/wireplumber/wireplumber.conf.d/91-phonon-noidle.conf" <<'WPCONF'
+# Keep every ALSA output alive — they are the only real clock source in
+# the graph; once they suspend, the chain has no driver to wake up to.
+monitor.alsa.rules = [
+  {
+    matches = [
+      { node.name = "~alsa_output\\..*" }
+    ]
+    actions = {
+      update-props = {
+        session.suspend-timeout-seconds = 0
+        node.suspend-timeout-seconds   = 0
+      }
+    }
+  }
+]
+
+# Keep the master bus + source-plugin null-sinks alive too. Without this,
+# the master can suspend even when an ALSA output is held open by another
+# stream, leaving a half-driven graph that still doesn't pass audio.
+node.rules = [
+  {
+    matches = [
+      { node.name = "phonon_master" }
+      { node.name = "airplay_in"    }
+      { node.name = "spotify_in"    }
+    ]
+    actions = {
+      update-props = {
+        node.suspend-timeout-seconds    = 0
+        session.suspend-timeout-seconds = 0
+      }
+    }
+  }
+]
+WPCONF
+
 chown -R "${PHONON_USER}:${PHONON_GROUP}" "${DATA_DIR}/.config"
 # Plugin data dirs (created above with mkdir -p as root) need to be
 # writable by the daemon — it renders settings into env/conf files

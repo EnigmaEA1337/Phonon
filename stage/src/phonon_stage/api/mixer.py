@@ -602,6 +602,18 @@ async def _stop_test_tone_locked() -> None:
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+    # Final safety net: sweep any pacat with our stream-name still alive.
+    # Covers the case where pipewire-pulse was restarted in between and
+    # pacat auto-reconnected, leaving our Python proc handle stale.
+    with contextlib.suppress(Exception):
+        sweep = await asyncio.create_subprocess_exec(
+            "pkill",
+            "-f",
+            "pacat.*phonon-test-tone",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await sweep.wait()
 
 
 @router.post("/admin/test-tone/start")
@@ -619,6 +631,19 @@ async def start_test_tone(kind: str = "click") -> dict[str, str]:
             detail=f"kind must be one of {_TEST_TONE_KINDS}",
         )
     await _stop_test_tone_locked()
+    # Also sweep any orphan pacat from a prior session — if pipewire-pulse
+    # was restarted while a test tone was running, pacat reconnects on its
+    # own (the PA shim default) and our handle is lost. The stream-name is
+    # a literal we own, so pkill on it is safe.
+    with contextlib.suppress(Exception):
+        sweep = await asyncio.create_subprocess_exec(
+            "pkill",
+            "-f",
+            "pacat.*phonon-test-tone",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await sweep.wait()
     try:
         proc = await asyncio.create_subprocess_exec(
             "pacat",
@@ -628,6 +653,10 @@ async def start_test_tone(kind: str = "click") -> dict[str, str]:
             "--format=s16le",
             "--channels=2",
             "--stream-name=phonon-test-tone",
+            # Without this, pacat auto-reconnects when pipewire-pulse
+            # restarts (e.g. audio-stack/restart) and survives our
+            # /stop call because the Python proc handle is stale.
+            "--property=node.dont-reconnect=true",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,

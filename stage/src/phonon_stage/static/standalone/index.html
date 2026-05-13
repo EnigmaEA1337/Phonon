@@ -300,6 +300,38 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 .dsp-controls { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; align-items: stretch; }
 
+/* ── Graphic EQ x32 — vertical slider strip ─────────────────────── */
+.eq-x32-panel { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+.eq-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px; }
+.eq-strip { display: flex; gap: 1px; padding: 6px 4px; background: var(--bg-1);
+  border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
+.eq-band { display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-width: 26px; flex: 1; padding: 4px 2px; transition: opacity 0.15s; }
+.eq-band.off { opacity: 0.35; }
+.eq-band-label { font-family: var(--font-m); font-size: 9px; color: var(--text-dim);
+  text-align: center; white-space: nowrap; }
+.eq-band-label.eq-band-anchor { color: var(--cyan); font-weight: 600; }
+.eq-fader-track { position: relative; width: 14px; height: 200px;
+  background: var(--bg-3); border: 1px solid var(--border); border-radius: 7px;
+  cursor: ns-resize; flex-shrink: 0; }
+.eq-zero-line { position: absolute; left: -3px; right: -3px; top: 50%; height: 1px;
+  background: rgba(255,255,255,0.2); pointer-events: none; }
+.eq-fader-fill { position: absolute; left: 1px; right: 1px; pointer-events: none;
+  border-radius: 5px; }
+.eq-fader-knob { position: absolute; left: -5px; right: -5px; height: 12px;
+  background: linear-gradient(180deg, var(--text-hi), var(--text-mid));
+  border: 1px solid var(--bg-1); border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.4); pointer-events: none; }
+.eq-band-db { font-family: var(--font-m); font-size: 9px; color: var(--text);
+  min-height: 12px; text-align: center; }
+.eq-band-on { font-family: var(--font-m); font-size: 8px; padding: 1px 0; width: 100%;
+  background: var(--bg-3); color: var(--text-fade); border: 1px solid var(--border);
+  border-radius: 3px; cursor: pointer; }
+.eq-band-on.on { background: rgba(52,211,153,0.15); color: var(--green);
+  border-color: var(--green); }
+.eq-band-on:hover { background: var(--bg-2); }
+
 /* Plugin sections — match the LSP native layout (Signal / Samples /
    Distance / Time / Monitoring etc.). The catalogue layout map
    declares which controls live in each group. Sections that the
@@ -2144,6 +2176,13 @@ async function renderDspPanel() {
   </div>`;
   const layout = PLUGIN_LAYOUTS[out.insert.label];
   let bodyHtml;
+  if (layout && layout.customRenderer && typeof window[layout.customRenderer] === 'function') {
+    // Plugin-specific renderer takes over the body — used for the
+    // graphic EQ where a generic knob grid would be unusable.
+    bodyHtml = window[layout.customRenderer](out.id, schema, out.insert.controls, inSide, outSide);
+    panel.innerHTML = meta + `<div class="dsp-controls">${bodyHtml}</div>`;
+    return;
+  }
   if (layout) {
     // Grouped layout — mirror the LSP native UI's sections so the
     // operator sees what they're used to. The control schema is
@@ -2377,7 +2416,203 @@ const PLUGIN_LAYOUTS = {
       };
     },
   },
+
+  // Graphic Equalizer x32 Stereo — bespoke renderer because the
+  // generic knob grid would dump 144 input controls in a single row
+  // (32 bands × 4 controls each + 16 globals). Operators expect a
+  // mixer-style slider strip, one fader per band, frequency below.
+  "http://lsp-plug.in/plugins/ladspa/graph_equalizer_x32_stereo": {
+    customRenderer: "renderGraphEq32",
+  },
 };
+
+// ── Graphic Equalizer x32 — custom slider strip renderer ──────────
+//
+// LSP plugin exposes one "Band gain N (G)" per ISO frequency. Values
+// are LINEAR gain (G), not dB:
+//   G = 0.01585  →  -36 dB   (faders rest at the bottom)
+//   G = 1.0      →   0 dB    (center)
+//   G = 63.0957  →  +36 dB   (top)
+// We convert client-side and label everything in dB so the operator
+// reads what they're used to.
+
+const GRAPH_EQ_BANDS = [
+  16, 20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
+  630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000,
+  10000, 12500, 16000, 20000,
+];
+const EQ_DB_MIN = -36;
+const EQ_DB_MAX = 36;
+const EQ_GAIN_MIN = 0.01585;  // matches LADSPA minimum
+const EQ_GAIN_MAX = 63.0957;
+
+function eqGainToDb(g) {
+  if (!g || g <= 0) return EQ_DB_MIN;
+  return 20 * Math.log10(g);
+}
+function eqDbToGain(db) {
+  return Math.pow(10, db / 20);
+}
+function eqFreqLabel(freq) {
+  if (freq >= 1000) return (freq / 1000) + 'k';
+  return String(freq);
+}
+
+function renderGraphEq32(outputId, schema, values, inSide, outSide) {
+  // Top toolbar — global plugin controls.
+  const globals = ['Bypass', 'Input gain (G)', 'Output gain (G)', 'Equalizer mode', 'Filter slope'];
+  const schemaByName = Object.fromEntries((schema.controls || []).map(c => [c.name, c]));
+  const toolbar = globals.map(name => {
+    const c = schemaByName[name];
+    if (!c) return '';
+    return renderDspControl(outputId, c, values[name]);
+  }).join('');
+  // 32 band sliders. Each band has a vertical fader + on/off + dB readout.
+  const bandStrip = GRAPH_EQ_BANDS.map(freq => {
+    const gainKey = `Band gain ${freq} (G)`;
+    const onKey = `Band on ${freq}`;
+    const gainG = values[gainKey];
+    const db = (gainG === undefined) ? 0 : eqGainToDb(gainG);
+    const isOn = (values[onKey] === undefined ? 1 : values[onKey]) >= 0.5;
+    // Fader Y position: 0 = top (max), 1 = bottom (min).
+    const pct = 1 - (db - EQ_DB_MIN) / (EQ_DB_MAX - EQ_DB_MIN);
+    const dbDisplay = (db >= 0 ? '+' : '') + db.toFixed(1);
+    const labelClass = freq === 1000 || freq === 100 || freq === 10000 ? 'eq-band-label eq-band-anchor' : 'eq-band-label';
+    return `<div class="eq-band${isOn ? '' : ' off'}"
+                 data-output-id="${escapeHtml(outputId)}"
+                 data-band-freq="${freq}"
+                 data-gain-key="${escapeHtml(gainKey)}"
+                 data-on-key="${escapeHtml(onKey)}">
+      <div class="${labelClass}">${escapeHtml(eqFreqLabel(freq))}</div>
+      <div class="eq-fader-track" onmousedown="eqFaderDragStart(event,this)">
+        <div class="eq-zero-line"></div>
+        <div class="eq-fader-knob" style="top:calc(${(pct * 100).toFixed(2)}% - 6px)"></div>
+        <div class="eq-fader-fill" style="top:${pct < 0.5 ? (pct * 100).toFixed(2) : 50}%;
+                                          height:${(Math.abs(pct - 0.5) * 100).toFixed(2)}%;
+                                          background:${db >= 0 ? 'rgba(52,211,153,0.18)' : 'rgba(248,113,113,0.18)'}"></div>
+      </div>
+      <div class="eq-band-db" data-control-readout="${escapeHtml(gainKey)}">${dbDisplay}</div>
+      <button class="eq-band-on${isOn ? ' on' : ''}"
+              onclick="eqToggleBand(event,this)" title="Band ${eqFreqLabel(freq)} Hz on/off">
+        ${isOn ? 'ON' : 'OFF'}
+      </button>
+    </div>`;
+  }).join('');
+  return `${inSide}
+    <div class="eq-x32-panel">
+      <div class="eq-toolbar">${toolbar}</div>
+      <div class="eq-strip">${bandStrip}</div>
+    </div>${outSide}`;
+}
+
+// Fader drag — track the mouse on the document so the operator can
+// drag past the track's edges (DAW-style: release-anywhere wins).
+let eqDragState = null;
+function eqFaderDragStart(ev, trackEl) {
+  ev.preventDefault();
+  const band = trackEl.closest('.eq-band');
+  if (!band) return;
+  eqDragState = {
+    track: trackEl,
+    band: band,
+    rect: trackEl.getBoundingClientRect(),
+    gainKey: band.dataset.gainKey,
+    outputId: band.dataset.outputId,
+    pending: null,
+  };
+  eqFaderApplyEvent(ev);
+  document.addEventListener('mousemove', eqFaderDragMove);
+  document.addEventListener('mouseup', eqFaderDragEnd, { once: true });
+}
+function eqFaderDragMove(ev) {
+  if (!eqDragState) return;
+  eqFaderApplyEvent(ev);
+}
+function eqFaderDragEnd() {
+  document.removeEventListener('mousemove', eqFaderDragMove);
+  eqDragState = null;
+}
+function eqFaderApplyEvent(ev) {
+  if (!eqDragState) return;
+  const { rect, track, band, gainKey, outputId } = eqDragState;
+  let pct = (ev.clientY - rect.top) / rect.height;
+  pct = Math.max(0, Math.min(1, pct));
+  let db = EQ_DB_MAX - pct * (EQ_DB_MAX - EQ_DB_MIN);
+  // Snap to 0 dB within ±1 dB so a casual drag back to flat clicks
+  // into place — the operator's "neutralise this band" gesture.
+  if (Math.abs(db) < 1.0) db = 0;
+  db = Math.round(db * 10) / 10;  // 0.1 dB resolution
+  // Update visuals immediately, then push to server (debounced via
+  // pending-pointer trick — only the latest in-flight value reaches
+  // the API if the user scrubs fast).
+  const pct2 = 1 - (db - EQ_DB_MIN) / (EQ_DB_MAX - EQ_DB_MIN);
+  const knob = track.querySelector('.eq-fader-knob');
+  if (knob) knob.style.top = `calc(${(pct2 * 100).toFixed(2)}% - 6px)`;
+  const fill = track.querySelector('.eq-fader-fill');
+  if (fill) {
+    fill.style.top = pct2 < 0.5 ? (pct2 * 100).toFixed(2) + '%' : '50%';
+    fill.style.height = (Math.abs(pct2 - 0.5) * 100).toFixed(2) + '%';
+    fill.style.background = db >= 0 ? 'rgba(52,211,153,0.18)' : 'rgba(248,113,113,0.18)';
+  }
+  const dbCell = band.querySelector('.eq-band-db');
+  if (dbCell) dbCell.textContent = (db >= 0 ? '+' : '') + db.toFixed(1);
+  // Push to server with rate-limited fetch.
+  const gainG = eqDbToGain(db);
+  eqQueueControlWrite(outputId, gainKey, gainG);
+}
+
+// Per-control debounce — keep one in-flight + one pending. The
+// in-flight finishes, the pending fires. Avoids hammering the
+// server during scrubs.
+const eqPendingWrites = new Map();
+function eqQueueControlWrite(outputId, name, value) {
+  const key = outputId + '::' + name;
+  const existing = eqPendingWrites.get(key);
+  if (existing && existing.inflight) {
+    existing.pending = value;
+    return;
+  }
+  eqPendingWrites.set(key, { inflight: true, pending: null });
+  eqFireControlWrite(outputId, name, value);
+}
+async function eqFireControlWrite(outputId, name, value) {
+  const key = outputId + '::' + name;
+  try {
+    await fetch(API + '/mixer/outputs/' + outputId + '/insert/controls/' + encodeURIComponent(name), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    // Update local mirror so the model stays in sync.
+    const out = (mixerState.outputs || []).find(o => o.id === outputId);
+    if (out && out.insert && out.insert.controls) out.insert.controls[name] = value;
+  } catch (e) { /* transient — next gesture re-fires */ }
+  const state = eqPendingWrites.get(key);
+  if (state && state.pending !== null) {
+    const next = state.pending;
+    state.pending = null;
+    state.inflight = true;
+    eqFireControlWrite(outputId, name, next);
+  } else {
+    eqPendingWrites.delete(key);
+  }
+}
+
+async function eqToggleBand(ev, btn) {
+  ev.stopPropagation();
+  const band = btn.closest('.eq-band');
+  if (!band) return;
+  const outputId = band.dataset.outputId;
+  const onKey = band.dataset.onKey;
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !out.insert) return;
+  const cur = out.insert.controls[onKey] >= 0.5;
+  const next = cur ? 0 : 1;
+  band.classList.toggle('off', !next);
+  btn.classList.toggle('on', !!next);
+  btn.textContent = next ? 'ON' : 'OFF';
+  eqQueueControlWrite(outputId, onKey, next);
+}
 
 // Render one IN or OUT meter block — label + L/R vertical bars.
 // `vuSource` is the PW node name the WS levels loop is sending peak

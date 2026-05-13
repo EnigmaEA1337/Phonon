@@ -348,19 +348,27 @@ class AirplayV1Plugin:
     # ── nqptp lifecycle (AP2 companion) ────────────────────────
 
     async def _sync_nqptp_to_settings(self) -> None:
-        """Bring nqptp's running state into agreement with the current
-        airplay_version setting. Called from every start path.
+        """Bring nqptp's running state + iface drop-in into agreement
+        with the current settings. Called from every start path.
 
-        v2 → apply iface binding (if any) then start nqptp
-        v1 → stop nqptp  (so its UDP 319/320 bind doesn't squat the
-                          ports when ptp4l later wants them)
+        ALWAYS apply the iface drop-in (clear if empty, write if set)
+        regardless of airplay_version — that way if nqptp is started
+        out-of-band (CLOCKWORLD Restart button, manual systemctl start,
+        leftover from a previous v2 session) it binds to the iface
+        the user picked, not the wildcard.
+
+        Then enforce the running state:
+          v2 → start nqptp (it's needed for AP2)
+          v1 → stop nqptp  (so its UDP 319/320 doesn't squat the
+                            ports when ptp4l wants them)
 
         Errors are swallowed-and-logged: a host without nqptp installed
         is a valid AP1-only deployment, and `systemctl start` returning
         non-zero shouldn't crash the plugin's start path."""
         settings = await self.get_settings()
+        # Drop-in applies regardless of version — empty iface clears.
+        await self._apply_nqptp_iface(settings.nqptp_interface)
         if settings.airplay_version == 2:
-            await self._apply_nqptp_iface(settings.nqptp_interface)
             try:
                 await self._system.systemctl_start(self.NQPTP_UNIT)
             except Exception:
@@ -460,14 +468,17 @@ class AirplayV1Plugin:
             raise TypeError(msg)
         rendered = self._render_conf(settings)
         self._system.write_text_atomic(self._conf_path, rendered, mode=0o644)
-        # v1↔v2 toggle changes nqptp's required state — bring it in
-        # line BEFORE restarting shairport-sync so the daemon comes up
-        # against a healthy companion (or no companion in AP1 mode).
+        # Apply the iface drop-in regardless of airplay_version —
+        # nqptp can be running for other reasons (CLOCKWORLD's manual
+        # Restart button, leftover from a previous v2 session) and we
+        # want it to bind to the user's chosen iface in every case.
+        # Empty string clears the drop-in (listen on all ifaces).
+        await self._apply_nqptp_iface(settings.nqptp_interface)
+        # v1↔v2 toggle changes nqptp's required RUNNING state — bring
+        # it in line BEFORE restarting shairport-sync so the daemon
+        # comes up against a healthy companion (or no companion in
+        # AP1 mode).
         if settings.airplay_version == 2:
-            # Apply the iface binding drop-in FIRST so the next start
-            # (or restart) of nqptp uses it. The helper handles the
-            # restart-if-active dance itself.
-            await self._apply_nqptp_iface(settings.nqptp_interface)
             try:
                 await self._system.systemctl_start(self.NQPTP_UNIT)
             except Exception:

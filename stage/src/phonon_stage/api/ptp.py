@@ -299,6 +299,17 @@ async def _systemctl(*args: str) -> tuple[int, str]:
     return proc.returncode or 0, stderr_bytes.decode(errors="ignore")
 
 
+async def _sudo_helper(*args: str) -> tuple[int, str]:
+    """Run an arbitrary sudo-granted helper. Returns (rc, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        "sudo", "-n", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr_bytes = await proc.communicate()
+    return proc.returncode or 0, stderr_bytes.decode(errors="ignore")
+
+
 async def _service_unit_exists(name: str) -> bool:
     """Check unit existence without sudo so we don't conflate sudo failures
     with unit absence. Uses list-unit-files which is world-readable."""
@@ -476,6 +487,25 @@ async def apply_settings() -> None:
     conf_changed = False
     if cfg.enabled:
         conf_changed = await _write_ptp4l_conf(cfg)
+        # Write the iface to /etc/default/phonon-ptp via the sudoed
+        # helper. The systemd unit reads PTP_IFACE from there; without
+        # this write the iface picker was cosmetic and the unit's
+        # ExecStartPre auto-picked the first UP iface (usually enp1s0
+        # instead of the user's intended mvl-ptp).
+        rc_env, _ = await _sudo_helper(
+            "/usr/local/sbin/phonon-ptp-query", "set-iface", cfg.interface,
+        )
+        if rc_env != 0:
+            logger.warning(
+                "ptp.set_iface_env_failed",
+                rc=rc_env,
+                iface=cfg.interface,
+            )
+        else:
+            # If the env file changed, also force a restart on the
+            # restart path below (otherwise the new PTP_IFACE only
+            # takes effect on the next manual restart).
+            conf_changed = conf_changed or True
 
     if cfg.enabled:
         already_active = await _service_active(PTP4L_SERVICE)

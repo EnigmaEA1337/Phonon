@@ -487,6 +487,9 @@ phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-bt-list-bonds
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query port
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query current
 phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query parent
+# set-iface writes /etc/default/phonon-ptp so the unit's PTP_IFACE
+# matches the UI setting. Without this the iface picker was a no-op.
+phonon ALL=(ALL) NOPASSWD: /usr/local/sbin/phonon-ptp-query set-iface *
 # System-instance services controllable from the UI's System panel
 # (start/stop/restart only — the daemon doesn't need to enable/disable).
 phonon ALL=(ALL) NOPASSWD: /bin/systemctl is-active *

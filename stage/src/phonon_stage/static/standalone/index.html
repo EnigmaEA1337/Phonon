@@ -6686,12 +6686,28 @@ function renderNqptp(s, ifaces, activeFlag) {
        </div>`
     : '';
 
+  // AirPlay version toggle — duplicates the dropdown in the plugin
+  // Settings modal but surfaces it right here in CLOCKWORLD where
+  // it's contextually relevant (deciding to use nqptp = picking AP2).
+  // Persisted via PUT /plugins/airplay-v1/settings, same path as the
+  // modal — single source of truth.
+  const ap1Btn = s.airplay_version === 1
+    ? '<button class="btn btn-primary" style="font-size:10px;padding:3px 10px" disabled>AP1 (active)</button>'
+    : '<button class="btn" style="font-size:10px;padding:3px 10px" onclick="nqptpSetVersion(1)">AP1 — classic RAOP (44.1k/16 lossy, no nqptp)</button>';
+  const ap2Btn = s.airplay_version === 2
+    ? '<button class="btn btn-primary" style="font-size:10px;padding:3px 10px" disabled>AP2 (active)</button>'
+    : '<button class="btn" style="font-size:10px;padding:3px 10px" onclick="nqptpSetVersion(2)">AP2 — up to 24/48 lossless (needs nqptp)</button>';
+
   host.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;font-family:var(--font-m);font-size:11px;margin-bottom:10px">
       <div><span style="color:var(--text-dim)">AirPlay:</span> ${versionBadge}</div>
       <div><span style="color:var(--text-dim)">Service:</span> ${runBadge}</div>
       <span style="flex:1"></span>
       <button class="btn" style="font-size:9px;padding:2px 8px" onclick="nqptpRestart()" title="systemctl restart nqptp.service">Restart</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      ${ap1Btn}
+      ${ap2Btn}
     </div>
     <div style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;align-items:center;font-family:var(--font-m);font-size:11px;max-width:560px">
       <label style="color:var(--text-dim)">Bind interface</label>
@@ -6702,10 +6718,48 @@ function renderNqptp(s, ifaces, activeFlag) {
     </div>
     ${conflictHint}
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-      <button class="btn btn-primary" style="font-size:10px" onclick="nqptpApplyIface()">Apply</button>
+      <button class="btn btn-primary" style="font-size:10px" onclick="nqptpApplyIface()">Apply iface</button>
       <button class="btn" style="font-size:10px" onclick="_nqptpDirty=false; fetchNqptp()">Revert</button>
       <span id="nqptp-status" style="font-family:var(--font-m);font-size:10px;color:var(--text-dim)"></span>
     </div>`;
+}
+
+async function nqptpSetVersion(version) {
+  // PUT the full AirplayV1Settings with only airplay_version changed.
+  // The plugin's put_settings hook handles the rest: starts/stops
+  // nqptp, writes/clears the iface drop-in, restarts shairport-sync.
+  const status = document.getElementById('nqptp-status');
+  if (status) {
+    status.textContent = `switching to AP${version}…`;
+    status.style.color = 'var(--text-dim)';
+  }
+  try {
+    const cur = await (await fetch(API + '/plugins/airplay-v1/settings')).json();
+    cur.airplay_version = version;
+    const r = await fetch(API + '/plugins/airplay-v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cur),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      if (status) {
+        status.textContent = `switch failed: ${err.detail || r.status}`;
+        status.style.color = 'var(--red)';
+      }
+      return;
+    }
+    if (status) {
+      status.textContent = `now in AP${version} mode`;
+      status.style.color = 'var(--green)';
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = `error: ${e.message}`;
+      status.style.color = 'var(--red)';
+    }
+  }
+  setTimeout(() => { fetchNqptp(); fetchPtpSockets(); }, 1500);
 }
 
 async function nqptpApplyIface() {

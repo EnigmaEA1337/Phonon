@@ -241,6 +241,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .fx-btn .fx-name { flex: 1; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .fx-btn.focused { outline: 1px solid var(--cyan); outline-offset: -2px; }
+/* Per-slot × shown when the chain has 2+ plugins. Stops click
+   propagation so removing a slot doesn't also focus the DSP panel
+   on this output. */
+.fx-slot-x { padding: 0 2px; color: var(--text-fade); cursor: pointer;
+  font-size: 10px; line-height: 1; flex-shrink: 0; }
+.fx-slot-x:hover { color: var(--red); }
 /* On the Source / Master strips the fx row is intentionally empty
    so every kind keeps the same row stack — no shift across columns. */
 .row-fx.empty { visibility: hidden; }
@@ -1761,31 +1767,49 @@ async function fetchDspSchema(library, label) {
   return schema;
 }
 
-// FX bar on an Output strip. LED + name; "+ FX" affordance when no
-// plugin is attached. Click handler depends on state: no plugin →
-// picker; plugin attached → focus in DSP panel.
+// FX bar on an Output strip. Renders the full plugin CHAIN:
+//   * One fx-btn per slot, in series order (slot 0 leftmost)
+//   * Trailing "+ FX" button to append another plugin
+//   * If chain has 2+ slots, a × icon next to each badge removes
+//     that specific slot
+// Empty chain → just the "+ FX" affordance, same as v1.
 function fxRow(o) {
   if (!dspState.available) {
-    // Keep grid alignment but hide the bar entirely so the Pi UI
-    // doesn't gain an inert chrome row.
     return '<div class="row-fx empty"></div>';
   }
-  const ins = o.insert;
+  const chain = o.inserts || (o.insert ? [o.insert] : []);
   const focused = dspState.focusedId === o.id;
-  if (!ins) {
+  if (!chain.length) {
     return `<div class="row-fx">
       <button class="fx-btn${focused ? ' focused' : ''}" onclick="openFxPicker('${o.id}')" title="Attach a plugin">
         <span class="fx-led"></span><span class="fx-name">+ FX</span>
       </button>
     </div>`;
   }
-  const stateCls = ins.enabled ? 'active' : 'bypassed';
-  const friendly = fxPluginFriendlyName(ins.library, ins.label);
-  return `<div class="row-fx">
-    <button class="fx-btn ${stateCls}${focused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}')" title="${escapeHtml(ins.label)}">
+  // One badge per slot. We use `appendChainInsert` to add a new
+  // slot at the end and `removeChainSlot` to remove a specific one.
+  // The DSP panel still focuses by output id (it edits slot 0 controls
+  // — multi-slot control editing is a follow-up).
+  const slotsHtml = chain.map((ins, idx) => {
+    const stateCls = ins.enabled ? 'active' : 'bypassed';
+    const friendly = fxPluginFriendlyName(ins.library, ins.label);
+    // Slot-remove × only shown when chain has > 1 plugin (single
+    // slot is detached via the existing PATCH /insert null path,
+    // kept for back-compat).
+    const removeAffordance = chain.length > 1
+      ? `<span class="fx-slot-x edit-only" onclick="event.stopPropagation();removeChainSlot('${o.id}',${idx})" title="Remove this plugin from the chain">×</span>`
+      : '';
+    return `<button class="fx-btn ${stateCls}${focused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}')" title="Slot ${idx + 1}: ${escapeHtml(ins.label)}">
       <span class="fx-led"></span><span class="fx-name">${escapeHtml(friendly)}</span>
-    </button>
-  </div>`;
+      ${removeAffordance}
+    </button>`;
+  }).join('');
+  // Append + Reset affordances on the right.
+  const trailing = `<button class="fx-btn edit-only" style="flex:0 0 22px;padding:0;justify-content:center"
+                            onclick="appendChainInsert('${o.id}')" title="Add another plugin to the chain">+</button>
+                    <button class="fx-btn edit-only" style="flex:0 0 22px;padding:0;justify-content:center;color:var(--red);border-color:var(--red)"
+                            onclick="resetChain('${o.id}')" title="Reset the whole chain — output reverts to plain loopback">⌫</button>`;
+  return `<div class="row-fx" style="gap:2px">${slotsHtml}${trailing}</div>`;
 }
 
 function fxPluginFriendlyName(library, label) {
@@ -1819,6 +1843,68 @@ async function openFxPicker(outputId) {
     startDspMonitorPolling();
   } catch (e) {
     alert('Failed to attach plugin: ' + e.message);
+  }
+}
+
+// Chain operations — multi-plugin socle. The picker UI is still v1
+// (auto-pick catalog[0]); a proper modal lands when the catalogue
+// subtask is done.
+async function appendChainInsert(outputId) {
+  if (!dspState.catalog.length) {
+    alert('No plugins available in the catalog.');
+    return;
+  }
+  const choice = dspState.catalog[0];
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend: choice.backend, library: choice.library, label: choice.label }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Append failed: ' + (e.detail || r.status));
+      return;
+    }
+    await fetchMixer();
+  } catch (e) {
+    alert('Append error: ' + e.message);
+  }
+}
+
+async function removeChainSlot(outputId, slot) {
+  if (!confirm(`Remove plugin at slot ${slot + 1}?`)) return;
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts/' + slot, {
+      method: 'DELETE',
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Remove failed: ' + (e.detail || r.status));
+      return;
+    }
+    await fetchMixer();
+  } catch (e) {
+    alert('Remove error: ' + e.message);
+  }
+}
+
+async function resetChain(outputId) {
+  if (!confirm('Reset the entire plugin chain on this output? Reverts to plain loopback.')) return;
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts', { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Reset failed: ' + (e.detail || r.status));
+      return;
+    }
+    // Drop the DSP panel focus too — its target plugin may be gone.
+    stopDspMonitorPolling();
+    dspState.focusedId = null;
+    await fetchMixer();
+    await renderDspPanel();
+  } catch (e) {
+    alert('Reset error: ' + e.message);
   }
 }
 

@@ -157,6 +157,13 @@ class MasterBus:
         )
 
 
+# Hard cap on chain depth — prevents the operator from stacking 40
+# plugins by accident and turning the master→output path into a CPU
+# bonfire. 8 is enough for the typical "EQ → compressor → delay →
+# limiter" chain a working engineer would build.
+MAX_CHAIN_DEPTH = 8
+
+
 @dataclass(frozen=True)
 class Output:
     id: str
@@ -172,9 +179,18 @@ class Output:
     solo: bool = False
     delay_ms: float = 0.0
     receives_master: bool = True
-    # Optional plugin insert in the master→output path. None means
-    # plain loopback. See PluginInsert docstring for the lifecycle.
-    insert: PluginInsert | None = None
+    # Plugin chain in the master→output path. Ordered, first element
+    # closest to the master (input side). Empty tuple → plain loopback,
+    # no filter-chain conf rendered. Capped at MAX_CHAIN_DEPTH.
+    inserts: tuple[PluginInsert, ...] = ()
+
+    @property
+    def insert(self) -> PluginInsert | None:
+        """Back-compat shim — the v1 single-insert API surface still
+        speaks `output.insert`. Returns the chain's first plugin or
+        None when the chain is empty. New code should iterate
+        `output.inserts` instead."""
+        return self.inserts[0] if self.inserts else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,12 +204,22 @@ class Output:
             "solo": self.solo,
             "delay_ms": self.delay_ms,
             "receives_master": self.receives_master,
-            "insert": self.insert.to_dict() if self.insert else None,
+            "inserts": [i.to_dict() for i in self.inserts],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Output:
-        raw_insert = data.get("insert")
+        # Migration: the old shape had a single `insert: dict | None`
+        # field. New shape is `inserts: list[dict]`. Read whichever is
+        # present, prefer the new one. Persistence always writes the
+        # new shape from to_dict above.
+        raw_inserts = data.get("inserts")
+        if raw_inserts is None:
+            raw_legacy = data.get("insert")
+            raw_inserts = [raw_legacy] if raw_legacy else []
+        inserts: tuple[PluginInsert, ...] = tuple(
+            PluginInsert.from_dict(item) for item in raw_inserts if item
+        )
         return cls(
             id=str(data["id"]),
             sink_node_name=str(data["sink_node_name"]),
@@ -205,7 +231,7 @@ class Output:
             solo=bool(data.get("solo", False)),
             delay_ms=float(data.get("delay_ms", 0.0)),
             receives_master=bool(data.get("receives_master", True)),
-            insert=PluginInsert.from_dict(raw_insert) if raw_insert else None,
+            inserts=inserts,
         )
 
 

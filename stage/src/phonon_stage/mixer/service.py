@@ -187,9 +187,9 @@ class MixerService:
         # in-sync — no spurious rewrite + reload.
         wanted_bodies: dict[str, str] = {}
         for o in self._store.state.outputs:
-            if o.insert is not None and o.insert.enabled and o.receives_master:
+            if o.inserts and any(i.enabled for i in o.inserts) and o.receives_master:
                 wanted_bodies[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.insert, MASTER_SINK_NAME
+                    o, o.inserts, MASTER_SINK_NAME
                 )
         stale = [c for c in on_disk if c not in wanted_bodies]
         if not stale:
@@ -435,24 +435,83 @@ class MixerService:
         """
         cur = self._output(output_id)
         if backend is None or label is None:
-            new = replace(cur, insert=None)
+            # Clear the whole chain. v1 single-insert API semantics:
+            # "set insert=None" means "no plugins on this output".
+            new = replace(cur, inserts=())
         else:
             defaults = await self._introspect_defaults(backend, library or "", label)
             # Preserve any prior controls the user had set for this
             # exact plugin — if they're swapping plugins, defaults
             # replace; if they're re-enabling the same plugin after a
             # detach, prior values would already have been wiped at
-            # detach time (insert=None drops controls).
+            # detach time (clearing the chain drops controls).
             new = replace(
                 cur,
-                insert=PluginInsert(
-                    backend=backend,
-                    library=library or "",
-                    label=label,
-                    controls=defaults,
-                    enabled=True,
+                inserts=(
+                    PluginInsert(
+                        backend=backend,
+                        library=library or "",
+                        label=label,
+                        controls=defaults,
+                        enabled=True,
+                    ),
                 ),
             )
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
+    async def append_chain_insert(
+        self, output_id: str, backend: str, library: str, label: str
+    ) -> Output:
+        """Append a plugin to an output's chain. Each plugin's `node.name`
+        in the rendered conf is unique (fx_0, fx_1, …) so PW links them
+        in series automatically. Caps at MAX_CHAIN_DEPTH to stop the
+        operator from stacking an unreasonable load.
+        """
+        from phonon_stage.mixer.models import MAX_CHAIN_DEPTH
+
+        cur = self._output(output_id)
+        if len(cur.inserts) >= MAX_CHAIN_DEPTH:
+            msg = f"chain depth at cap ({MAX_CHAIN_DEPTH}); remove a plugin before adding"
+            raise MixerError(msg)
+        defaults = await self._introspect_defaults(backend, library, label)
+        new_insert = PluginInsert(
+            backend=backend,
+            library=library,
+            label=label,
+            controls=defaults,
+            enabled=True,
+        )
+        new = replace(cur, inserts=(*cur.inserts, new_insert))
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
+    async def remove_chain_insert(self, output_id: str, slot: int) -> Output:
+        """Remove the plugin at `slot` from the chain. Other slots
+        shift down (slot 3 becomes 2 if you remove slot 2)."""
+        cur = self._output(output_id)
+        if not (0 <= slot < len(cur.inserts)):
+            msg = f"slot {slot} out of range (chain has {len(cur.inserts)} plugins)"
+            raise MixerError(msg)
+        remaining = tuple(i for idx, i in enumerate(cur.inserts) if idx != slot)
+        new = replace(cur, inserts=remaining)
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
+    async def reset_chain(self, output_id: str) -> Output:
+        """Clear the whole chain — output reverts to a plain loopback.
+        Equivalent to remove_chain_insert in a loop, but a single
+        reconcile so the user-visible reload happens once."""
+        cur = self._output(output_id)
+        if not cur.inserts:
+            return cur
+        new = replace(cur, inserts=())
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
         await self._reconcile()
@@ -550,8 +609,12 @@ class MixerService:
                 raise MixerError(msg)
         new_controls = dict(cur.insert.controls)
         new_controls[control_name] = float(value)
+        # v1 single-insert path: the only slot to update is index 0 of
+        # the chain. When multi-plugin UI lands, this becomes a typed
+        # endpoint with an explicit slot index.
         new_insert = replace(cur.insert, controls=new_controls)
-        new = replace(cur, insert=new_insert)
+        new_inserts = (new_insert, *cur.inserts[1:])
+        new = replace(cur, inserts=new_inserts)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
         # Keep the in-memory chain-body cache in sync with the new
@@ -559,8 +622,10 @@ class MixerService:
         # would see a "wanted vs owned" diff just because of this
         # control move and reload the service for nothing.
         chain = chain_name_for(new)
-        if chain in self._owned_chains and new.insert is not None:
-            self._owned_chains[chain] = render_filter_chain_conf(new, new.insert, MASTER_SINK_NAME)
+        if chain in self._owned_chains and new.inserts:
+            self._owned_chains[chain] = render_filter_chain_conf(
+                new, new.inserts, MASTER_SINK_NAME
+            )
         try:
             await self._pw.set_filter_node_control(chain, control_name, value)
         except Exception:
@@ -880,7 +945,7 @@ class MixerService:
                 logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
                 return
             import asyncio as _asyncio
-            for attempt in range(20):  # 20 × 50ms = 1s budget
+            for attempt in range(20):  # 20 x 50ms = 1s budget
                 try:
                     nodes = await self._pw.list_nodes()
                     ports = await self._pw.list_ports()
@@ -970,9 +1035,9 @@ class MixerService:
                 await self._pw.set_node_mute(sink_node.id, silenced)
             except Exception:
                 logger.warning("mixer.output_mute_failed", output_id=o.id, exc_info=True)
-            if o.receives_master and o.insert is not None and o.insert.enabled:
+            if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
                 wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.insert, MASTER_SINK_NAME
+                    o, o.inserts, MASTER_SINK_NAME
                 )
                 continue
             if silenced:
@@ -1066,7 +1131,7 @@ class MixerService:
         can take 200-1500ms depending on host load — polling for the
         chain's input.<name> node to appear is more reliable than a
         flat sleep, and bails after ~3s rather than hanging."""
-        if output.insert is None or not output.insert.enabled:
+        if not output.inserts or not any(i.enabled for i in output.inserts):
             return
         chain = chain_name_for(output)
         candidates = (chain, f"input.{chain}", f"output.{chain}")
@@ -1081,7 +1146,16 @@ class MixerService:
         else:
             logger.warning("mixer.chain_resync_timeout", output_id=output.id, chain=chain)
             return
-        for ctl_name, value in output.insert.controls.items():
+        # v1 multi-plugin scope: push back the first slot's controls only.
+        # Slots > 0 keep whatever PW loaded them with (their persisted
+        # control values made it into the conf at render time anyway,
+        # so the steady state matches; only live-edits since the last
+        # reload could drift, and the v1 UI doesn't expose live edits
+        # for slots > 0 yet).
+        first = output.inserts[0]
+        if not first.enabled:
+            return
+        for ctl_name, value in first.controls.items():
             try:
                 await self._pw.set_filter_node_control(chain, ctl_name, value)
             except Exception:

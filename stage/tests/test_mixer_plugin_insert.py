@@ -132,15 +132,37 @@ class TestPluginInsertModel:
             id="abc12345",
             sink_node_name="alsa_output.dg60_1",
             label="DG60 #1",
-            insert=PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL),
+            inserts=(PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL),),
         )
         assert Output.from_dict(o.to_dict()) == o
 
     def test_output_without_insert_roundtrips(self) -> None:
         o = Output(id="x", sink_node_name="y", label="L")
         d = o.to_dict()
-        assert d["insert"] is None
+        assert d["inserts"] == []
+        assert Output.from_dict(d).inserts == ()
+        # Back-compat shim: .insert returns None when chain is empty.
         assert Output.from_dict(d).insert is None
+
+    def test_output_reads_legacy_insert_field(self) -> None:
+        # Before the multi-plugin migration, persistence wrote a single
+        # `insert: dict | None` field. from_dict must keep reading it
+        # so old state.json files don't break on upgrade.
+        legacy = {
+            "id": "x",
+            "sink_node_name": "y",
+            "label": "L",
+            "insert": {
+                "backend": "ladspa",
+                "library": LSP_LIBRARY,
+                "label": LSP_LABEL,
+                "controls": {},
+                "enabled": True,
+            },
+        }
+        o = Output.from_dict(legacy)
+        assert len(o.inserts) == 1
+        assert o.inserts[0].label == LSP_LABEL
 
 
 # ── Filter-chain conf rendering ────────────────────────────────────────
@@ -380,3 +402,110 @@ class TestOrphanChainCleanup:
         svc = MixerService(pw_backend=fake_pw, store=store, introspector=introspector)
         await svc.init()
         assert fake_pw.filter_chain_reload_count == 0
+
+
+# ── Multi-plugin chain ─────────────────────────────────────────────────
+
+
+class TestMultiPluginChain:
+    """Coverage for the v1 socle: append / remove / reset / cap."""
+
+    @pytest.mark.asyncio()
+    async def test_append_grows_chain(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        result = await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        assert len(result.inserts) == 1
+        result = await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        assert len(result.inserts) == 2
+        # Both slots independent (different defaults dicts in memory).
+        assert result.inserts[0] is not result.inserts[1]
+
+    @pytest.mark.asyncio()
+    async def test_append_caps_at_max_chain_depth(self, service: MixerService) -> None:
+        from phonon_stage.mixer.models import MAX_CHAIN_DEPTH
+
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        for _ in range(MAX_CHAIN_DEPTH):
+            await service.append_chain_insert(
+                out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+            )
+        with pytest.raises(MixerError, match="chain depth at cap"):
+            await service.append_chain_insert(
+                out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+            )
+
+    @pytest.mark.asyncio()
+    async def test_remove_specific_slot(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        result = await service.remove_chain_insert(out.id, slot=0)
+        assert len(result.inserts) == 1
+
+    @pytest.mark.asyncio()
+    async def test_remove_invalid_slot_raises(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        with pytest.raises(MixerError, match="out of range"):
+            await service.remove_chain_insert(out.id, slot=0)
+
+    @pytest.mark.asyncio()
+    async def test_reset_chain_clears_everything(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        result = await service.reset_chain(out.id)
+        assert result.inserts == ()
+
+    @pytest.mark.asyncio()
+    async def test_reset_empty_chain_is_noop(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        result = await service.reset_chain(out.id)
+        # No exception, no change.
+        assert result.inserts == ()
+
+    def test_render_multi_plugin_conf_chains_them_in_series(self) -> None:
+        from phonon_stage.mixer.models import Output, PluginInsert
+
+        o = Output(
+            id="abc12345",
+            sink_node_name="alsa_output.dg60_1",
+            label="DG60",
+            inserts=(
+                PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL),
+                PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL),
+            ),
+        )
+        body = render_filter_chain_conf(o, o.inserts, "phonon_master")
+        # Two distinct plugin nodes in the chain — fx_0 and fx_1.
+        assert "name = fx_0" in body
+        assert "name = fx_1" in body
+
+    def test_render_with_all_bypassed_emits_passthrough(self) -> None:
+        from phonon_stage.mixer.models import Output, PluginInsert
+
+        o = Output(
+            id="abc12345",
+            sink_node_name="alsa_output.dg60_1",
+            label="DG60",
+            inserts=(
+                PluginInsert(
+                    backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL, enabled=False
+                ),
+            ),
+        )
+        body = render_filter_chain_conf(o, o.inserts, "phonon_master")
+        # Bypassed → builtin copy node, no actual plugin loaded.
+        assert "label = copy" in body
+        assert "(bypassed)" in body

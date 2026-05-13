@@ -59,7 +59,12 @@ class OutputResponse(BaseModel):
     solo: bool
     delay_ms: float
     receives_master: bool
+    # Back-compat: first insert in the chain (or None). Existing
+    # `/insert/...` endpoints still drive it. The full chain lives
+    # in `inserts` below; UI iterates that one for multi-plugin
+    # rendering.
     insert: PluginInsertResponse | None = None
+    inserts: list[PluginInsertResponse] = Field(default_factory=list)
 
 
 class SourceResponse(BaseModel):
@@ -184,6 +189,8 @@ def _to_insert_resp(ins: PluginInsert | None) -> PluginInsertResponse | None:
 
 
 def _to_output_resp(o: Output) -> OutputResponse:
+    chain = [_to_insert_resp(i) for i in o.inserts]
+    chain_resp: list[PluginInsertResponse] = [c for c in chain if c is not None]
     return OutputResponse(
         id=o.id,
         sink_node_name=o.sink_node_name,
@@ -195,7 +202,8 @@ def _to_output_resp(o: Output) -> OutputResponse:
         solo=o.solo,
         delay_ms=o.delay_ms,
         receives_master=o.receives_master,
-        insert=_to_insert_resp(o.insert),
+        insert=chain_resp[0] if chain_resp else None,
+        inserts=chain_resp,
     )
 
 
@@ -296,7 +304,11 @@ async def patch_output(request: Request, output_id: str, body: OutputUpdate) -> 
 async def patch_output_insert(request: Request, output_id: str, body: InsertSet) -> OutputResponse:
     """Attach a plugin to an output's master→sink path, or clear it.
     All-null body detaches. Defaults for controls are seeded from
-    the LADSPA introspector when the host has one wired."""
+    the LADSPA introspector when the host has one wired.
+
+    Back-compat with the v1 single-insert API: clearing here clears
+    the ENTIRE chain (every slot). Use POST/DELETE /inserts for
+    multi-plugin add/remove."""
     svc = _service(request)
     if body.backend is not None and body.backend not in PLUGIN_BACKENDS:
         raise HTTPException(
@@ -317,6 +329,67 @@ async def patch_output_insert(request: Request, output_id: str, body: InsertSet)
             library=body.library,
             label=body.label,
         )
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _to_output_resp(out)
+
+
+class InsertAppend(BaseModel):
+    """Body for POST /mixer/outputs/{id}/inserts — append a new plugin
+    to the chain. Distinct from PATCH /insert (back-compat single-slot
+    replace) because append never clears existing slots."""
+
+    model_config = ConfigDict(extra="forbid")
+    backend: str
+    library: str
+    label: str
+
+
+@router.post("/outputs/{output_id}/inserts", response_model=OutputResponse, status_code=201)
+async def post_output_chain_insert(
+    request: Request, output_id: str, body: InsertAppend
+) -> OutputResponse:
+    """Append a plugin to the end of an output's chain. Multi-plugin
+    chains run in series (slot 0 closest to the master). Capped at
+    MAX_CHAIN_DEPTH; the service raises MixerError → 409 here."""
+    svc = _service(request)
+    if body.backend not in PLUGIN_BACKENDS:
+        raise HTTPException(
+            status_code=400, detail=f"backend must be one of {list(PLUGIN_BACKENDS)}"
+        )
+    try:
+        out = await svc.append_chain_insert(
+            output_id, backend=body.backend, library=body.library, label=body.label
+        )
+    except MixerError as exc:
+        # "chain depth at cap" → 409 (conflict on capacity); "unknown
+        # output" → 404. Inspect message to split.
+        status = 404 if "unknown output id" in str(exc) else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return _to_output_resp(out)
+
+
+@router.delete("/outputs/{output_id}/inserts/{slot}", response_model=OutputResponse)
+async def delete_output_chain_slot(
+    request: Request, output_id: str, slot: int
+) -> OutputResponse:
+    """Remove the plugin at slot N. Slots > N shift down by one."""
+    svc = _service(request)
+    try:
+        out = await svc.remove_chain_insert(output_id, slot=slot)
+    except MixerError as exc:
+        status = 404 if "unknown output id" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return _to_output_resp(out)
+
+
+@router.delete("/outputs/{output_id}/inserts", response_model=OutputResponse)
+async def reset_output_chain(request: Request, output_id: str) -> OutputResponse:
+    """Clear every plugin on this output's chain — output reverts to a
+    plain loopback. Idempotent (noop when chain is already empty)."""
+    svc = _service(request)
+    try:
+        out = await svc.reset_chain(output_id)
     except MixerError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _to_output_resp(out)

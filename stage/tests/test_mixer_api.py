@@ -259,18 +259,35 @@ class TestTestTone:
         assert resp.status_code == 200
         assert resp.json() == {"status": "stopped"}
 
-    def test_loop_buffer_shape_matches_one_second(self) -> None:
-        # Buffer math: 1s * 48 kHz * stereo * 2 bytes = 384 000 bytes.
-        from phonon_stage.api.mixer import _TEST_TONE_SR, _build_loop_buffer
+    def test_chunk_shape_matches_constant(self) -> None:
+        # Chunk math: 1024 frames * stereo * 2 bytes = 4096 bytes.
+        from phonon_stage.api.mixer import _CHUNK_BYTES, _generate_chunk
 
         for kind in ("click", "tone", "pink"):
-            buf = _build_loop_buffer(kind)
-            assert len(buf) == _TEST_TONE_SR * 4
+            buf = _generate_chunk(kind, pos=0)
+            assert len(buf) == _CHUNK_BYTES
 
-    def test_loop_buffer_unknown_kind_raises(self) -> None:
+    def test_chunk_unknown_kind_raises(self) -> None:
         import pytest
 
-        from phonon_stage.api.mixer import _build_loop_buffer
+        from phonon_stage.api.mixer import _generate_chunk
 
         with pytest.raises(ValueError, match="unknown kind"):
-            _build_loop_buffer("banana")
+            _generate_chunk("banana", pos=0)
+
+    def test_tone_phase_continuity_across_chunks(self) -> None:
+        # Two consecutive chunks should look like one continuous 440 Hz
+        # sine — i.e. the second chunk's first sample is what the first
+        # chunk's "next-after-last" sample would have been. Regression
+        # guard against the 1 Hz pop that the old looped buffer caused.
+        import struct as _struct
+
+        from phonon_stage.api.mixer import _CHUNK_FRAMES, _generate_chunk
+
+        c0 = _generate_chunk("tone", pos=0)
+        c1 = _generate_chunk("tone", pos=_CHUNK_FRAMES)
+        # Last frame of c0 vs first frame of c1 — they should be close
+        # (one sample period of a 440 Hz sine is ~0.6% of full scale).
+        last_c0 = _struct.unpack_from("<hh", c0, (_CHUNK_FRAMES - 1) * 4)[0]
+        first_c1 = _struct.unpack_from("<hh", c1, 0)[0]
+        assert abs(last_c0 - first_c1) < 1500  # at -10 dBFS, ~5% of 10350

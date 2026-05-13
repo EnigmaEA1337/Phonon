@@ -523,34 +523,51 @@ _test_tone_kind: str | None = None
 _test_tone_writer: asyncio.Task[None] | None = None
 
 
-def _build_loop_buffer(kind: str) -> bytes:
-    """One second of stereo s16le @ 48 kHz. Looped by the writer."""
+_CHUNK_FRAMES = 1024  # ~21 ms @ 48 kHz — keeps drain latency low
+_CHUNK_BYTES = _CHUNK_FRAMES * 4  # stereo s16le
+
+
+def _generate_chunk(kind: str, pos: int) -> bytes:
+    """Generate one chunk of _CHUNK_FRAMES stereo s16le samples.
+
+    `pos` is the running sample-count since stream start, so phase /
+    rhythm continue smoothly across chunks. Streaming generation
+    (vs a pre-built looped buffer) avoids two issues we saw on the
+    BT chain:
+      * pink noise was a fixed 1 s pattern repeated identically →
+        the ear heard a 1 Hz cadence instead of true white noise.
+      * tone had a tiny discontinuity at every loop boundary that
+        the SBC codec amplified into an audible tick.
+    """
     sr = _TEST_TONE_SR
-    buf = bytearray(sr * 4)  # stereo, 2 bytes/sample
+    buf = bytearray(_CHUNK_BYTES)
     if kind == "click":
         # 120 BPM = 2 ticks/sec. Each tick = 50 ms of 1 kHz sine,
-        # cosine-windowed so it doesn't itself click.
+        # cosine-windowed so the burst's own envelope doesn't click.
         period = sr // 2
         tick = int(sr * 0.05)
-        for i in range(sr):
-            pos = i % period
-            if pos < tick:
-                env = math.sin(math.pi * pos / tick)
-                s = int(0.5 * 32767 * env * math.sin(2 * math.pi * 1000 * pos / sr))
+        for i in range(_CHUNK_FRAMES):
+            p = (pos + i) % period
+            if p < tick:
+                env = math.sin(math.pi * p / tick)
+                s = int(0.5 * 32767 * env * math.sin(2 * math.pi * 1000 * p / sr))
             else:
                 s = 0
             struct.pack_into("<hh", buf, i * 4, s, s)
     elif kind == "tone":
-        # Continuous 440 Hz sine at -10 dBFS.
+        # Continuous 440 Hz sine at -10 dBFS, phase derived from the
+        # absolute sample index so chunk boundaries are seamless.
         amp = int(32767 * 0.316)
-        for i in range(sr):
-            s = int(amp * math.sin(2 * math.pi * 440 * i / sr))
+        k = 2 * math.pi * 440 / sr
+        for i in range(_CHUNK_FRAMES):
+            s = int(amp * math.sin(k * (pos + i)))
             struct.pack_into("<hh", buf, i * 4, s, s)
     elif kind == "pink":
-        # Cheap white noise at -14 dBFS. "Pink" is a UI label —
-        # accurate pink filtering isn't worth the code here.
+        # Cheap white noise at -14 dBFS. Generated fresh per chunk —
+        # never repeats. "Pink" is a UI label (real pink filtering
+        # isn't worth the cost here).
         amp_f = 32767 * 0.2
-        for i in range(sr):
+        for i in range(_CHUNK_FRAMES):
             s = int(amp_f * (random.random() * 2 - 1))
             struct.pack_into("<hh", buf, i * 4, s, s)
     else:
@@ -559,19 +576,20 @@ def _build_loop_buffer(kind: str) -> bytes:
 
 
 async def _feed_test_tone(proc: asyncio.subprocess.Process, kind: str) -> None:
-    """Stream the loop buffer to pacat's stdin until cancelled or pacat exits."""
-    buf = _build_loop_buffer(kind)
-    chunk = 4096  # ~21 ms — keeps drain latency low
+    """Stream freshly-generated chunks to pacat's stdin until cancelled
+    or pacat exits. `pos` carries phase/rhythm continuity across
+    chunk writes."""
+    pos = 0
     try:
         while True:
-            for off in range(0, len(buf), chunk):
-                if proc.stdin is None or proc.returncode is not None:
-                    return
-                proc.stdin.write(buf[off : off + chunk])
-                try:
-                    await proc.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+            if proc.stdin is None or proc.returncode is not None:
+                return
+            proc.stdin.write(_generate_chunk(kind, pos))
+            pos += _CHUNK_FRAMES
+            try:
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                return
     except asyncio.CancelledError:
         return
 

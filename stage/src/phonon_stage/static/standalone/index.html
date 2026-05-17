@@ -272,8 +272,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    the controls that affect it). The OUT stays on the far edge as
    the "result" of the chain. This is the canonical shape for
    every future DSP plugin. */
-.dsp-panel { display: grid; grid-template-columns: 200px 1fr auto;
-  gap: 12px; padding: 8px; background: var(--bg-1);
+.dsp-panel { display: flex; flex-direction: column;
+  gap: 6px; padding: 8px; background: var(--bg-1);
   border: 1px solid var(--border); border-radius: 4px; min-height: 140px; }
 
 /* Vertical IN/OUT meter pair. Reuses the existing .vu-bar component
@@ -286,14 +286,21 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .dsp-vu-side .dsp-vu-label.out { color: var(--magenta); }
 .dsp-vu-side .dsp-vu-pair { display: flex; gap: 2px; height: 120px;
   align-items: stretch; }
-.dsp-panel-meta { display: flex; flex-direction: column; gap: 4px; padding-right: 12px;
-  border-right: 1px solid var(--border); }
-.dsp-panel-meta .dsp-output-label { font-family: var(--font-h); font-size: 14px;
-  color: var(--magenta); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-.dsp-panel-meta .dsp-plugin-name { font-family: var(--font-h); font-size: 12px;
-  color: var(--text-hi); font-weight: 600; }
-.dsp-panel-meta .dsp-plugin-maker { font-size: 9px; color: var(--text-fade); }
-.dsp-panel-meta .dsp-actions { display: flex; gap: 4px; margin-top: auto; }
+/* Header bar — output / plugin meta inlined at the top of the panel
+   so the controls + VU meters get the full width below. Was a 200px
+   left column previously, which cropped wide plugins like the EQ. */
+.dsp-panel-meta { display: flex; flex-direction: row; align-items: center;
+  gap: 10px; padding: 4px 6px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; }
+.dsp-panel-meta .dsp-output-label { font-family: var(--font-h); font-size: 12px;
+  color: var(--magenta); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; flex-shrink: 0; }
+.dsp-panel-meta .dsp-plugin-name { font-family: var(--font-h); font-size: 11px;
+  color: var(--text-hi); font-weight: 600; flex-shrink: 0; }
+.dsp-panel-meta .dsp-plugin-maker { font-size: 9px; color: var(--text-fade);
+  flex-shrink: 0; }
+.dsp-panel-meta .dsp-meta-spacer { flex: 1; }
+.dsp-panel-meta .dsp-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .dsp-panel-meta .dsp-actions .btn { font-size: 9px; padding: 3px 8px; }
 .dsp-panel-empty { color: var(--text-fade); font-size: 11px; padding: 20px;
   display: flex; align-items: center; justify-content: center; font-style: italic; }
@@ -2223,11 +2230,15 @@ async function renderDspPanel() {
   const inputControls = (schema.controls || []).filter(c => c.direction === 'input');
   const inSide = dspVuSide('IN', 'in', 'phonon_master');
   const outSide = dspVuSide('OUT', 'out', out.sink_node_name);
+  // Horizontal meta bar above the controls — output name, plugin
+  // name, maker, then Close/Remove pushed to the right by the spacer.
+  // Replaces the old 200 px left column which used to crop wide
+  // plugin UIs (EQ x32 in particular).
   const meta = `<div class="dsp-panel-meta">
     <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}${escapeHtml(slotLabel)}</div>
     <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(focusedIns.library, focusedIns.label))}</div>
     <div class="dsp-plugin-maker">${escapeHtml(schema.maker || '')}</div>
-    <div style="flex:1"></div>
+    <div class="dsp-meta-spacer"></div>
     <div class="dsp-actions">
       <button class="btn" onclick="clearDspFocus()" title="Close panel">Close</button>
       <button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>
@@ -2248,14 +2259,16 @@ async function renderDspPanel() {
       renderDspGroup(out.id, g, schemaByName, focusedIns.controls)
     ).join('');
     const monitorHtml = renderDspMonitoring(layout, focusedIns.controls);
-    bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}</div>`;
+    // OUT VU joins the same row as the controls now that we're
+    // flex-column (no more grid 3rd column).
+    bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}${outSide}</div>`;
   } else {
     const controlsHtml = inputControls.map(c =>
       renderDspControl(out.id, c, focusedIns.controls[c.name])
     ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
-    bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}</div>`;
+    bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}${outSide}</div>`;
   }
-  panel.innerHTML = meta + bodyHtml + outSide;
+  panel.innerHTML = meta + bodyHtml;
 }
 
 // Render one named section of a plugin (e.g. Signal, Distance...).

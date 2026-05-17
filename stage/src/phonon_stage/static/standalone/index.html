@@ -307,9 +307,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Response curve graph — sits above the strip. SVG fills its
    container width, height fixed so the curve doesn't squash on
    narrow viewports. */
-.eq-graph { width: 100%; height: 200px; background: linear-gradient(180deg,
+.eq-graph { width: 100%; height: 280px; background: linear-gradient(180deg,
   rgba(15,24,32,0.95), rgba(8,16,24,0.95));
-  border: 1px solid var(--border); border-radius: 4px; display: block; }
+  border: 1px solid var(--border); border-radius: 4px; display: block;
+  user-select: none; }
 .eq-grid-v { stroke: rgba(255,255,255,0.06); stroke-width: 1; }
 .eq-grid-h { stroke: rgba(255,255,255,0.05); stroke-width: 1;
   stroke-dasharray: 2 3; }
@@ -321,33 +322,39 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .eq-response-curve { fill: none; stroke: var(--cyan); stroke-width: 1.6;
   stroke-linejoin: round; stroke-linecap: round;
   filter: drop-shadow(0 0 2px rgba(6,182,212,0.5)); }
-.eq-strip { display: flex; gap: 1px; padding: 6px 4px; background: var(--bg-1);
+/* Compact band readout row — no faders. Each column is just the
+   ISO frequency, the current gain in dB, and a tiny ON/OFF toggle.
+   All actual gain editing is done by dragging the band handle on
+   the SVG curve above (LSP-style direct manipulation). */
+.eq-strip { display: flex; gap: 1px; padding: 4px 4px; background: var(--bg-1);
   border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
-.eq-band { display: flex; flex-direction: column; align-items: center; gap: 3px;
-  min-width: 26px; flex: 1; padding: 4px 2px; transition: opacity 0.15s; }
-.eq-band.off { opacity: 0.35; }
+.eq-band { display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 26px; flex: 1; padding: 3px 2px; transition: opacity 0.15s; }
+.eq-band.off { opacity: 0.5; }
 .eq-band-label { font-family: var(--font-m); font-size: 9px; color: var(--text-dim);
   text-align: center; white-space: nowrap; }
 .eq-band-label.eq-band-anchor { color: var(--cyan); font-weight: 600; }
-.eq-fader-track { position: relative; width: 14px; height: 200px;
-  background: var(--bg-3); border: 1px solid var(--border); border-radius: 7px;
-  cursor: ns-resize; flex-shrink: 0; }
-.eq-zero-line { position: absolute; left: -3px; right: -3px; top: 50%; height: 1px;
-  background: rgba(255,255,255,0.2); pointer-events: none; }
-.eq-fader-fill { position: absolute; left: 1px; right: 1px; pointer-events: none;
-  border-radius: 5px; }
-.eq-fader-knob { position: absolute; left: -5px; right: -5px; height: 12px;
-  background: linear-gradient(180deg, var(--text-hi), var(--text-mid));
-  border: 1px solid var(--bg-1); border-radius: 3px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.4); pointer-events: none; }
-.eq-band-db { font-family: var(--font-m); font-size: 9px; color: var(--text);
-  min-height: 12px; text-align: center; }
-.eq-band-on { font-family: var(--font-m); font-size: 8px; padding: 1px 0; width: 100%;
-  background: var(--bg-3); color: var(--text-fade); border: 1px solid var(--border);
-  border-radius: 3px; cursor: pointer; }
+.eq-band-db { font-family: var(--font-m); font-size: 10px; color: var(--text);
+  min-height: 14px; text-align: center; }
+.eq-band-on { font-family: var(--font-m); font-size: 7px; padding: 0; width: 100%;
+  height: 13px;
+  background: rgba(251,191,36,0.10); color: var(--yellow);
+  border: 1px solid rgba(251,191,36,0.3);
+  border-radius: 2px; cursor: pointer; }
 .eq-band-on.on { background: rgba(52,211,153,0.15); color: var(--green);
   border-color: var(--green); }
-.eq-band-on:hover { background: var(--bg-2); }
+.eq-band-on:hover { filter: brightness(1.2); }
+
+/* Per-band drag handles overlaid on the SVG curve. r=6 nominally;
+   we leave hit area generous via cursor + transition. Off bands
+   fade out — they still respond to drag (which re-enables the band
+   on first move). */
+.eq-handle { fill: var(--cyan); stroke: var(--bg-1); stroke-width: 1.5;
+  cursor: ns-resize; transition: fill 0.1s, r 0.1s;
+  filter: drop-shadow(0 0 3px rgba(6,182,212,0.8)); }
+.eq-handle:hover { fill: var(--text-hi); }
+.eq-handle.off { fill: var(--text-fade); opacity: 0.6;
+  filter: none; }
 
 /* Plugin sections — match the LSP native layout (Signal / Samples /
    Distance / Time / Monitoring etc.). The catalogue layout map
@@ -2484,15 +2491,16 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
     if (!c) return '';
     return renderDspControl(outputId, c, values[name]);
   }).join('');
-  // 32 band sliders. Each band has a vertical fader + on/off + dB readout.
+  // Compact band readout row — no faders, no slider tracks. Each
+  // column is just freq label / numeric dB / ON-OFF toggle. The
+  // actual gain editing happens on the response curve above by
+  // dragging the per-band handles (LSP-style direct manipulation).
   const bandStrip = GRAPH_EQ_BANDS.map(freq => {
     const gainKey = `Band gain ${freq} (G)`;
     const onKey = `Band on ${freq}`;
     const gainG = values[gainKey];
     const db = (gainG === undefined) ? 0 : eqGainToDb(gainG);
     const isOn = (values[onKey] === undefined ? 1 : values[onKey]) >= 0.5;
-    // Fader Y position: 0 = top (max), 1 = bottom (min).
-    const pct = 1 - (db - EQ_DB_MIN) / (EQ_DB_MAX - EQ_DB_MIN);
     const dbDisplay = (db >= 0 ? '+' : '') + db.toFixed(1);
     const labelClass = freq === 1000 || freq === 100 || freq === 10000 ? 'eq-band-label eq-band-anchor' : 'eq-band-label';
     return `<div class="eq-band${isOn ? '' : ' off'}"
@@ -2501,13 +2509,6 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
                  data-gain-key="${escapeHtml(gainKey)}"
                  data-on-key="${escapeHtml(onKey)}">
       <div class="${labelClass}">${escapeHtml(eqFreqLabel(freq))}</div>
-      <div class="eq-fader-track" onmousedown="eqFaderDragStart(event,this)">
-        <div class="eq-zero-line"></div>
-        <div class="eq-fader-knob" style="top:calc(${(pct * 100).toFixed(2)}% - 6px)"></div>
-        <div class="eq-fader-fill" style="top:${pct < 0.5 ? (pct * 100).toFixed(2) : 50}%;
-                                          height:${(Math.abs(pct - 0.5) * 100).toFixed(2)}%;
-                                          background:${db >= 0 ? 'rgba(52,211,153,0.18)' : 'rgba(248,113,113,0.18)'}"></div>
-      </div>
       <div class="eq-band-db" data-control-readout="${escapeHtml(gainKey)}">${dbDisplay}</div>
       <button class="eq-band-on${isOn ? ' on' : ''}"
               onclick="eqToggleBand(event,this)" title="Band ${eqFreqLabel(freq)} Hz on/off">
@@ -2515,16 +2516,15 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
       </button>
     </div>`;
   }).join('');
-  // Response graph — SVG above the strip. Static axes/grid drawn
-  // once here; the curve path is empty initially and filled by
-  // eqRedrawCurve() below (also called after every fader/toggle).
-  const graphHtml = `<svg class="eq-graph" viewBox="0 0 1000 240" preserveAspectRatio="none"
+  // Response graph — SVG. Static axes drawn once; the curve path +
+  // 32 draggable handles are filled by eqRedrawCurve() below (also
+  // called after every drag tick and ON/OFF toggle).
+  const graphHtml = `<svg class="eq-graph" viewBox="0 0 1000 320" preserveAspectRatio="none"
                            xmlns="http://www.w3.org/2000/svg">
     ${eqRenderGraphGrid()}
     <path id="eq-response-curve" class="eq-response-curve" d="" />
+    <g id="eq-band-handles"></g>
   </svg>`;
-  // Delay the curve draw + monitoring poll start until after the
-  // SVG is mounted in the DOM (innerHTML happens in the caller).
   setTimeout(() => eqRedrawCurve(outputId), 0);
   return `${inSide}
     <div class="eq-x32-panel">
@@ -2537,11 +2537,10 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
 // Static grid: vertical lines at octave-ish frequencies, horizontal
 // lines at -36/-24/-12/0/+12/+24/+36 dB. The 0 dB line is highlighted.
 function eqRenderGraphGrid() {
-  const W = 1000, H = 240;
+  const W = EQ_VIEW_W, H = EQ_VIEW_H;
   const vLines = [16, 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
   const hLines = [-36, -24, -12, 0, 12, 24, 36];
   const parts = [];
-  // Frequency log scale spans 16 Hz → 20 kHz (matches the band range).
   for (const f of vLines) {
     const x = (eqLogX(f) * W).toFixed(1);
     const label = f >= 1000 ? (f / 1000) + 'k' : String(f);
@@ -2571,26 +2570,32 @@ function eqDbY(db) {
   return 1 - (db - EQ_DB_MIN) / (EQ_DB_MAX - EQ_DB_MIN);
 }
 
-// Compute and draw the frequency response curve for an output's
-// graphic EQ chain. Each band contributes a Gaussian bell centered
-// on its ISO frequency; the curve is the sum (in dB) of all enabled
-// bands' contributions. 1/3-octave bandwidth gives ~half-gain at
-// the boundary between adjacent bands → neighbours blend smoothly.
+// Compute and draw the frequency response curve + per-band
+// draggable handles for an output's graphic EQ chain.
+//
+// Each band contributes a Gaussian bell on a log frequency axis;
+// the curve is the sum (in dB) of all enabled bands' contributions.
+// 1/3-octave bandwidth → half-gain at the boundary between adjacent
+// bands → neighbours blend smoothly.
+//
+// Each band also gets a circle handle at (band frequency, band gain).
+// Dragging the handle vertically retunes that band's gain — same
+// interaction model as the LSP native UI.
+const EQ_VIEW_W = 1000;
+const EQ_VIEW_H = 320;
+
 function eqRedrawCurve(outputId) {
   const path = document.getElementById('eq-response-curve');
-  if (!path) return;
+  const handlesG = document.getElementById('eq-band-handles');
+  if (!path || !handlesG) return;
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
   if (!out || !out.insert) return;
   const values = out.insert.controls || {};
-  // 1/3-octave bell sharpness: half-gain at ±1/6 octave (the band
-  // boundary). exp(-(1/6)^2 * k) = 0.5 → k = 36 * ln 2 ≈ 24.96.
   const SHARP = 24.96;
-  // Sample at the band ISO frequencies + a few in between so the
-  // curve looks smooth without overshooting between samples.
-  const samples = [];
-  // Use 200 log-spaced points from 16 Hz to 20 kHz.
-  const N = 200;
+  const N = 240;
   const lo = Math.log2(16), hi = Math.log2(20000);
+  // Sample for the curve.
+  const samples = [];
   for (let i = 0; i <= N; i++) {
     samples.push(Math.pow(2, lo + (hi - lo) * (i / N)));
   }
@@ -2609,76 +2614,104 @@ function eqRedrawCurve(outputId) {
     }
     return { f, db: dbSum };
   });
-  // Build the SVG path. viewBox is 1000x240; convert (f, db) → (x, y).
-  const W = 1000, H = 240;
   const d = points.map((p, i) => {
-    const x = (eqLogX(p.f) * W).toFixed(2);
-    const y = (eqDbY(p.db) * H).toFixed(2);
+    const x = (eqLogX(p.f) * EQ_VIEW_W).toFixed(2);
+    const y = (eqDbY(p.db) * EQ_VIEW_H).toFixed(2);
     return (i === 0 ? 'M' : 'L') + x + ',' + y;
   }).join(' ');
   path.setAttribute('d', d);
+  // Per-band handles. Position = (band center freq, band gain).
+  const handleSvg = GRAPH_EQ_BANDS.map((fc, idx) => {
+    const onKey = `Band on ${fc}`;
+    const isOn = (values[onKey] === undefined ? 1 : values[onKey]) >= 0.5;
+    const gainG = values[`Band gain ${fc} (G)`];
+    const db = (gainG === undefined) ? 0 : eqGainToDb(gainG);
+    const cx = (eqLogX(fc) * EQ_VIEW_W).toFixed(2);
+    const cy = (eqDbY(db) * EQ_VIEW_H).toFixed(2);
+    const cls = 'eq-handle' + (isOn ? '' : ' off');
+    return `<circle class="${cls}" cx="${cx}" cy="${cy}" r="6"
+                    data-band-freq="${fc}"
+                    data-band-idx="${idx}"
+                    onmousedown="eqHandleDragStart(event,this)"
+                    title="${eqFreqLabel(fc)} Hz · ${db >= 0 ? '+' : ''}${db.toFixed(1)} dB" />`;
+  }).join('');
+  handlesG.innerHTML = handleSvg;
 }
 
-// Fader drag — track the mouse on the document so the operator can
-// drag past the track's edges (DAW-style: release-anywhere wins).
+// Handle drag — direct manipulation on the SVG curve. Each band has
+// a handle circle; dragging it vertically retunes that band's gain.
+// Horizontal motion is ignored (frequency is fixed by the ISO band).
 let eqDragState = null;
-function eqFaderDragStart(ev, trackEl) {
+function eqHandleDragStart(ev, circleEl) {
   ev.preventDefault();
-  const band = trackEl.closest('.eq-band');
-  if (!band) return;
+  ev.stopPropagation();
+  const svg = circleEl.ownerSVGElement;
+  if (!svg) return;
+  // Walk back to the EQ panel to find the output id (set on every
+  // band readout cell in the strip below — they share the same
+  // panel root).
+  const panel = svg.closest('.eq-x32-panel');
+  const anyBand = panel ? panel.querySelector('.eq-band') : null;
+  const outputId = anyBand ? anyBand.dataset.outputId : null;
+  if (!outputId) return;
+  const freq = parseFloat(circleEl.dataset.bandFreq);
   eqDragState = {
-    track: trackEl,
-    band: band,
-    rect: trackEl.getBoundingClientRect(),
-    gainKey: band.dataset.gainKey,
-    outputId: band.dataset.outputId,
-    pending: null,
+    svg,
+    panel,
+    circle: circleEl,
+    outputId,
+    freq,
+    gainKey: `Band gain ${freq} (G)`,
   };
-  eqFaderApplyEvent(ev);
-  document.addEventListener('mousemove', eqFaderDragMove);
-  document.addEventListener('mouseup', eqFaderDragEnd, { once: true });
+  // Ensure the band's ON toggle is active when the operator starts
+  // dragging — otherwise the gain change is invisible.
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const onKey = `Band on ${freq}`;
+  if (out && out.insert && (out.insert.controls[onKey] || 0) < 0.5) {
+    out.insert.controls[onKey] = 1;
+    eqQueueControlWrite(outputId, onKey, 1);
+    // Reflect ON state in the strip row.
+    const bandRow = panel.querySelector(`.eq-band[data-band-freq="${freq}"]`);
+    if (bandRow) {
+      bandRow.classList.remove('off');
+      const btn = bandRow.querySelector('.eq-band-on');
+      if (btn) { btn.classList.add('on'); btn.textContent = 'ON'; }
+    }
+  }
+  eqHandleApplyEvent(ev);
+  document.addEventListener('mousemove', eqHandleDragMove);
+  document.addEventListener('mouseup', eqHandleDragEnd, { once: true });
 }
-function eqFaderDragMove(ev) {
-  if (!eqDragState) return;
-  eqFaderApplyEvent(ev);
+function eqHandleDragMove(ev) {
+  if (eqDragState) eqHandleApplyEvent(ev);
 }
-function eqFaderDragEnd() {
-  document.removeEventListener('mousemove', eqFaderDragMove);
+function eqHandleDragEnd() {
+  document.removeEventListener('mousemove', eqHandleDragMove);
   eqDragState = null;
 }
-function eqFaderApplyEvent(ev) {
+function eqHandleApplyEvent(ev) {
   if (!eqDragState) return;
-  const { rect, track, band, gainKey, outputId } = eqDragState;
-  let pct = (ev.clientY - rect.top) / rect.height;
-  pct = Math.max(0, Math.min(1, pct));
-  let db = EQ_DB_MAX - pct * (EQ_DB_MAX - EQ_DB_MIN);
-  // Snap to 0 dB within ±1 dB so a casual drag back to flat clicks
-  // into place — the operator's "neutralise this band" gesture.
-  if (Math.abs(db) < 1.0) db = 0;
-  db = Math.round(db * 10) / 10;  // 0.1 dB resolution
-  // Update visuals immediately, then push to server (debounced via
-  // pending-pointer trick — only the latest in-flight value reaches
-  // the API if the user scrubs fast).
-  const pct2 = 1 - (db - EQ_DB_MIN) / (EQ_DB_MAX - EQ_DB_MIN);
-  const knob = track.querySelector('.eq-fader-knob');
-  if (knob) knob.style.top = `calc(${(pct2 * 100).toFixed(2)}% - 6px)`;
-  const fill = track.querySelector('.eq-fader-fill');
-  if (fill) {
-    fill.style.top = pct2 < 0.5 ? (pct2 * 100).toFixed(2) + '%' : '50%';
-    fill.style.height = (Math.abs(pct2 - 0.5) * 100).toFixed(2) + '%';
-    fill.style.background = db >= 0 ? 'rgba(52,211,153,0.18)' : 'rgba(248,113,113,0.18)';
-  }
-  const dbCell = band.querySelector('.eq-band-db');
-  if (dbCell) dbCell.textContent = (db >= 0 ? '+' : '') + db.toFixed(1);
-  // Push to server with rate-limited fetch + refresh the response
-  // curve in real time. The local mixer state mirror is updated by
-  // eqQueueControlWrite (on success), so the curve sample inside
-  // eqRedrawCurve reads the new gain on the next animation frame.
+  const { svg, panel, outputId, freq, gainKey } = eqDragState;
+  // Convert client Y to viewBox-relative dB.
+  const rect = svg.getBoundingClientRect();
+  let yPct = (ev.clientY - rect.top) / rect.height;
+  yPct = Math.max(0, Math.min(1, yPct));
+  let db = EQ_DB_MAX - yPct * (EQ_DB_MAX - EQ_DB_MIN);
+  if (Math.abs(db) < 1.0) db = 0;          // snap to 0 dB within ±1 dB
+  db = Math.round(db * 10) / 10;            // 0.1 dB resolution
   const gainG = eqDbToGain(db);
-  // Optimistic local update for instant curve feedback — server
-  // confirmation will come a few ms later via eqQueueControlWrite.
+  // Optimistic local mirror so the curve + readout track the cursor
+  // without API roundtrip.
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
   if (out && out.insert && out.insert.controls) out.insert.controls[gainKey] = gainG;
+  // Update readout cell in the strip below.
+  if (panel) {
+    const bandRow = panel.querySelector(`.eq-band[data-band-freq="${freq}"]`);
+    if (bandRow) {
+      const dbCell = bandRow.querySelector('.eq-band-db');
+      if (dbCell) dbCell.textContent = (db >= 0 ? '+' : '') + db.toFixed(1);
+    }
+  }
   eqRedrawCurve(outputId);
   eqQueueControlWrite(outputId, gainKey, gainG);
 }

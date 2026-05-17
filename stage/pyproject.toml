@@ -16,6 +16,11 @@ dependencies = [
     "structlog>=24.4,<26",
     "pyyaml>=6.0,<7",
     "dbus-fast>=2.24,<3",
+    # numpy powers the live FFT spectrum overlay in the Graphic EQ
+    # panel. Imported lazily inside phonon_stage.dsp.spectrum — the
+    # endpoint returns 503 if numpy isn't installed (Pi hosts without
+    # ladspa-sdk don't get DSP plugins anyway, per project scope).
+    "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]

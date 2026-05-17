@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -258,6 +259,12 @@ def create_app(
         )
         yield
         await discovery.unregister()
+        # Tear down the spectrum sampler if any EQ panel ever asked
+        # for a reading — kills the persistent parec captures cleanly.
+        spectrum = getattr(app.state, "live_spectrum", None)
+        if spectrum is not None:
+            with contextlib.suppress(Exception):
+                await spectrum.stop()
         logger.info("stage.stopped", stage_id=cfg.stage_id)
 
     app = FastAPI(

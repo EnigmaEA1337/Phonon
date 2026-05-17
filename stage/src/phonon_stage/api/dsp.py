@@ -186,3 +186,58 @@ async def get_plugin_schema(request: Request, library: str, label: str) -> Plugi
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"introspection failed: {exc}") from exc
     return _to_schema(desc)
+
+
+# ── Live spectrum ───────────────────────────────────────────────────
+
+
+class SpectrumResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node: str
+    bands: list[float]  # one dBFS value per requested band center, in order
+
+
+@router.get("/spectrum", response_model=SpectrumResponse)
+async def get_spectrum(request: Request, node: str, bands: str) -> SpectrumResponse:
+    """Sample the latest ~85 ms of audio from a PipeWire monitor node
+    and return one dBFS magnitude per requested band center frequency.
+
+    Args:
+      node:  PW node name to capture (e.g. `phonon_master.monitor`).
+             First call spawns a persistent parec; idle nodes are
+             reaped after 5 s without a request.
+      bands: comma-separated band center frequencies in Hz, e.g.
+             "16,20,25,31.5,...,20000". Each one gets one dBFS
+             reading peak-picked across the ±1/6-octave window
+             around it (matches a 1/3-octave RTA).
+
+    Returns 503 when numpy isn't installed (Pi hosts without
+    ladspa-sdk by project policy don't get a spectrum overlay).
+    """
+    from phonon_stage.dsp.spectrum import LiveSpectrum, SpectrumUnavailable
+
+    svc = getattr(request.app.state, "live_spectrum", None)
+    if svc is None:
+        # Lazy-instantiate so we don't spawn the reaper task at
+        # startup when nothing's asked for a spectrum yet.
+        svc = LiveSpectrum()
+        request.app.state.live_spectrum = svc
+        await svc.start()
+    try:
+        centers = [float(p) for p in bands.split(",") if p.strip()]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"bands must be comma-separated numbers: {exc}",
+        ) from exc
+    if not centers:
+        raise HTTPException(status_code=400, detail="bands is empty")
+    try:
+        values = await svc.get_spectrum_db(node, centers)
+    except SpectrumUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"parec not installed on host: {exc}"
+        ) from exc
+    return SpectrumResponse(node=node, bands=values)

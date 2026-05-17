@@ -260,4 +260,9 @@ async def client(
     async with lifespan_wrapper():
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # Expose the FastAPI app on the client so tests that need
+            # to seed app.state (e.g. injecting a fake LiveSpectrum
+            # before hitting /dsp/spectrum) can reach it cleanly. httpx
+            # doesn't reserve this attr — duck-typed dynamic field.
+            ac.app = app  # type: ignore[attr-defined]
             yield ac

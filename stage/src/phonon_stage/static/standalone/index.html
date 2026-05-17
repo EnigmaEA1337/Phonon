@@ -2134,6 +2134,7 @@ async function focusDspPanel(outputId) {
 
 async function clearDspFocus() {
   stopDspMonitorPolling();
+  eqStopSpectrumPolling();
   dspState.focusedId = null;
   renderMixer();
   await renderDspPanel();
@@ -2148,6 +2149,7 @@ async function detachPluginInsert(outputId) {
       body: JSON.stringify({ backend: null, library: null, label: null }),
     });
     stopDspMonitorPolling();
+    eqStopSpectrumPolling();
     dspState.focusedId = null;
     await fetchMixer();
     await renderDspPanel();
@@ -2522,10 +2524,14 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
   const graphHtml = `<svg class="eq-graph" viewBox="0 0 1000 320" preserveAspectRatio="none"
                            xmlns="http://www.w3.org/2000/svg">
     ${eqRenderGraphGrid()}
+    <g id="eq-spectrum-bars"></g>
     <path id="eq-response-curve" class="eq-response-curve" d="" />
     <g id="eq-band-handles"></g>
   </svg>`;
-  setTimeout(() => eqRedrawCurve(outputId), 0);
+  setTimeout(() => {
+    eqRedrawCurve(outputId);
+    eqStartSpectrumPolling(outputId);
+  }, 0);
   return `${inSide}
     <div class="eq-x32-panel">
       <div class="eq-toolbar">${toolbar}</div>
@@ -2771,6 +2777,118 @@ async function eqToggleBand(ev, btn) {
   out.insert.controls[onKey] = next;
   eqRedrawCurve(outputId);
   eqQueueControlWrite(outputId, onKey, next);
+}
+
+// ── Live spectrum overlay ─────────────────────────────────────────
+//
+// Polls /dsp/spectrum every ~70 ms while the EQ panel is open.
+// Backend keeps a persistent parec capture on phonon_master.monitor
+// and runs FFT on each request — we just paint the 32 returned dB
+// values as bars behind the response curve.
+//
+// dBFS scale on the graph: -90 dBFS sits at the bottom, 0 dBFS at
+// the top (sharing the EQ's vertical range). Bars are translucent
+// magenta so the cyan curve + cyan handles stay readable on top.
+const EQ_SPECTRUM_INTERVAL_MS = 70;
+const EQ_SPECTRUM_FLOOR_DB = -90;
+const EQ_SPECTRUM_CEIL_DB = 0;
+
+let eqSpectrumState = {
+  outputId: null,
+  timer: null,
+  inFlight: false,
+  peakHold: new Map(),  // band freq → { db, decay }
+};
+
+function eqStartSpectrumPolling(outputId) {
+  eqStopSpectrumPolling();
+  eqSpectrumState.outputId = outputId;
+  eqSpectrumState.peakHold = new Map();
+  eqSpectrumTick();
+  eqSpectrumState.timer = setInterval(eqSpectrumTick, EQ_SPECTRUM_INTERVAL_MS);
+}
+
+function eqStopSpectrumPolling() {
+  if (eqSpectrumState.timer) { clearInterval(eqSpectrumState.timer); eqSpectrumState.timer = null; }
+  eqSpectrumState.outputId = null;
+  eqSpectrumState.peakHold = new Map();
+  // Clear the bars on stop so they don't ghost.
+  const g = document.getElementById('eq-spectrum-bars');
+  if (g) g.innerHTML = '';
+}
+
+async function eqSpectrumTick() {
+  if (eqSpectrumState.inFlight) return;
+  const outputId = eqSpectrumState.outputId;
+  if (!outputId) return;
+  // Bail if the EQ panel is gone (operator switched plugin or closed
+  // the panel) — saves a fetch + a useless paint.
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !out.insert || !out.insert.label || !out.insert.label.includes('graph_equalizer')) {
+    eqStopSpectrumPolling();
+    return;
+  }
+  const bandsParam = GRAPH_EQ_BANDS.join(',');
+  eqSpectrumState.inFlight = true;
+  try {
+    const r = await fetch(API + '/dsp/spectrum?node=phonon_master.monitor&bands=' + bandsParam);
+    if (r.ok) {
+      const body = await r.json();
+      eqRenderSpectrumBars(body.bands || []);
+    } else if (r.status === 503) {
+      // No numpy / parec on this host — stop polling silently.
+      eqStopSpectrumPolling();
+    }
+  } catch (e) { /* transient — next tick retries */ }
+  eqSpectrumState.inFlight = false;
+}
+
+function eqRenderSpectrumBars(bandDbs) {
+  const g = document.getElementById('eq-spectrum-bars');
+  if (!g) return;
+  if (bandDbs.length !== GRAPH_EQ_BANDS.length) return;
+  const W = EQ_VIEW_W, H = EQ_VIEW_H;
+  // Bar width: log-frequency span of the band's ±1/6-octave window.
+  // Compute once at module load — same widths every paint.
+  const html = [];
+  const now = performance.now();
+  for (let i = 0; i < GRAPH_EQ_BANDS.length; i++) {
+    const fc = GRAPH_EQ_BANDS[i];
+    const db = Math.max(EQ_SPECTRUM_FLOOR_DB, bandDbs[i]);
+    const xLo = eqLogX(fc * Math.pow(2, -1 / 6)) * W;
+    const xHi = eqLogX(fc * Math.pow(2,  1 / 6)) * W;
+    const w = Math.max(2, xHi - xLo - 1);
+    const x = xLo + 0.5;
+    // Map dBFS [-90..0] to viewBox y [H..0]. 0 dBFS → top, -90 → bottom.
+    const norm = (db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
+    const top = H * (1 - norm);
+    const height = H - top;
+    // Color gradient: green → yellow → red as level rises past -20 / -6 dBFS.
+    let fill;
+    if (db >= -6)       fill = 'rgba(248,113,113,0.55)';
+    else if (db >= -20) fill = 'rgba(251,191,36,0.45)';
+    else                fill = 'rgba(165,180,252,0.30)';
+    html.push(`<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}"
+                     width="${w.toFixed(1)}" height="${height.toFixed(1)}"
+                     fill="${fill}" />`);
+    // Peak hold — decays linearly.
+    let peak = eqSpectrumState.peakHold.get(fc) || { db: db, ts: now };
+    if (db >= peak.db) {
+      peak = { db, ts: now };
+    } else {
+      // 60 dB/sec decay.
+      const decayed = peak.db - 60 * (now - peak.ts) / 1000;
+      if (decayed > db) peak = { db: decayed, ts: peak.ts + (now - peak.ts) };
+      else peak = { db, ts: now };
+    }
+    eqSpectrumState.peakHold.set(fc, peak);
+    const peakNorm = (peak.db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
+    const peakY = H * (1 - peakNorm);
+    html.push(`<rect x="${x.toFixed(1)}" y="${peakY.toFixed(1)}"
+                     width="${w.toFixed(1)}" height="2"
+                     fill="rgba(248,113,113,0.85)" />`);
+  }
+  g.innerHTML = html.join('');
 }
 
 // Render one IN or OUT meter block — label + L/R vertical bars.

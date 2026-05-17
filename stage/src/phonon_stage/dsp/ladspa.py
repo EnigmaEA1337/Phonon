@@ -92,20 +92,35 @@ class PluginDescriptor:
         }
 
 
-# Plugins we've actually tested with the master chain and signed off
-# on. The picker surfaces these with a "Phonon Native" badge so the
-# operator knows which choices are vetted. Keep this list narrow on
-# purpose — every entry implies someone listened to it in a real
-# session and decided it didn't break anything.
+# Plugins we've curated as "Phonon Native" — the operator's go-to
+# set for typical event mixing. The picker surfaces these with a
+# cyan badge + pins them at the top of the list so they're found
+# in one move. Mirrors the v4.4 console mockup's plugin slots:
+#   Trim Gain → amp_stereo  (no `trim` in LSP LADSPA, amp is the
+#                            closest gain-only plugin)
+#   LSP ParaEQ → para_equalizer_x16_stereo
+#   LSP Comp → compressor_stereo
+#   LSP DeEss → sc_compressor_stereo  (sidechain compressor)
+#   LSP MBComp → mb_compressor_stereo
+#   LSP Limiter → limiter_stereo
+# Plus comp_delay_stereo (v1 reference) and the graphic EQ x32
+# (we ship a custom renderer for it).
+#
+# `dither` is intentionally absent — the LSP LADSPA build doesn't
+# expose it (LV2-only). Add when it lands or when we wire a
+# different LADSPA dither lib.
+_LSP_LADSPA = "lsp-plugins-ladspa"
+_LSP_PREFIX = "http://lsp-plug.in/plugins/ladspa"
 VALIDATED_PLUGINS: frozenset[tuple[str, str]] = frozenset(
     {
-        # Inter-output delay/phase compensation. The first validated
-        # plugin — it's what shipped with v1 of the FX path and was
-        # used to align JBLX vs JBLP arrival times on stage-x99.
-        (
-            "lsp-plugins-ladspa",
-            "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo",
-        ),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/amp_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/comp_delay_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/compressor_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/graph_equalizer_x32_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/limiter_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/mb_compressor_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/para_equalizer_x16_stereo"),
+        (_LSP_LADSPA, f"{_LSP_PREFIX}/sc_compressor_stereo"),
     }
 )
 

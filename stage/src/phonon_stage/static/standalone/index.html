@@ -1841,7 +1841,23 @@ function mrlsRow(kind, id, state) {
 //                           focuses on the same plugin don't re-fetch.
 //   dspState.focusedId    — output id whose plugin is currently shown
 //                           in the panel. Null = panel hidden.
-const dspState = { available: false, catalog: [], schemas: {}, focusedId: null };
+// focusedSlot tracks which plugin in the chain the panel is editing.
+// Default 0 keeps the v1 single-plugin path working untouched. When
+// a chain has 2+ slots, fxRow passes the slot index to focusDspPanel
+// so clicking slot 1's badge actually shows slot 1's controls.
+const dspState = { available: false, catalog: [], schemas: {}, focusedId: null, focusedSlot: 0 };
+
+// Resolve the currently-focused PluginInsert on an Output. Falls
+// back to slot 0 if focusedSlot is out of range (e.g. the chain
+// shrank since the panel was last rendered).
+function dspFocusedInsert(out) {
+  if (!out) return null;
+  if (Array.isArray(out.inserts) && out.inserts.length) {
+    const slot = dspState.focusedSlot;
+    return out.inserts[slot] || out.inserts[0] || null;
+  }
+  return out.insert || null;
+}
 
 async function fetchDspCapability() {
   // Mirrors the /capabilities call already made elsewhere — we
@@ -1896,13 +1912,18 @@ function fxRow(o) {
   // (slot 0 closest to the master input). Each badge has a small
   // × on the right when the chain has > 1 plugin; the trailing
   // row hosts the +/⌫ affordances.
+  //
+  // .focused highlights ONLY the slot whose plugin is currently
+  // showing in the DSP panel — was previously highlighting every
+  // slot of the focused output, making the active plugin invisible.
   const slotsHtml = chain.map((ins, idx) => {
     const stateCls = ins.enabled ? 'active' : 'bypassed';
+    const slotFocused = focused && dspState.focusedSlot === idx;
     const friendly = fxPluginFriendlyName(ins.library, ins.label);
     const removeAffordance = chain.length > 1
       ? `<span class="fx-slot-x edit-only" onclick="event.stopPropagation();removeChainSlot('${o.id}',${idx})" title="Remove this plugin from the chain">×</span>`
       : '';
-    return `<button class="fx-btn ${stateCls}${focused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}')" title="Slot ${idx + 1}: ${escapeHtml(ins.label)}">
+    return `<button class="fx-btn ${stateCls}${slotFocused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}',${idx})" title="Slot ${idx + 1}: ${escapeHtml(ins.label)}">
       <span class="fx-led"></span><span class="fx-name">${escapeHtml(friendly)}</span>
       ${removeAffordance}
     </button>`;
@@ -2125,8 +2146,14 @@ async function resetChain(outputId) {
   }
 }
 
-async function focusDspPanel(outputId) {
+async function focusDspPanel(outputId, slot = 0) {
+  // Stop the live FFT poll before switching slot — the EQ overlay
+  // gets re-armed inside renderDspPanel if the new slot is a
+  // graphic EQ. Without this we'd leak a polling timer when
+  // moving from EQ → another plugin.
+  eqStopSpectrumPolling();
   dspState.focusedId = outputId;
+  dspState.focusedSlot = slot;
   renderMixer();              // refresh FX bar focus highlights
   await renderDspPanel();
   startDspMonitorPolling();
@@ -2168,31 +2195,37 @@ async function renderDspPanel() {
     return;
   }
   const out = (mixerState.outputs || []).find(o => o.id === dspState.focusedId);
-  if (!out || !out.insert) {
+  const focusedIns = dspFocusedInsert(out);
+  if (!out || !focusedIns) {
     section.style.display = 'none';
     dspState.focusedId = null;
+    dspState.focusedSlot = 0;
     return;
   }
+  // Clamp focusedSlot if the chain shrank under us (operator removed
+  // a slot while the panel was open).
+  if (Array.isArray(out.inserts) && dspState.focusedSlot >= out.inserts.length) {
+    dspState.focusedSlot = Math.max(0, out.inserts.length - 1);
+  }
   section.style.display = 'block';
-  if (focusedLabel) focusedLabel.textContent = '← ' + (out.label || out.sink_node_name);
+  const slotLabel = (Array.isArray(out.inserts) && out.inserts.length > 1)
+    ? ` · slot ${dspState.focusedSlot + 1}/${out.inserts.length}`
+    : '';
+  if (focusedLabel) focusedLabel.textContent = '← ' + (out.label || out.sink_node_name) + slotLabel;
   // Fetch schema (cached) and render controls.
   let schema;
   try {
-    schema = await fetchDspSchema(out.insert.library, out.insert.label);
+    schema = await fetchDspSchema(focusedIns.library, focusedIns.label);
   } catch (e) {
     panel.innerHTML = `<div class="dsp-panel-empty">Schema unavailable: ${escapeHtml(e.message)}</div>`;
     return;
   }
   const inputControls = (schema.controls || []).filter(c => c.direction === 'input');
-  // IN VU = the audio feeding the chain (phonon_master). OUT VU =
-  // the audio leaving the chain (the output's sink). Both are
-  // already in the WS levels loop's poll set — the bars animate as
-  // soon as we put them in the DOM with the right data-vu-source.
   const inSide = dspVuSide('IN', 'in', 'phonon_master');
   const outSide = dspVuSide('OUT', 'out', out.sink_node_name);
   const meta = `<div class="dsp-panel-meta">
-    <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}</div>
-    <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(out.insert.library, out.insert.label))}</div>
+    <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}${escapeHtml(slotLabel)}</div>
+    <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(focusedIns.library, focusedIns.label))}</div>
     <div class="dsp-plugin-maker">${escapeHtml(schema.maker || '')}</div>
     <div style="flex:1"></div>
     <div class="dsp-actions">
@@ -2200,32 +2233,25 @@ async function renderDspPanel() {
       <button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>
     </div>
   </div>`;
-  const layout = PLUGIN_LAYOUTS[out.insert.label];
+  const layout = PLUGIN_LAYOUTS[focusedIns.label];
   let bodyHtml;
   if (layout && layout.customRenderer && typeof window[layout.customRenderer] === 'function') {
-    // Plugin-specific renderer takes over the body — used for the
-    // graphic EQ where a generic knob grid would be unusable.
-    bodyHtml = window[layout.customRenderer](out.id, schema, out.insert.controls, inSide, outSide);
+    bodyHtml = window[layout.customRenderer](out.id, schema, focusedIns.controls, inSide, outSide);
     panel.innerHTML = meta + `<div class="dsp-controls">${bodyHtml}</div>`;
     return;
   }
   if (layout) {
-    // Grouped layout — mirror the LSP native UI's sections so the
-    // operator sees what they're used to. The control schema is
-    // still the source of truth (defaults, ranges, hints); the
-    // layout only decides arrangement.
     const schemaByName = Object.fromEntries(
       (schema.controls || []).map(c => [c.name, c])
     );
     const groupsHtml = (layout.groups || []).map(g =>
-      renderDspGroup(out.id, g, schemaByName, out.insert.controls)
+      renderDspGroup(out.id, g, schemaByName, focusedIns.controls)
     ).join('');
-    const monitorHtml = renderDspMonitoring(layout, out.insert.controls);
+    const monitorHtml = renderDspMonitoring(layout, focusedIns.controls);
     bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}</div>`;
   } else {
-    // Fallback for plugins without a layout map — flat row of knobs.
     const controlsHtml = inputControls.map(c =>
-      renderDspControl(out.id, c, out.insert.controls[c.name])
+      renderDspControl(out.id, c, focusedIns.controls[c.name])
     ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
     bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}</div>`;
   }
@@ -2344,8 +2370,9 @@ async function pollDspMonitoring() {
   const outputId = dspState.focusedId;
   if (!outputId) return;
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert) return;
-  const layout = PLUGIN_LAYOUTS[out.insert.label];
+  const focusedIns = dspFocusedInsert(out);
+  if (!out || !focusedIns) return;
+  const layout = PLUGIN_LAYOUTS[focusedIns.label];
   try {
     const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert/monitoring');
     if (!r.ok) return;
@@ -2360,14 +2387,15 @@ async function pollDspMonitoring() {
 // interaction lost.
 function updateDspActiveGroups(outputId) {
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert) return;
-  const layout = PLUGIN_LAYOUTS[out.insert.label];
+  const focusedIns = dspFocusedInsert(out);
+  if (!out || !focusedIns) return;
+  const layout = PLUGIN_LAYOUTS[focusedIns.label];
   if (!layout || !layout.groups) return;
   const panel = document.getElementById('dsp-panel');
   if (!panel) return;
   layout.groups.forEach(g => {
     if (!g.activeWhen) return;
-    const cur = out.insert.controls[g.activeWhen.control];
+    const cur = focusedIns.controls[g.activeWhen.control];
     const isActive = (cur !== undefined && Math.round(cur) === g.activeWhen.value);
     const el = panel.querySelector(`.dsp-group[data-group-name="${cssEscape(g.name)}"]`);
     if (el) el.classList.toggle('active', isActive);
@@ -2595,8 +2623,9 @@ function eqRedrawCurve(outputId) {
   const handlesG = document.getElementById('eq-band-handles');
   if (!path || !handlesG) return;
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert) return;
-  const values = out.insert.controls || {};
+  const focusedIns = dspFocusedInsert(out);
+  if (!out || !focusedIns) return;
+  const values = focusedIns.controls || {};
   const SHARP = 24.96;
   const N = 240;
   const lo = Math.log2(16), hi = Math.log2(20000);
@@ -2672,9 +2701,10 @@ function eqHandleDragStart(ev, circleEl) {
   // Ensure the band's ON toggle is active when the operator starts
   // dragging — otherwise the gain change is invisible.
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const focusedIns = dspFocusedInsert(out);
   const onKey = `Band on ${freq}`;
-  if (out && out.insert && (out.insert.controls[onKey] || 0) < 0.5) {
-    out.insert.controls[onKey] = 1;
+  if (focusedIns && (focusedIns.controls[onKey] || 0) < 0.5) {
+    focusedIns.controls[onKey] = 1;
     eqQueueControlWrite(outputId, onKey, 1);
     // Reflect ON state in the strip row.
     const bandRow = panel.querySelector(`.eq-band[data-band-freq="${freq}"]`);
@@ -2707,9 +2737,12 @@ function eqHandleApplyEvent(ev) {
   db = Math.round(db * 10) / 10;            // 0.1 dB resolution
   const gainG = eqDbToGain(db);
   // Optimistic local mirror so the curve + readout track the cursor
-  // without API roundtrip.
+  // without API roundtrip. Target the focused chain slot — slot 0
+  // by default, but if the EQ was attached as slot 1+ we mirror
+  // there so eqRedrawCurve sees the new value on the next tick.
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (out && out.insert && out.insert.controls) out.insert.controls[gainKey] = gainG;
+  const focusedIns = dspFocusedInsert(out);
+  if (focusedIns && focusedIns.controls) focusedIns.controls[gainKey] = gainG;
   // Update readout cell in the strip below.
   if (panel) {
     const bandRow = panel.querySelector(`.eq-band[data-band-freq="${freq}"]`);
@@ -2744,9 +2777,11 @@ async function eqFireControlWrite(outputId, name, value) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
     });
-    // Update local mirror so the model stays in sync.
+    // Update local mirror on the focused chain slot so the model
+    // stays in sync with what the server just accepted.
     const out = (mixerState.outputs || []).find(o => o.id === outputId);
-    if (out && out.insert && out.insert.controls) out.insert.controls[name] = value;
+    const focusedIns = dspFocusedInsert(out);
+    if (focusedIns && focusedIns.controls) focusedIns.controls[name] = value;
   } catch (e) { /* transient — next gesture re-fires */ }
   const state = eqPendingWrites.get(key);
   if (state && state.pending !== null) {
@@ -2766,15 +2801,16 @@ async function eqToggleBand(ev, btn) {
   const outputId = band.dataset.outputId;
   const onKey = band.dataset.onKey;
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert) return;
-  const cur = out.insert.controls[onKey] >= 0.5;
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns) return;
+  const cur = focusedIns.controls[onKey] >= 0.5;
   const next = cur ? 0 : 1;
   band.classList.toggle('off', !next);
   btn.classList.toggle('on', !!next);
   btn.textContent = next ? 'ON' : 'OFF';
-  // Mirror locally + redraw the curve so the band's contribution
-  // disappears (or returns) immediately.
-  out.insert.controls[onKey] = next;
+  // Mirror on the focused slot + redraw the curve so the band's
+  // contribution disappears (or returns) immediately.
+  focusedIns.controls[onKey] = next;
   eqRedrawCurve(outputId);
   eqQueueControlWrite(outputId, onKey, next);
 }
@@ -2824,7 +2860,8 @@ async function eqSpectrumTick() {
   // Bail if the EQ panel is gone (operator switched plugin or closed
   // the panel) — saves a fetch + a useless paint.
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert || !out.insert.label || !out.insert.label.includes('graph_equalizer')) {
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns || !focusedIns.label || !focusedIns.label.includes('graph_equalizer')) {
     eqStopSpectrumPolling();
     return;
   }
@@ -3118,8 +3155,9 @@ function knobReset(ev, svg) {
   const outputId = svg.dataset.knobOutput;
   const name = decodeURIComponent(svg.dataset.knobName);
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
-  if (!out || !out.insert) return;
-  const key = out.insert.library + '' + out.insert.label;
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns) return;
+  const key = focusedIns.library + '' + focusedIns.label;
   const schema = dspState.schemas[key];
   const ctl = schema?.controls.find(c => c.name === name);
   const min = parseFloat(svg.dataset.knobMin);

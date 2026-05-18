@@ -4908,75 +4908,65 @@ function _mixFaderScaleHtml() {
 // the equator), bottom half darkens and ends in a soft shadow.
 // Inkscape-style construction: body gradient + edge rim + top
 // specular highlight + bottom ambient shadow.
-// Vintage SSL/Neve cap. 60×110 viewBox (tall + narrow). Top half
-// brushed dark metal, bottom half brushed silver, separated by a
-// deep-red read line. Horizontal "cylinder" overlay gradient gives
-// the edges that rolled-aluminium look.
+// Polished chrome cap. 50×100 viewBox (tall + narrow). Two specular
+// reflections — one main near the top, one weaker near the bottom —
+// separated by a subtle equator. No brushed striations, no red line:
+// just glossy aluminium with a dark rim for definition.
 const _MIX_FADER_CAP_SVG = `
-<svg viewBox="0 0 60 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+<svg viewBox="0 0 50 100" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
   <defs>
-    <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="#aab0b7"/>
-      <stop offset="0.10" stop-color="#787e85"/>
-      <stop offset="0.32" stop-color="#a8aeb5"/>
-      <stop offset="0.62" stop-color="#828790"/>
-      <stop offset="0.92" stop-color="#a5abb3"/>
-      <stop offset="1"    stop-color="#6b6f76"/>
-    </linearGradient>
-    <linearGradient id="capBot" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="#cfd2d7"/>
-      <stop offset="0.18" stop-color="#fafbfc"/>
-      <stop offset="0.45" stop-color="#e6e8ec"/>
-      <stop offset="0.78" stop-color="#f0f2f5"/>
-      <stop offset="1"    stop-color="#9da2a8"/>
+    <linearGradient id="capBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#6a6f76"/>
+      <stop offset="0.06" stop-color="#9aa0a8"/>
+      <stop offset="0.12" stop-color="#cfd3d8"/>
+      <stop offset="0.22" stop-color="#f4f6f8"/>
+      <stop offset="0.34" stop-color="#bcc1c8"/>
+      <stop offset="0.48" stop-color="#8a9098"/>
+      <stop offset="0.56" stop-color="#7c8189"/>
+      <stop offset="0.66" stop-color="#9ea4ab"/>
+      <stop offset="0.78" stop-color="#dee2e6"/>
+      <stop offset="0.86" stop-color="#c2c7cd"/>
+      <stop offset="0.94" stop-color="#8e939a"/>
+      <stop offset="1"    stop-color="#5e6268"/>
     </linearGradient>
     <linearGradient id="capCyl" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0"    stop-color="rgba(0,0,0,0.55)"/>
-      <stop offset="0.08" stop-color="rgba(0,0,0,0.18)"/>
-      <stop offset="0.30" stop-color="rgba(255,255,255,0.18)"/>
-      <stop offset="0.55" stop-color="rgba(255,255,255,0)"/>
-      <stop offset="0.78" stop-color="rgba(0,0,0,0.10)"/>
-      <stop offset="0.94" stop-color="rgba(0,0,0,0.32)"/>
-      <stop offset="1"    stop-color="rgba(0,0,0,0.55)"/>
+      <stop offset="0"    stop-color="rgba(0,0,0,0.50)"/>
+      <stop offset="0.08" stop-color="rgba(0,0,0,0.10)"/>
+      <stop offset="0.40" stop-color="rgba(255,255,255,0)"/>
+      <stop offset="0.60" stop-color="rgba(255,255,255,0)"/>
+      <stop offset="0.92" stop-color="rgba(0,0,0,0.10)"/>
+      <stop offset="1"    stop-color="rgba(0,0,0,0.50)"/>
     </linearGradient>
-    <linearGradient id="capRedLine" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="#5e1212"/>
-      <stop offset="0.35" stop-color="#8b1f1f"/>
-      <stop offset="0.7"  stop-color="#a02525"/>
-      <stop offset="1"    stop-color="#4a0e0e"/>
-    </linearGradient>
+    <radialGradient id="capReflTop" cx="0.5" cy="0.5" r="0.6" fx="0.5" fy="0.4">
+      <stop offset="0"   stop-color="rgba(255,255,255,0.85)"/>
+      <stop offset="0.5" stop-color="rgba(255,255,255,0.25)"/>
+      <stop offset="1"   stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+    <radialGradient id="capReflBot" cx="0.5" cy="0.5" r="0.55" fx="0.5" fy="0.5">
+      <stop offset="0"   stop-color="rgba(255,255,255,0.55)"/>
+      <stop offset="0.6" stop-color="rgba(255,255,255,0.18)"/>
+      <stop offset="1"   stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
   </defs>
 
-  <!-- Top half (dark brushed) — rounded top corners only -->
-  <path d="M 4 1 L 56 1 Q 59 1 59 4 L 59 52 L 1 52 L 1 4 Q 1 1 4 1 Z" fill="url(#capTop)"/>
-  <!-- Bottom half (light brushed) — rounded bottom corners only -->
-  <path d="M 1 58 L 59 58 L 59 106 Q 59 109 56 109 L 4 109 Q 1 109 1 106 Z" fill="url(#capBot)"/>
+  <!-- Main body -->
+  <rect x="1" y="1" width="48" height="98" rx="3" ry="3" fill="url(#capBody)"/>
 
-  <!-- Brush striations — top half -->
-  <line x1="3" y1="10" x2="57" y2="10" stroke="rgba(0,0,0,0.18)" stroke-width="0.4"/>
-  <line x1="3" y1="18" x2="57" y2="18" stroke="rgba(0,0,0,0.22)" stroke-width="0.4"/>
-  <line x1="3" y1="28" x2="57" y2="28" stroke="rgba(255,255,255,0.18)" stroke-width="0.3"/>
-  <line x1="3" y1="38" x2="57" y2="38" stroke="rgba(0,0,0,0.18)" stroke-width="0.4"/>
-  <line x1="3" y1="46" x2="57" y2="46" stroke="rgba(0,0,0,0.30)" stroke-width="0.5"/>
+  <!-- Top reflection (broad ellipse near the top) -->
+  <ellipse cx="25" cy="22" rx="20" ry="14" fill="url(#capReflTop)"/>
 
-  <!-- Brush striations — bottom half -->
-  <line x1="3" y1="64" x2="57" y2="64" stroke="rgba(0,0,0,0.10)" stroke-width="0.3"/>
-  <line x1="3" y1="74" x2="57" y2="74" stroke="rgba(0,0,0,0.08)" stroke-width="0.3"/>
-  <line x1="3" y1="84" x2="57" y2="84" stroke="rgba(0,0,0,0.10)" stroke-width="0.3"/>
-  <line x1="3" y1="94" x2="57" y2="94" stroke="rgba(0,0,0,0.12)" stroke-width="0.3"/>
-  <line x1="3" y1="102" x2="57" y2="102" stroke="rgba(0,0,0,0.15)" stroke-width="0.4"/>
+  <!-- Bottom reflection (smaller, dimmer) -->
+  <ellipse cx="25" cy="78" rx="18" ry="10" fill="url(#capReflBot)"/>
 
-  <!-- Red playhead line, the actual read indicator -->
-  <rect x="0" y="52" width="60" height="6" fill="url(#capRedLine)"/>
-  <line x1="0" y1="52" x2="60" y2="52" stroke="rgba(0,0,0,0.45)" stroke-width="0.4"/>
-  <line x1="0" y1="58" x2="60" y2="58" stroke="rgba(0,0,0,0.45)" stroke-width="0.4"/>
+  <!-- Subtle equator highlight — thin slightly-paler line at midpoint -->
+  <line x1="3" y1="50" x2="47" y2="50" stroke="rgba(255,255,255,0.25)" stroke-width="0.4"/>
 
-  <!-- Cylinder overlay (3D edge shading) — full height, on top of everything -->
-  <rect x="0" y="0" width="60" height="110" rx="3" ry="3" fill="url(#capCyl)"/>
+  <!-- Cylinder overlay for rolled-edge 3D feel -->
+  <rect x="0" y="0" width="50" height="100" rx="3" ry="3" fill="url(#capCyl)"/>
 
-  <!-- Outer rim stroke for crisp edge -->
-  <rect x="0.5" y="0.5" width="59" height="109" rx="3" ry="3"
-        fill="none" stroke="rgba(0,0,0,0.7)" stroke-width="0.7"/>
+  <!-- Outer rim — crisp dark edge -->
+  <rect x="0.5" y="0.5" width="49" height="99" rx="3" ry="3"
+        fill="none" stroke="rgba(0,0,0,0.78)" stroke-width="0.8"/>
 </svg>`.trim();
 
 function faderCol(kind, id, gainDb) {

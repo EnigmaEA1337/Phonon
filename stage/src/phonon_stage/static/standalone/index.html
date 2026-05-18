@@ -106,48 +106,95 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   transition: left 0.15s, background 0.15s; }
 .svc-toggle.on .svc-switch { background: var(--cyan); border-color: var(--cyan); }
 .svc-toggle.on .svc-switch::after { left: 12px; background: var(--bg-0); }
-/* Monitoring rows — horizontal mini-VUs sharing the chrome aesthetic
-   of the strip column. Recessed dark well, gradient fill, engraved
-   uppercase label, monospace value. */
-.res-row { display: flex; align-items: center; gap: 10px; padding: 4px 10px;
-  font-family: var(--font-m); font-size: 10px;
-  border-radius: 3px;
-  transition: background 80ms linear;
-}
-.res-row:hover { background: rgba(255,255,255,0.025); }
-.res-label {
-  width: 48px;
-  color: #c7ccd2;
-  font-family: var(--font-d);
-  font-weight: 700;
-  font-size: 10px;
-  letter-spacing: 1.3px;
-  text-transform: uppercase;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
-  flex-shrink: 0;
-}
-.res-bar {
-  flex: 1; height: 10px;
-  background: #0c1218;
+/* Monitoring — 1U rack module: a brushed-dark faceplate with 7
+   LCD cells in a horizontal grid (CPU / RAM / SWAP / DISK / TEMP /
+   NET / XRUN). Each cell has a label up top, a phosphor-style
+   numeric readout below, and a 2 px LED bar at the bottom. */
+.sys-rack {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  padding: 6px 12px;
+  background: linear-gradient(180deg, #34383e 0%, #25282d 35%, #1a1d22 65%, #131618 100%);
   border: 1px solid #050708;
-  border-radius: 2px;
-  overflow: hidden;
+  border-top-color: #4a4e54;
+  border-radius: 4px;
   box-shadow:
-    inset 0 1px 2px rgba(0,0,0,0.85),
-    inset 0 0 0 1px rgba(255,255,255,0.03),
-    0 1px 0 rgba(255,255,255,0.03);
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(0,0,0,0.65),
+    0 2px 4px rgba(0,0,0,0.55);
+  position: relative;
 }
-.res-fill {
+/* Rack screws in the four corners — small recessed circles. */
+.sys-rack::before, .sys-rack::after,
+.sys-rack .rack-screw {
+  content: '';
+  position: absolute;
+  width: 5px; height: 5px;
+  background: radial-gradient(circle at 35% 35%, #6a6f76 0%, #2a2d33 60%, #1a1d22 100%);
+  border-radius: 50%;
+  box-shadow: inset 0 0 1px rgba(0,0,0,0.7), 0 1px 0 rgba(255,255,255,0.06);
+}
+.sys-rack::before { top: 4px; left: 4px; }
+.sys-rack::after  { top: 4px; right: 4px; }
+.sys-rack .rack-screw.bl { bottom: 4px; left: 4px; }
+.sys-rack .rack-screw.br { bottom: 4px; right: 4px; }
+
+.sys-cell {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 4px 6px 5px 6px;
+  background: #050608;
+  border: 1px solid #000;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.9),
+    inset 0 0 0 1px rgba(255,255,255,0.02);
+  min-width: 0;
+}
+.sys-cell-label {
+  font-family: var(--font-d);
+  font-size: 8px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: rgba(160,170,180,0.65);
+  text-align: center;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+}
+/* LCD/phosphor readout — cyan glow on near-black background. */
+.sys-cell-value {
+  font-family: var(--font-m);
+  font-size: 11px;
+  font-weight: 700;
+  color: #6ce4f5;
+  text-align: center;
+  text-shadow: 0 0 4px rgba(108,228,245,0.55), 0 0 2px rgba(108,228,245,0.85);
+  letter-spacing: -0.3px;
+  line-height: 1.05;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sys-cell.warning .sys-cell-value {
+  color: #fbd86b;
+  text-shadow: 0 0 4px rgba(251,216,107,0.55), 0 0 2px rgba(251,216,107,0.85);
+}
+.sys-cell.danger .sys-cell-value {
+  color: #ff7878;
+  text-shadow: 0 0 4px rgba(255,120,120,0.55), 0 0 2px rgba(255,120,120,0.85);
+}
+.sys-cell.good .sys-cell-value {
+  color: #86efac;
+  text-shadow: 0 0 4px rgba(134,239,172,0.55), 0 0 2px rgba(134,239,172,0.85);
+}
+.sys-cell-bar {
+  height: 2px;
+  background: #0c1218;
+  border-radius: 1px;
+  overflow: hidden;
+  margin-top: 1px;
+  box-shadow: inset 0 0 1px rgba(0,0,0,0.8);
+}
+.sys-cell-bar-fill {
   height: 100%;
   transition: width 0.3s ease, background 80ms linear;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 1px rgba(0,0,0,0.25);
-}
-.res-val {
-  color: rgba(225,235,245,0.92);
-  min-width: 140px; text-align: right;
-  font-size: 9px;
-  letter-spacing: -0.2px;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.65);
 }
 .tb-update { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
   border: 1px solid rgba(52,211,153,0.4); border-radius: 3px; font-family: var(--font-m);
@@ -7984,59 +8031,68 @@ function renderSystemResources(r) {
   _latestResources = r;
   const el = document.getElementById('sys-resources');
   if (!el) { updateSysStatus(); return; }
-  const row = (label, pct, valueText, color) =>
-    `<div class="res-row">
-      <span class="res-label">${label}</span>
-      <div class="res-bar"><div class="res-fill" style="width:${Math.min(100, Math.max(0, pct))}%;background:${color}"></div></div>
-      <span class="res-val">${valueText}</span>
-    </div>`;
 
   // Bar value = 1-minute load avg as % of cores. That's the metric
   // that answers 'is my Pi struggling right now over the last minute?'
   // — naturally smooth, no busts. The instantaneous /proc/stat-derived
   // cpu_pct stays in the right-side text as a 'live spike' indicator.
-  // A short subprocess burst (collect_services spawns 50+ forks every
-  // 5 s) can hit 90+ for 200 ms while load stays under 1.0 — by
-  // showing load on the bar, the user sees the truth.
   const loadFrac = r.cpu_load_1m / Math.max(1, r.cpu_count);
   const cpuBarPct = Math.min(100, Math.round(loadFrac * 100));
-  // Each fill is a gradient (top-light → bottom-deep) so the bar
-  // reads as a backlit LED rather than a flat block.
-  const grad = (lo, mid, hi) => `linear-gradient(180deg, ${lo} 0%, ${mid} 50%, ${hi} 100%)`;
-  const GRAD_RED    = grad('#ff7878', '#ef4444', '#a01818');
-  const GRAD_AMBER  = grad('#ffd86a', '#f59e0b', '#9a6300');
-  const GRAD_GREEN  = grad('#86efac', '#22c55e', '#14803d');
-  const GRAD_CYAN   = grad('#7ce0f3', '#22d3ee', '#0e7490');
-  const GRAD_DIM    = grad('#6a7888', '#4b5663', '#2c333c');
-  const cpuColor = loadFrac > 0.90 ? GRAD_RED
-                 : loadFrac > 0.70 ? GRAD_AMBER
-                 : GRAD_CYAN;
-  const memColor  = r.mem_pct > 90 ? GRAD_RED   : r.mem_pct > 70 ? GRAD_AMBER : GRAD_GREEN;
-  const swapColor = r.swap_pct > 50 ? GRAD_AMBER : GRAD_DIM;
-  const diskColor = r.disk_pct > 90 ? GRAD_RED   : r.disk_pct > 75 ? GRAD_AMBER : GRAD_CYAN;
-  const tempColor = (r.temp_c ?? 0) > 75 ? GRAD_RED : (r.temp_c ?? 0) > 65 ? GRAD_AMBER : GRAD_GREEN;
-  const xrunColor = r.xrun_total > 100 ? GRAD_RED : r.xrun_total > 0 ? GRAD_AMBER : GRAD_GREEN;
 
-  let html = '';
-  // Bar uses load% (smooth), text shows both: load% (sustained) and
-  // live cpu_pct (instant — useful for spotting bursts).
-  html += row('CPU', cpuBarPct, `${cpuBarPct}% sustained · ${r.cpu_pct}% live`, cpuColor);
-  html += row('RAM', r.mem_pct, `${r.mem_used_mb} / ${r.mem_total_mb} MB`, memColor);
-  if (r.swap_total_mb > 0) {
-    html += row('SWAP', r.swap_pct, `${r.swap_used_mb} / ${r.swap_total_mb} MB`, swapColor);
-  }
-  html += row('DISK', r.disk_pct, `${r.disk_used_gb} / ${r.disk_total_gb} GB`, diskColor);
-  if (r.temp_c !== null && r.temp_c !== undefined) {
-    html += row('TEMP', Math.min(r.temp_c, 100), `${r.temp_c}°C`, tempColor);
-  }
-  // Network: rx + tx in a single row, scale at 100 Mbps = 100k kbps
+  // Compact rack-cell renderer. `state` picks the LCD glow colour
+  // (good/warning/danger) — empty = default cyan. `bar` is the
+  // background gradient for the 2 px LED at the bottom of the cell.
+  const grad = (lo, hi) => `linear-gradient(90deg, ${lo}, ${hi})`;
+  const BAR_CYAN  = grad('rgba(108,228,245,0.4)', '#6ce4f5');
+  const BAR_GREEN = grad('rgba(134,239,172,0.4)', '#86efac');
+  const BAR_AMBER = grad('rgba(251,216,107,0.4)', '#fbd86b');
+  const BAR_RED   = grad('rgba(255,120,120,0.4)', '#ff7878');
+
+  const cell = (label, valueText, pct, state, bar) => {
+    const fillPct = Math.min(100, Math.max(0, pct));
+    return `<div class="sys-cell${state ? ' ' + state : ''}">
+      <div class="sys-cell-label">${label}</div>
+      <div class="sys-cell-value">${valueText}</div>
+      <div class="sys-cell-bar"><div class="sys-cell-bar-fill" style="width:${fillPct}%;background:${bar}"></div></div>
+    </div>`;
+  };
+
+  // State picker — same thresholds as the old per-metric colour switch.
+  const cpuState  = loadFrac > 0.90 ? 'danger' : loadFrac > 0.70 ? 'warning' : '';
+  const cpuBar    = loadFrac > 0.90 ? BAR_RED  : loadFrac > 0.70 ? BAR_AMBER : BAR_CYAN;
+  const memState  = r.mem_pct > 90 ? 'danger' : r.mem_pct > 70 ? 'warning' : 'good';
+  const memBar    = r.mem_pct > 90 ? BAR_RED  : r.mem_pct > 70 ? BAR_AMBER : BAR_GREEN;
+  const swapState = r.swap_pct > 50 ? 'warning' : '';
+  const swapBar   = r.swap_pct > 50 ? BAR_AMBER : BAR_CYAN;
+  const diskState = r.disk_pct > 90 ? 'danger' : r.disk_pct > 75 ? 'warning' : '';
+  const diskBar   = r.disk_pct > 90 ? BAR_RED  : r.disk_pct > 75 ? BAR_AMBER : BAR_CYAN;
+  const tempC     = r.temp_c ?? 0;
+  const tempState = tempC > 75 ? 'danger' : tempC > 65 ? 'warning' : 'good';
+  const tempBar   = tempC > 75 ? BAR_RED  : tempC > 65 ? BAR_AMBER : BAR_GREEN;
+  const xrunState = r.xrun_total > 100 ? 'danger' : r.xrun_total > 0 ? 'warning' : 'good';
+  const xrunBar   = r.xrun_total > 100 ? BAR_RED  : r.xrun_total > 0 ? BAR_AMBER : BAR_GREEN;
   const netPct = Math.min(100, Math.max(r.net_rx_kbps, r.net_tx_kbps) / 1000);
-  html += row('NET',  netPct, `↓ ${r.net_rx_kbps} ↑ ${r.net_tx_kbps} kbps`, 'var(--cyan)');
-  // XRUN as a clamped percent (0 = green, >100 = red full)
-  const xrunPct = Math.min(100, r.xrun_total);
-  html += row('XRUN', xrunPct, `${r.xrun_total} dropouts`, xrunColor);
 
-  el.innerHTML = html;
+  // Compact label/value strings tuned for narrow LCD cells.
+  const formatNet = (kbps) => kbps >= 1000 ? (kbps / 1000).toFixed(1) + 'M' : String(kbps);
+
+  let cells = '';
+  cells += cell('CPU',  `${cpuBarPct}%`, cpuBarPct, cpuState, cpuBar);
+  cells += cell('RAM',  `${r.mem_pct}%`, r.mem_pct, memState, memBar);
+  if (r.swap_total_mb > 0) {
+    cells += cell('SWAP', `${r.swap_pct}%`, r.swap_pct, swapState, swapBar);
+  } else {
+    cells += cell('SWAP', '0', 0, '', BAR_CYAN);
+  }
+  cells += cell('DISK', `${r.disk_pct}%`, r.disk_pct, diskState, diskBar);
+  cells += cell('TEMP', (r.temp_c != null ? `${r.temp_c}°` : '—'),
+                Math.min(tempC, 100), tempState, tempBar);
+  cells += cell('NET',  `${formatNet(r.net_rx_kbps)}↓${formatNet(r.net_tx_kbps)}↑`,
+                netPct, '', BAR_CYAN);
+  cells += cell('XRUN', String(r.xrun_total), Math.min(100, r.xrun_total), xrunState, xrunBar);
+
+  el.innerHTML = `<div class="sys-rack">${cells}
+    <span class="rack-screw bl"></span><span class="rack-screw br"></span></div>`;
   updateSysStatus();
 }
 

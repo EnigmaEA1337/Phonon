@@ -795,6 +795,23 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     0 1px 1px rgba(0,0,0,0.55);
   text-shadow: 0 1px 0 rgba(60,5,5,0.75);
 }
+/* Implied-mute: another strip of the same kind has S active, so the
+   server is silencing this one too. Same hue as .active but dimmer
+   + desaturated so the operator can tell apart "I muted this" from
+   "solo elsewhere muted this." */
+.row-mrls button.implied {
+  background: linear-gradient(180deg,
+    #9a4040 0%, #6a2424 48%,
+    #4f1818 52%, #361010 100%);
+  color: #f0c8c8;
+  border-color: #1f0606;
+  border-top-color: #864040;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.15),
+    inset 0 -1px 0 rgba(0,0,0,0.5),
+    0 1px 1px rgba(0,0,0,0.45);
+  text-shadow: 0 1px 0 rgba(30,5,5,0.7);
+}
 .row-mrls button.solo.active {
   background: linear-gradient(180deg,
     #ffeb90 0%, #f5c540 48%,
@@ -2259,8 +2276,22 @@ function mrlsRow(kind, id, state) {
   const ml = state.mute_left;
   const mr = state.mute_right;
   const solo = state.solo;
+  // Implied-mute visual: when ANOTHER strip of the same kind is
+  // soloed, this strip is server-side silenced even if its own M is
+  // off. We dim M as "muted by solo" so the operator sees why no
+  // audio is flowing. Master is unaffected (no solo on the bus).
+  let impliedMute = false;
+  if (kind === 'mix-src') {
+    impliedMute = !solo && (mixerState.sources || []).some(s => s.solo && s.id !== id);
+  } else if (kind === 'mix-out') {
+    impliedMute = !solo && (mixerState.outputs || []).some(o => o.solo && o.id !== id);
+  }
+  const mClass = muted ? 'active' : (impliedMute ? 'implied' : '');
+  const mTitle = impliedMute
+    ? 'Muted by another solo'
+    : 'Mute';
   const buttons = [
-    `<button class="${muted ? 'active' : ''}" onclick="mixToggleMute('${kind}','${id}')" title="Mute">M</button>`,
+    `<button class="${mClass}" onclick="mixToggleMute('${kind}','${id}')" title="${mTitle}">M</button>`,
     `<button class="${mr ? 'active' : ''}" onclick="mixToggleChannelMute('${kind}','${id}','right')" title="Mute right channel">R</button>`,
     `<button class="${ml ? 'active' : ''}" onclick="mixToggleChannelMute('${kind}','${id}','left')" title="Mute left channel">L</button>`,
   ];
@@ -4829,13 +4860,17 @@ async function mixToggleMute(kind, id) {
 
 // Toggle the left or right channel mute on the relevant strip. The
 // server applies it as a zero on the corresponding channel of the
-// node's per-channel volume — independent of the global mute. M+R+L
-// can coexist (M wins, but the R/L state is preserved across mute
-// cycles so unmute-then-remute behaves predictably).
+// node's per-channel volume — independent of the global mute.
+// R and L are mutually exclusive: muting one releases the other. To
+// kill the whole strip use M instead.
 async function mixToggleChannelMute(kind, id, channel) {
   const cur = _mixCurrentStrip(kind, id);
   const field = channel === 'left' ? 'mute_left' : 'mute_right';
-  const body = { [field]: !cur[field] };
+  const other = channel === 'left' ? 'mute_right' : 'mute_left';
+  const nextVal = !cur[field];
+  const body = { [field]: nextVal };
+  // R/L exclusion: turning one on auto-releases the other.
+  if (nextVal && cur[other]) body[other] = false;
   const url = kind === 'mix-master'
     ? `/mixer/master`
     : kind === 'mix-src'
@@ -4853,14 +4888,20 @@ async function mixToggleChannelMute(kind, id, channel) {
 // shows the button there). The server's _reconcile resolves the
 // silencing: any source with solo=True suppresses other sources;
 // any output with solo=True suppresses other outputs.
+// M and S on the SAME strip are mutually exclusive — turning S on
+// releases M (you can't solo a muted strip; the operator's intent
+// is clearly "I want only this one to play").
 async function mixToggleSolo(kind, id) {
   if (kind === 'mix-master') return;
   const cur = _mixCurrentStrip(kind, id);
+  const nextSolo = !cur.solo;
+  const body = { solo: nextSolo };
+  if (nextSolo && cur.mute) body.mute = false;
   const url = kind === 'mix-src' ? `/mixer/sources/${id}` : `/mixer/outputs/${id}`;
   await fetch(API + url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ solo: !cur.solo }),
+    body: JSON.stringify(body),
   });
   await fetchMixer();
 }
@@ -5107,7 +5148,11 @@ function applyMixFader(kind, id, dbValue, persist = true) {
 
 async function mixSourceToggleMute(id) {
   const s = mixerState.sources.find(x => x.id === id); if (!s) return;
-  await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mute: !s.mute }) });
+  const nextMute = !s.mute;
+  // M/S exclusion: muting auto-releases solo on the same strip.
+  const body = { mute: nextMute };
+  if (nextMute && s.solo) body.solo = false;
+  await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
   await fetchMixer();
 }
 async function mixSourceToggleMaster(id) {
@@ -5122,7 +5167,10 @@ async function mixSourceRemove(id) {
 }
 async function mixOutputToggleMute(id) {
   const o = mixerState.outputs.find(x => x.id === id); if (!o) return;
-  await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mute: !o.mute }) });
+  const nextMute = !o.mute;
+  const body = { mute: nextMute };
+  if (nextMute && o.solo) body.solo = false;
+  await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
   await fetchMixer();
 }
 async function mixOutputToggleRcvMaster(id) {

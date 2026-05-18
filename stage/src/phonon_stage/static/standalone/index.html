@@ -402,6 +402,16 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .eq-handle:hover { fill: #2d5090; stroke: #fff; }
 .eq-handle.off { fill: #4a5040; stroke: #6a7050; opacity: 0.6;
   filter: none; }
+/* Numbered band label inside paraeq16 handles — 1..16. Centered
+   on the circle so it reads naturally when the operator drags. */
+.paraeq16-handle-label {
+  fill: #d6e842;
+  font-family: var(--font-m); font-size: 9px; font-weight: 700;
+  text-anchor: middle; pointer-events: none;
+  text-shadow: 0 0 2px rgba(0,0,0,0.7);
+}
+/* Compact band strip for paraeq16 — 16 narrow columns. */
+.paraeq16-strip .eq-band { min-width: 36px; }
 
 /* Plugin sections — match the LSP native layout (Signal / Samples /
    Distance / Time / Monitoring etc.). The catalogue layout map
@@ -2915,6 +2925,90 @@ const PLUGIN_LAYOUTS = {
     useCalfSkin: true,
   },
 
+  // LSP Parametric EQ x16 Stereo — 16 freely-positionable bands.
+  // Reuses the graph EQ infrastructure (SVG grid + live spectrum
+  // FFT poll + green phosphor look) but the handles are now
+  // draggable in BOTH X (frequency) and Y (gain) rather than fixed
+  // ISO positions. v1 keeps Q/type at plugin defaults so the band
+  // strip stays compact; full per-band type/slope/Q editing is a
+  // follow-up.
+  "http://lsp-plug.in/plugins/ladspa/para_equalizer_x16_stereo": {
+    customRenderer: "renderParaEq16",
+    useCalfSkin: true,
+  },
+
+  // LSP Compressor Stereo — workhorse stereo compressor.
+  // 48 input controls; we expose the ones an operator actually
+  // moves during a session and hide the ~25 graph-visibility +
+  // pre-mix-overlay toggles which only matter in LSP's native UI.
+  // Bypass goes through the strip-level rocker (filtered).
+  "http://lsp-plug.in/plugins/ladspa/compressor_stereo": {
+    useCalfSkin: true,
+    groups: [
+      {
+        name: "Compression",
+        controls: [
+          "Compression mode",
+          "Ratio",
+          "Knee (G)",
+          "Attack threshold (G)",
+          "Release threshold (G)",
+        ],
+      },
+      {
+        name: "Time",
+        controls: ["Attack time (ms)", "Hold time (ms)", "Release time (ms)"],
+      },
+      {
+        name: "Sidechain",
+        controls: [
+          "Sidechain mode",
+          "Sidechain source",
+          "Sidechain reactivity (ms)",
+          "Sidechain preamp (G)",
+          "Sidechain lookahead (ms)",
+          "Sidechain listen",
+        ],
+      },
+      {
+        name: "SC Filter",
+        controls: [
+          "High-pass filter mode",
+          "High-pass filter frequency (Hz)",
+          "Low-pass filter mode",
+          "Low-pass filter frequency (Hz)",
+        ],
+      },
+      {
+        name: "Boost",
+        controls: ["Boost threshold (G)", "Boost signal amount (G)"],
+      },
+      {
+        name: "Mix",
+        controls: ["Dry gain (G)", "Wet gain (G)", "Dry/Wet balance (%)"],
+      },
+      { name: "Makeup", controls: ["Makeup gain (G)"] },
+      { name: "Stereo", controls: ["Stereo split"] },
+      { name: "Input",  controls: ["Input gain (G)"] },
+      { name: "Output", controls: ["Output gain (G)"] },
+    ],
+    // Gain reduction meters are THE signature feedback for a comp.
+    // Reduction level meter outputs are linear G; convert to dB
+    // client-side. Positive dB = no reduction (gain = 1.0 G); the
+    // value goes negative as the comp clamps the signal.
+    monitoring: [
+      { label: "GR L (dB)", port: "GR Left dB",  formula: "gr_l_db", digits: 1 },
+      { label: "GR R (dB)", port: "GR Right dB", formula: "gr_r_db", digits: 1 },
+    ],
+    computeMonitoring(values) {
+      const grL = values["Reduction level meter Left (G)"];
+      const grR = values["Reduction level meter Right (G)"];
+      const toDb = (g) => (g === undefined || g <= 0)
+        ? 0 : 20 * Math.log10(Math.max(g, 1e-6));
+      return { gr_l_db: toDb(grL), gr_r_db: toDb(grR) };
+    },
+  },
+
   // LSP Limiter Stereo — brick-wall limiter for the master bus.
   // 33 input controls; the operator-relevant subset is sectioned
   // here. Bypass is rendered as the strip-level rocker (Calf
@@ -3346,6 +3440,254 @@ async function eqToggleBand(ev, btn) {
   eqQueueControlWrite(outputId, onKey, next);
 }
 
+// ── Parametric EQ x16 — drag-on-curve renderer ─────────────────────
+//
+// LSP plugin: each band has freely-set Frequency N (Hz) and Gain N (G).
+// 16 handles, each draggable in BOTH X (freq) and Y (gain). Bell-shape
+// approximation rendered per band; sum gives the response curve.
+// Reuses the EQ x32 graph SVG (grid, spectrum overlay, dimensions)
+// so the visual identity stays consistent across both EQs.
+
+const PARAEQ16_BAND_COUNT = 16;
+const PARAEQ16_FREQ_MIN = 20;
+const PARAEQ16_FREQ_MAX = 20000;
+
+function paraEq16Key(idx, what) {
+  // what ∈ {"freq", "gain", "mute"}. Map to the LSP control name.
+  if (what === "freq") return `Frequency ${idx} (Hz)`;
+  if (what === "gain") return `Gain ${idx} (G)`;
+  if (what === "mute") return `Filter mute ${idx}`;
+  if (what === "type") return `Filter type ${idx}`;
+  return "";
+}
+
+function renderParaEq16(outputId, schema, values, inSide, outSide) {
+  // Top toolbar — global plugin controls.
+  const globals = ['Input gain (G)', 'Output gain (G)', 'Equalizer mode', 'Frequency shift (st)'];
+  const schemaByName = Object.fromEntries((schema.controls || []).map(c => [c.name, c]));
+  const toolbarKnobs = globals.map(name => {
+    const c = schemaByName[name];
+    if (!c) return '';
+    return renderDspControl(outputId, c, values[name]);
+  }).join('');
+  const accuracyHigh = eqSpectrumFftSize >= 16384;
+  const accuracyToggle = `<div class="dsp-control eq-accuracy-toggle">
+    <div class="dsp-ctl-name">Analyzer</div>
+    <div class="eq-accuracy-segctl">
+      <button class="${accuracyHigh ? '' : 'on'}" onclick="eqSetAccuracy(8192)" title="8192 FFT — snappy">STD</button>
+      <button class="${accuracyHigh ? 'on' : ''}" onclick="eqSetAccuracy(16384)" title="16384 FFT — sharper low-end">HIGH</button>
+    </div>
+  </div>`;
+  const toolbar = toolbarKnobs + accuracyToggle;
+  // Band strip — one column per band: freq numeric / gain dB / mute
+  // toggle. Compact, lives under the graph.
+  const bandStrip = Array.from({length: PARAEQ16_BAND_COUNT}, (_, idx) => {
+    const freq = values[paraEq16Key(idx, "freq")] ?? 1000;
+    const gainG = values[paraEq16Key(idx, "gain")] ?? 1.0;
+    const muted = (values[paraEq16Key(idx, "mute")] ?? 0) >= 0.5;
+    const db = eqGainToDb(gainG);
+    const freqDisplay = freq >= 1000 ? (freq / 1000).toFixed(2) + 'k' : freq.toFixed(0);
+    const dbDisplay = (db >= 0 ? '+' : '') + db.toFixed(1);
+    return `<div class="eq-band${muted ? ' off' : ''}" data-output-id="${escapeHtml(outputId)}"
+                 data-band-idx="${idx}">
+      <div class="eq-band-label">${idx + 1}</div>
+      <div class="eq-band-db" data-band-freq-readout="${idx}">${escapeHtml(freqDisplay)}</div>
+      <div class="eq-band-db" data-band-gain-readout="${idx}">${dbDisplay}</div>
+      <button class="eq-band-on${muted ? '' : ' on'}"
+              onclick="paraEq16ToggleMute(event,this,${idx})"
+              title="Mute band ${idx + 1}">${muted ? 'OFF' : 'ON'}</button>
+    </div>`;
+  }).join('');
+  const graphHtml = `<svg class="eq-graph paraeq16-graph" viewBox="0 0 1000 320"
+                          preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    ${eqRenderGraphGrid()}
+    <g id="eq-spectrum-bars"></g>
+    <path id="eq-response-curve" class="eq-response-curve" d=""/>
+    <g id="paraeq16-band-handles"></g>
+  </svg>`;
+  setTimeout(() => {
+    paraEq16RedrawCurve(outputId);
+    eqStartSpectrumPolling(outputId);
+  }, 0);
+  return `<div class="eq-x32-panel">
+    <div class="eq-toolbar">${toolbar}</div>
+    ${graphHtml}
+    <div class="eq-strip paraeq16-strip">${bandStrip}</div>
+  </div>`;
+}
+
+// Compute + draw the response curve for the parametric EQ.
+// Each band is approximated as a bell with width derived from the
+// LSP "Filter Width" parameter (in octaves). Q/type/slope are NOT
+// honored in this v1 — full filter-type rendering (HP/LP/shelf
+// shapes) is a follow-up; bell-approximation covers ~95% of typical
+// EQ use cases and the audible result is what the engine actually
+// produces (we're just visualising it).
+function paraEq16RedrawCurve(outputId) {
+  const path = document.getElementById('eq-response-curve');
+  const handlesG = document.getElementById('paraeq16-band-handles');
+  if (!path || !handlesG) return;
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const focusedIns = dspFocusedInsert(out);
+  if (!out || !focusedIns) return;
+  const v = focusedIns.controls || {};
+
+  // Sample 240 log-spaced points across the audible range, sum the
+  // contribution of every enabled band.
+  const N = 240;
+  const lo = Math.log2(PARAEQ16_FREQ_MIN), hi = Math.log2(PARAEQ16_FREQ_MAX);
+  const samples = [];
+  for (let i = 0; i <= N; i++) samples.push(Math.pow(2, lo + (hi - lo) * (i / N)));
+
+  // Pre-resolve each band's params once.
+  const bands = [];
+  for (let idx = 0; idx < PARAEQ16_BAND_COUNT; idx++) {
+    const muted = (v[paraEq16Key(idx, "mute")] ?? 0) >= 0.5;
+    if (muted) continue;
+    const fc = v[paraEq16Key(idx, "freq")];
+    const gainG = v[paraEq16Key(idx, "gain")];
+    if (fc === undefined || gainG === undefined) continue;
+    const dbBand = eqGainToDb(gainG);
+    if (Math.abs(dbBand) < 0.01) continue;  // unity gain → no contribution
+    // Sharpness derived from the LSP "Filter Width N (oct)" param
+    // when present (default 6 octaves). exp(-(dx)^2 * k) = 0.5 at
+    // dx = width/2  →  k = ln(2) * 4 / width^2.
+    const widthOct = v[`Filter Width ${idx} (oct)`] ?? 6;
+    const w = Math.max(0.1, widthOct);
+    const k = Math.log(2) * 4 / (w * w);
+    bands.push({ fc, dbBand, k });
+  }
+  // Curve path.
+  const W = EQ_VIEW_W, H = EQ_VIEW_H;
+  const d = samples.map((f, i) => {
+    let dbSum = 0;
+    for (const b of bands) {
+      const dist = Math.log2(f / b.fc);
+      dbSum += b.dbBand * Math.exp(-(dist * dist) * b.k);
+    }
+    const x = (eqLogX(f) * W).toFixed(2);
+    const y = (eqDbY(dbSum) * H).toFixed(2);
+    return (i === 0 ? 'M' : 'L') + x + ',' + y;
+  }).join(' ');
+  path.setAttribute('d', d);
+  // Handles — one per band at (freq, gain). Numbered 1-16. Drag
+  // works in BOTH axes (X = frequency, Y = gain).
+  const html = [];
+  for (let idx = 0; idx < PARAEQ16_BAND_COUNT; idx++) {
+    const muted = (v[paraEq16Key(idx, "mute")] ?? 0) >= 0.5;
+    const fc = v[paraEq16Key(idx, "freq")];
+    const gainG = v[paraEq16Key(idx, "gain")];
+    if (fc === undefined || gainG === undefined) continue;
+    const db = eqGainToDb(gainG);
+    const cx = (eqLogX(fc) * W).toFixed(2);
+    const cy = (eqDbY(db) * H).toFixed(2);
+    const cls = "eq-handle" + (muted ? " off" : "");
+    html.push(`<g class="paraeq16-handle-grp" data-band-idx="${idx}">
+      <circle class="${cls}" cx="${cx}" cy="${cy}" r="7"
+              data-output-id="${escapeHtml(outputId)}"
+              data-band-idx="${idx}"
+              onmousedown="paraEq16HandleDragStart(event,this)"
+              title="Band ${idx + 1} · ${fc.toFixed(0)} Hz · ${db >= 0 ? '+' : ''}${db.toFixed(1)} dB"/>
+      <text class="paraeq16-handle-label" x="${cx}" y="${(parseFloat(cy) + 3).toFixed(1)}"
+            text-anchor="middle" pointer-events="none">${idx + 1}</text>
+    </g>`);
+  }
+  handlesG.innerHTML = html.join('');
+}
+
+// 2D drag — vertical motion changes gain, horizontal changes
+// frequency. Modifier keys reuse the same knob ladder
+// (Shift = ×5, Ctrl/Alt = ×25, both = ×100).
+let paraEq16DragState = null;
+function paraEq16HandleDragStart(ev, circleEl) {
+  ev.preventDefault(); ev.stopPropagation();
+  const svg = circleEl.ownerSVGElement;
+  const idx = parseInt(circleEl.dataset.bandIdx, 10);
+  const outputId = circleEl.dataset.outputId;
+  if (!svg || !outputId) return;
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns) return;
+  paraEq16DragState = {
+    svg, outputId, idx,
+    rect: svg.getBoundingClientRect(),
+    startX: ev.clientX,
+    startY: ev.clientY,
+    startFreq: focusedIns.controls[paraEq16Key(idx, "freq")] ?? 1000,
+    startGainG: focusedIns.controls[paraEq16Key(idx, "gain")] ?? 1.0,
+  };
+  document.addEventListener('mousemove', paraEq16HandleDragMove);
+  document.addEventListener('mouseup', paraEq16HandleDragEnd, { once: true });
+}
+function paraEq16HandleDragMove(ev) {
+  if (!paraEq16DragState) return;
+  const { svg, outputId, idx, rect, startX, startY, startFreq, startGainG } = paraEq16DragState;
+  let speed = 1;
+  if (ev.shiftKey) speed /= 5;
+  if (ev.ctrlKey || ev.altKey) speed /= 25;
+  // Absolute pixel → log-frequency mapping for X. Map by viewBox
+  // proportion so the handle follows the cursor on the X axis.
+  const xPct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+  const yPct = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
+  // For coarse drag, use absolute position; for fine modifiers,
+  // blend with the start position so small motions = small changes.
+  const xBlend = speed === 1 ? 1.0 : speed;
+  const yBlend = speed === 1 ? 1.0 : speed;
+  const startXPct = (startX - rect.left) / rect.width;
+  const startYPct = (startY - rect.top) / rect.height;
+  const effXPct = startXPct + (xPct - startXPct) * xBlend;
+  const effYPct = startYPct + (yPct - startYPct) * yBlend;
+  // X → frequency (log scale, 20–20k).
+  const lo = Math.log2(PARAEQ16_FREQ_MIN), hi = Math.log2(PARAEQ16_FREQ_MAX);
+  const freq = Math.max(PARAEQ16_FREQ_MIN,
+    Math.min(PARAEQ16_FREQ_MAX, Math.pow(2, lo + (hi - lo) * effXPct)));
+  // Y → gain (linear dB, -36 to +36, snap to 0 within ±1 dB).
+  let db = EQ_DB_MAX - effYPct * (EQ_DB_MAX - EQ_DB_MIN);
+  if (Math.abs(db) < 1.0) db = 0;
+  db = Math.round(db * 10) / 10;
+  const gainG = eqDbToGain(db);
+  // Local mirror + redraw.
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns || !focusedIns.controls) return;
+  focusedIns.controls[paraEq16Key(idx, "freq")] = freq;
+  focusedIns.controls[paraEq16Key(idx, "gain")] = gainG;
+  // Update strip readouts in place (avoid full re-render).
+  const panel = svg.closest('.eq-x32-panel');
+  if (panel) {
+    const fEl = panel.querySelector(`[data-band-freq-readout="${idx}"]`);
+    const gEl = panel.querySelector(`[data-band-gain-readout="${idx}"]`);
+    if (fEl) fEl.textContent = freq >= 1000 ? (freq / 1000).toFixed(2) + 'k' : freq.toFixed(0);
+    if (gEl) gEl.textContent = (db >= 0 ? '+' : '') + db.toFixed(1);
+  }
+  paraEq16RedrawCurve(outputId);
+  eqQueueControlWrite(outputId, paraEq16Key(idx, "freq"), freq);
+  eqQueueControlWrite(outputId, paraEq16Key(idx, "gain"), gainG);
+}
+function paraEq16HandleDragEnd() {
+  document.removeEventListener('mousemove', paraEq16HandleDragMove);
+  paraEq16DragState = null;
+}
+
+async function paraEq16ToggleMute(ev, btn, idx) {
+  ev.stopPropagation();
+  const band = btn.closest('.eq-band');
+  const outputId = band ? band.dataset.outputId : null;
+  if (!outputId) return;
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const focusedIns = dspFocusedInsert(out);
+  if (!focusedIns) return;
+  const key = paraEq16Key(idx, "mute");
+  const cur = (focusedIns.controls[key] ?? 0) >= 0.5;
+  const next = cur ? 0 : 1;
+  focusedIns.controls[key] = next;
+  band.classList.toggle('off', !!next);
+  btn.classList.toggle('on', !next);
+  btn.textContent = next ? 'OFF' : 'ON';
+  paraEq16RedrawCurve(outputId);
+  eqQueueControlWrite(outputId, key, next);
+}
+
 // ── Live spectrum overlay ─────────────────────────────────────────
 //
 // Polls /dsp/spectrum every ~70 ms while the EQ panel is open.
@@ -3420,7 +3762,14 @@ async function eqSpectrumTick() {
   // the panel) — saves a fetch + a useless paint.
   const out = (mixerState.outputs || []).find(o => o.id === outputId);
   const focusedIns = dspFocusedInsert(out);
-  if (!focusedIns || !focusedIns.label || !focusedIns.label.includes('graph_equalizer')) {
+  // Spectrum polling is shared between the graph EQ x32 and the
+  // parametric EQ x16 — both have a green-phosphor analyzer behind
+  // their response curve. Other plugins don't.
+  const labelOk = focusedIns && focusedIns.label && (
+    focusedIns.label.includes('graph_equalizer')
+    || focusedIns.label.includes('para_equalizer')
+  );
+  if (!labelOk) {
     eqStopSpectrumPolling();
     return;
   }

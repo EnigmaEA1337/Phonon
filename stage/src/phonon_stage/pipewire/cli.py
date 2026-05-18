@@ -70,6 +70,21 @@ _pw_dump_cache_time: float = 0.0
 _PW_DUMP_CACHE_TTL = 5.0  # seconds
 
 
+def invalidate_pw_dump_cache() -> None:
+    """Force the next pw_dump() call to actually run the subprocess.
+
+    Mutators that change PipeWire state (load_loopback, unload_module,
+    load_null_sink, destroy_link, reload_filter_chain) must call this so
+    the cache doesn't keep returning the pre-mutation graph for up to
+    five seconds. The previous behaviour caused the reconcile loop to
+    keep "seeing" deleted nodes, retry-poll for already-created nodes
+    that were absent from the cache, and ultimately bail with the graph
+    in an inconsistent state — see audit BUG #1."""
+    global _pw_dump_cache, _pw_dump_cache_time
+    _pw_dump_cache = []
+    _pw_dump_cache_time = 0.0
+
+
 async def pw_dump() -> list[dict[str, Any]]:
     """Run pw-dump and return parsed JSON array of PipeWire objects.
 

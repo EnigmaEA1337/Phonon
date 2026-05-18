@@ -120,9 +120,8 @@ class RealPipeWireBackend:
             output_port_id=output_port_id,
             input_port_id=input_port_id,
         )
-        # Invalidate cache so the freshly-created (or pre-existing) link is found
-        cli._pw_dump_cache = []
-        cli._pw_dump_cache_time = 0.0
+        # Invalidate cache so the freshly-created (or pre-existing) link is found.
+        cli.invalidate_pw_dump_cache()
         # pw-link doesn't return the link ID, so we find it by querying
         links = await self.list_links()
         for link in links:
@@ -136,6 +135,7 @@ class RealPipeWireBackend:
     async def destroy_link(self, link_id: int) -> None:
         await cli.pw_link_destroy(link_id)
         logger.info("pipewire.link_destroyed", link_id=link_id)
+        cli.invalidate_pw_dump_cache()
 
     async def set_node_volume(self, node_id: int, volume_linear: float) -> None:
         try:
@@ -294,6 +294,10 @@ class RealPipeWireBackend:
             sink=sink,
             latency_msec=latency_msec,
         )
+        # New module appears in pw-dump immediately; without this, the
+        # next reconcile pass would still see the pre-mutation graph
+        # and could decide the loopback is "missing" or skip lookups.
+        cli.invalidate_pw_dump_cache()
         return mid
 
     async def unload_module(self, module_id: int) -> None:
@@ -304,6 +308,9 @@ class RealPipeWireBackend:
             logger.info("pipewire.module_unloaded", module_id=module_id)
         except Exception:
             logger.info("pipewire.module_unload_failed", module_id=module_id, exc_info=False)
+        # Invalidate even on failure — caller treats the module as gone,
+        # cache must reflect that.
+        cli.invalidate_pw_dump_cache()
 
     async def list_loopback_modules(self) -> dict[int, str]:
         """Parse `pactl list short modules` and return only module-loopback
@@ -389,6 +396,10 @@ class RealPipeWireBackend:
             return None
         mid = int(out)
         logger.info("pipewire.null_sink_loaded", module_id=mid, name=name)
+        # Fresh node — must be visible to the very next list_nodes()
+        # so callers (mixer reconcile, plugin heal) don't immediately
+        # re-create or skip-by-mistake.
+        cli.invalidate_pw_dump_cache()
         return mid
 
     # ── Filter-chain (DSP plugin insert) ──────────────────────────
@@ -434,14 +445,22 @@ class RealPipeWireBackend:
         return names
 
     async def reload_filter_chain(self) -> None:
-        """Restart the filter-chain.service systemd user unit. This
-        glitches every running chain for ~200-300 ms — not for live
-        param tweaks. Used only when a chain is added or removed."""
+        """Restart the filter-chain.service systemd user unit. On this
+        stage's setup the restart cascades into a pipewire-pulse
+        re-init that wipes EVERY pactl-loaded module (phonon_master,
+        spotify_in, airplay_in, AES67 send sinks, loopbacks…). Callers
+        must treat this as a full topology reset.
+
+        We invalidate the pw_dump cache on the way out so the next
+        list_nodes() reflects the post-cascade graph. The caller is
+        responsible for re-ensuring the null-sinks and rebuilding any
+        loopbacks that were collateral damage."""
         try:
             await cli.run_command("systemctl", "--user", "restart", _FILTER_CHAIN_UNIT)
             logger.info("pipewire.filter_chain_reloaded", unit=_FILTER_CHAIN_UNIT)
         except Exception:
             logger.warning("pipewire.filter_chain_reload_failed", exc_info=True)
+        cli.invalidate_pw_dump_cache()
 
     @staticmethod
     def _resolve_filter_chain_node(nodes: list[PwNode], chain_name: str) -> PwNode | None:

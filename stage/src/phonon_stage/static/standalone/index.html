@@ -976,76 +976,73 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   box-shadow: 0 0 6px rgba(255,68,68,0.65), inset 0 1px 3px rgba(0,0,0,0.95); }
 .vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; min-height: 1px;
   transition: background 30ms linear; }
-/* Studer/Avid-style fader — matte-black track, two-tone cap
-   (silver top, matte-black base) with the playhead reading off the
-   silver/black seam. Graduation ticks rendered absolutely to the
-   right of the rail by .fader-scale below. */
-.fader-col { width: 32px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+/* Studio One-style fader — matte-black track, uniform silver cap,
+   graduation strip pinned to the LEFT (between the VU and the rail).
+   Cap reads against its lower edge against the ticks. */
+.fader-col { width: 36px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
 .fader-rail {
-  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 14px;
+  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px;
   transform: translateX(-50%);
-  background: linear-gradient(180deg, #050608 0%, #000 50%, #050608 100%);
+  background: #0a0c0e;
   border: 1px solid #000;
   border-radius: 1px;
   box-shadow:
     inset 0 1px 3px rgba(0,0,0,0.95),
-    inset 1px 0 0 rgba(255,255,255,0.03),
-    inset -1px 0 0 rgba(255,255,255,0.015);
-}
-/* Center highlight — gives the rail its 3D feel without going brushed. */
-.fader-rail::after {
-  content: ''; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1px;
-  transform: translateX(-50%);
-  background: linear-gradient(180deg,
-    transparent 0%, rgba(200,210,220,0.14) 25%, rgba(200,210,220,0.08) 75%, transparent 100%);
+    inset 0 -1px 1px rgba(0,0,0,0.4);
 }
 .fader-fill {
-  position: absolute; left: 50%; transform: translateX(-50%); width: 4px; bottom: 6px;
+  position: absolute; left: 50%; transform: translateX(-50%); width: 3px; bottom: 6px;
   background: linear-gradient(180deg, rgba(6,182,212,0.50) 0%, rgba(6,182,212,0.10) 100%);
   border-radius: 1px;
   z-index: 1;
 }
 .fader-handle {
-  position: absolute; left: 50%; width: 28px; height: 24px;
+  position: absolute; left: 50%; width: 30px; height: 18px;
   transform: translate(-50%, -50%);
-  /* Top 60% silver/polished, bottom 40% matte black — the seam at
-     ~60% is what reads against the graduation as the dB position. */
   background: linear-gradient(180deg,
-    #d8dde3 0%, #f5f7fa 15%, #c8ced5 50%, #9aa1ab 58%,
-    #1a1c20 62%, #0a0b0d 82%, #050608 100%);
-  border: 1px solid #050708;
-  border-radius: 1px;
+    #fafbfc 0%, #ebedf0 30%, #d4d8de 70%, #b8bdc4 100%);
+  border: 1px solid #5a606a;
+  border-top-color: #8e949c;
+  border-radius: 3px;
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.7),
-    inset 0 -1px 0 rgba(0,0,0,0.6),
-    0 2px 4px rgba(0,0,0,0.7);
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    inset 0 -2px 3px rgba(0,0,0,0.12),
+    0 2px 5px rgba(0,0,0,0.65);
   cursor: grab;
   z-index: 2;
 }
-.fader-handle::before { content: none; }
+/* Thin highlight line near the top of the cap — gives it that polished
+   plastic look without making it look like brushed metal. */
+.fader-handle::before {
+  content: ''; position: absolute;
+  left: 4px; right: 4px; top: 3px; height: 1px;
+  background: rgba(255,255,255,0.7);
+  border-radius: 1px;
+}
 .fader-handle:active { cursor: grabbing; }
 
-/* dB graduation strip pinned to the right of the rail. Numbers are
-   the canonical fader ladder; the position of each label is set in
-   JS so it tracks the actual knee curve used by faderDbToY. */
+/* dB graduation strip pinned to the LEFT of the rail — between the
+   VU bars and the fader, same side as Studio One / Pro Tools. Ticks
+   sit flush against the rail; labels float to their left. Positions
+   are computed against the same knee curve faderDbToY uses. */
 .fader-scale {
   position: absolute; left: 50%; top: 6px; bottom: 6px;
-  width: 10px; margin-left: 9px;        /* sits just right of the rail */
+  width: 16px; margin-left: -23px;   /* sits just left of the rail */
   pointer-events: none;
-  font-family: var(--font-m); font-size: 6.5px;
-  color: rgba(190,200,210,0.65);
+  font-family: var(--font-m); font-size: 7px;
+  color: rgba(210,220,230,0.85);
 }
 .fader-scale .tick {
-  position: absolute; left: 0; right: 0;
-  height: 1px; background: rgba(190,200,210,0.35);
+  position: absolute; right: 0; width: 4px;
+  height: 1px; background: rgba(190,200,210,0.45);
 }
-.fader-scale .tick.major { height: 1px; background: rgba(220,230,240,0.7); }
+.fader-scale .tick.major { background: rgba(230,235,240,0.85); width: 6px; }
 .fader-scale .tick-label {
-  position: absolute; left: 3px;
+  position: absolute; right: 8px;
   transform: translateY(-50%);
-  letter-spacing: -0.3px;
-  color: rgba(210,220,230,0.85);
+  letter-spacing: -0.2px;
   white-space: nowrap;
+  text-align: right;
 }
 .fader-ticks { position: absolute; right: -18px; top: 4px; bottom: 4px; display: flex;
   flex-direction: column; justify-content: space-between; font-family: var(--font-m); font-size: 6px; color: var(--text-fade); }

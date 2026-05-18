@@ -2914,6 +2914,61 @@ const PLUGIN_LAYOUTS = {
     customRenderer: "renderGraphEq32",
     useCalfSkin: true,
   },
+
+  // LSP Limiter Stereo — brick-wall limiter for the master bus.
+  // 33 input controls; the operator-relevant subset is sectioned
+  // here. Bypass is rendered as the strip-level rocker (Calf
+  // toolbar), so it's filtered out of any group below. Advanced
+  // graph-visibility toggles + sidechain mix knobs are skipped
+  // entirely — they only matter inside LSP's native graph UI which
+  // Phonon doesn't show.
+  "http://lsp-plug.in/plugins/ladspa/limiter_stereo": {
+    useCalfSkin: true,
+    groups: [
+      {
+        name: "Limiter",
+        controls: [
+          "Threshold (G)",
+          "Knee level (G)",
+          "Knee smooth (dB)",
+          "Stereo linking (%)",
+        ],
+      },
+      {
+        name: "Time",
+        controls: ["Lookahead (ms)", "Attack time (ms)", "Release time (ms)"],
+      },
+      {
+        name: "Mode",
+        controls: ["Operating mode", "Oversampling", "Gain boost", "Dithering"],
+      },
+      {
+        name: "ALR",
+        controls: [
+          "Automatic level regulation",
+          "Automatic level regulation attack time (ms)",
+          "Automatic level regulation release time (ms)",
+        ],
+      },
+      { name: "Input",  controls: ["Input gain (G)"] },
+      { name: "Output", controls: ["Output gain (G)"] },
+    ],
+    // Read-only meters — read live values from /insert/monitoring,
+    // convert linear G → dB so the operator reads in the same unit
+    // as the threshold (which is also stored as G but we display
+    // it via its native knob).
+    monitoring: [
+      { label: "GR L (dB)", port: "GR Left dB",  formula: "gr_l_db", digits: 1 },
+      { label: "GR R (dB)", port: "GR Right dB", formula: "gr_r_db", digits: 1 },
+    ],
+    computeMonitoring(values) {
+      const grL = values["Gain reduction level meter Left (G)"];
+      const grR = values["Gain reduction level meter Right (G)"];
+      const toDb = (g) => (g === undefined || g <= 0)
+        ? 0 : 20 * Math.log10(Math.max(g, 1e-6));
+      return { gr_l_db: toDb(grL), gr_r_db: toDb(grR) };
+    },
+  },
 };
 
 // ── Graphic Equalizer x32 — custom slider strip renderer ──────────

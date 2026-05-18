@@ -1,3 +1,5 @@
+![Phonon main](2026-05-18_19h44_31.png)
+
 # Phonon Stage Standalone — Documentation v1
 
 > Documentation du Stage Agent autonome tel que déployé sur Raspberry Pi 3B `stage-x01`, Raspberry Pi 3B `stage-x02`, Optiplex 3070 `stage-x99`.

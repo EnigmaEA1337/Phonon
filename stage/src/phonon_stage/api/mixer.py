@@ -395,6 +395,32 @@ async def reset_output_chain(request: Request, output_id: str) -> OutputResponse
     return _to_output_resp(out)
 
 
+class InsertEnabledUpdate(BaseModel):
+    """Body for PATCH /outputs/{id}/inserts/{slot} — toggle the
+    enabled flag on a chain slot. enabled=False renders the slot
+    as a passthrough inside the filter-chain conf (no LADSPA
+    plugin loaded) — true bypass without tearing down the chain's
+    node identity."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@router.patch("/outputs/{output_id}/inserts/{slot}", response_model=OutputResponse)
+async def patch_output_chain_slot(
+    request: Request, output_id: str, slot: int, body: InsertEnabledUpdate
+) -> OutputResponse:
+    """Update a single chain slot's flags. v1: only `enabled` is
+    settable from here — wired to the strip-level bypass button."""
+    svc = _service(request)
+    try:
+        out = await svc.set_insert_enabled(output_id, slot, enabled=body.enabled)
+    except MixerError as exc:
+        status = 404 if "unknown output id" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return _to_output_resp(out)
+
+
 @router.post("/admin/reconcile")
 async def reconcile(request: Request) -> dict[str, str]:
     """Force a full mixer reconcile — tear down + rebuild every link,

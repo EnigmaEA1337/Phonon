@@ -517,6 +517,36 @@ class MixerService:
         await self._reconcile()
         return new
 
+    async def set_insert_enabled(
+        self, output_id: str, slot: int, enabled: bool
+    ) -> Output:
+        """Flip the .enabled flag on a chain slot. When all slots in
+        the chain are disabled the filter-chain conf renders a
+        passthrough (builtin copy node) so the audio passes through
+        unprocessed without tearing the chain down — same node.name
+        in PW, just no LADSPA plugin loaded inside.
+
+        Triggers a reconcile so the conf gets rewritten + the
+        filter-chain.service reloaded. Cost ~100-200ms on stage-x99.
+        Used by the strip-level bypass toggle (more reliable than
+        the LSP `Bypass` continuous crossfade param)."""
+        cur = self._output(output_id)
+        if not (0 <= slot < len(cur.inserts)):
+            msg = f"slot {slot} out of range (chain has {len(cur.inserts)} plugins)"
+            raise MixerError(msg)
+        target = cur.inserts[slot]
+        if target.enabled == enabled:
+            return cur
+        new_insert = replace(target, enabled=enabled)
+        new_inserts = tuple(
+            new_insert if i == slot else ins for i, ins in enumerate(cur.inserts)
+        )
+        new = replace(cur, inserts=new_inserts)
+        new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
+        self._store.replace_state(replace(self._store.state, outputs=new_outputs))
+        await self._reconcile()
+        return new
+
     async def _introspect_control_exists(
         self, backend: str, library: str, label: str, control_name: str
     ) -> bool:

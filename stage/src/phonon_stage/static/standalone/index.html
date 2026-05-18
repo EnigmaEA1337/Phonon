@@ -259,6 +259,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .fx-slot-x { padding: 0 2px; color: var(--text-fade); cursor: pointer;
   font-size: 10px; line-height: 1; flex-shrink: 0; }
 .fx-slot-x:hover { color: var(--red); }
+/* Bypass toggle — power-icon next to the chain badge. Inherits
+   the .fx-btn.bypassed yellow when the slot is off, default
+   text-fade otherwise. Stops click propagation so toggling doesn't
+   also focus the panel on this slot. */
+.fx-slot-bypass { padding: 0 2px; color: var(--text-fade); cursor: pointer;
+  font-size: 9px; line-height: 1; flex-shrink: 0; }
+.fx-slot-bypass:hover { color: var(--cyan); }
+.fx-btn.bypassed .fx-slot-bypass { color: var(--yellow); }
 /* On the Source / Master strips the fx row is intentionally empty
    so every kind keeps the same row stack — no shift across columns. */
 .row-fx.empty { visibility: hidden; }
@@ -1927,12 +1935,22 @@ function fxRow(o) {
     const stateCls = ins.enabled ? 'active' : 'bypassed';
     const slotFocused = focused && dspState.focusedSlot === idx;
     const friendly = fxPluginFriendlyName(ins.library, ins.label);
+    // Bypass toggle — power-icon affordance on the right of the
+    // badge. Always visible (single-plugin chain or multi). Toggles
+    // PluginInsert.enabled via PATCH; backend renders the slot as
+    // a builtin-copy passthrough when disabled — true on/off, no
+    // level wobble like the LSP continuous Bypass param.
+    const bypassTitle = ins.enabled ? 'Bypass plugin' : 'Re-enable plugin';
+    const bypassIcon = ins.enabled ? '⏻' : '⌀';
+    const bypassAffordance = `<span class="fx-slot-bypass edit-only"
+      onclick="event.stopPropagation();toggleSlotBypass('${o.id}',${idx})"
+      title="${bypassTitle}">${bypassIcon}</span>`;
     const removeAffordance = chain.length > 1
       ? `<span class="fx-slot-x edit-only" onclick="event.stopPropagation();removeChainSlot('${o.id}',${idx})" title="Remove this plugin from the chain">×</span>`
       : '';
     return `<button class="fx-btn ${stateCls}${slotFocused ? ' focused' : ''}" onclick="focusDspPanel('${o.id}',${idx})" title="Slot ${idx + 1}: ${escapeHtml(ins.label)}">
       <span class="fx-led"></span><span class="fx-name">${escapeHtml(friendly)}</span>
-      ${removeAffordance}
+      ${bypassAffordance}${removeAffordance}
     </button>`;
   }).join('');
   // +/⌫ row, sized to one fx-row height so the column count below
@@ -2114,6 +2132,28 @@ async function fxPickerSelect(backendEnc, libraryEnc, labelEnc) {
     if (mode === 'set') startDspMonitorPolling();
   } catch (e) {
     alert('Plugin pick error: ' + e.message);
+  }
+}
+
+async function toggleSlotBypass(outputId, slot) {
+  // Read current enabled state from local mirror, flip, PATCH.
+  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  if (!out || !Array.isArray(out.inserts) || !out.inserts[slot]) return;
+  const next = !out.inserts[slot].enabled;
+  try {
+    const r = await fetch(API + '/mixer/outputs/' + outputId + '/inserts/' + slot, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Bypass failed: ' + (e.detail || r.status));
+      return;
+    }
+    await fetchMixer();
+  } catch (e) {
+    alert('Bypass error: ' + e.message);
   }
 }
 
@@ -2526,8 +2566,13 @@ function eqFreqLabel(freq) {
 }
 
 function renderGraphEq32(outputId, schema, values, inSide, outSide) {
-  // Top toolbar — global plugin controls.
-  const globals = ['Bypass', 'Input gain (G)', 'Output gain (G)', 'Equalizer mode', 'Filter slope'];
+  // Top toolbar — global plugin controls. Bypass intentionally
+  // dropped: the LSP Bypass control is a continuous wet/dry
+  // crossfade with equal-power loss at mid (audible level drop),
+  // not a true on/off. The strip-level bypass toggle uses our
+  // PluginInsert.enabled flag instead, which renders a passthrough
+  // conf when False — clean cut, no level wobble.
+  const globals = ['Input gain (G)', 'Output gain (G)', 'Equalizer mode', 'Filter slope'];
   const schemaByName = Object.fromEntries((schema.controls || []).map(c => [c.name, c]));
   const toolbar = globals.map(name => {
     const c = schemaByName[name];
@@ -2588,6 +2633,19 @@ function eqRenderGraphGrid() {
   const vLines = [16, 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
   const hLines = [-36, -24, -12, 0, 12, 24, 36];
   const parts = [];
+  // Vertical gradient for the spectrum polygon — blue/violet at the
+  // bottom (near -90 dBFS silence), green mid, yellow upper-mid,
+  // red at the top (0 dBFS). Bottom of the SVG = high y = low level.
+  parts.push(`<defs>
+    <linearGradient id="eq-spec-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#f87171" stop-opacity="0.85"/>
+      <stop offset="15%"  stop-color="#fb923c" stop-opacity="0.75"/>
+      <stop offset="35%"  stop-color="#fbbf24" stop-opacity="0.6"/>
+      <stop offset="60%"  stop-color="#34d399" stop-opacity="0.45"/>
+      <stop offset="85%"  stop-color="#67e8f9" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#a5b4fc" stop-opacity="0.15"/>
+    </linearGradient>
+  </defs>`);
   for (const f of vLines) {
     const x = (eqLogX(f) * W).toFixed(1);
     const label = f >= 1000 ? (f / 1000) + 'k' : String(f);
@@ -2898,47 +2956,43 @@ function eqRenderSpectrumBars(bandDbs) {
   if (!g) return;
   if (bandDbs.length !== GRAPH_EQ_BANDS.length) return;
   const W = EQ_VIEW_W, H = EQ_VIEW_H;
-  // Bar width: log-frequency span of the band's ±1/6-octave window.
-  // Compute once at module load — same widths every paint.
-  const html = [];
+  // We build a single closed polygon connecting all band tops — gives
+  // a continuous "spectrum filled area" look like the LSP screenshot
+  // instead of 32 discrete rectangles. A SVG <linearGradient> tints
+  // it by Y position (blue/violet at the bottom near silence, yellow
+  // mid, red at the top near 0 dBFS).
+  const points = [];
+  const peakDots = [];
   const now = performance.now();
+  // Start at bottom-left for the closed-path floor.
+  points.push(`0,${H.toFixed(1)}`);
   for (let i = 0; i < GRAPH_EQ_BANDS.length; i++) {
     const fc = GRAPH_EQ_BANDS[i];
     const db = Math.max(EQ_SPECTRUM_FLOOR_DB, bandDbs[i]);
-    const xLo = eqLogX(fc * Math.pow(2, -1 / 6)) * W;
-    const xHi = eqLogX(fc * Math.pow(2,  1 / 6)) * W;
-    const w = Math.max(2, xHi - xLo - 1);
-    const x = xLo + 0.5;
-    // Map dBFS [-90..0] to viewBox y [H..0]. 0 dBFS → top, -90 → bottom.
+    const x = (eqLogX(fc) * W).toFixed(2);
     const norm = (db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
-    const top = H * (1 - norm);
-    const height = H - top;
-    // Color gradient: green → yellow → red as level rises past -20 / -6 dBFS.
-    let fill;
-    if (db >= -6)       fill = 'rgba(248,113,113,0.55)';
-    else if (db >= -20) fill = 'rgba(251,191,36,0.45)';
-    else                fill = 'rgba(165,180,252,0.30)';
-    html.push(`<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}"
-                     width="${w.toFixed(1)}" height="${height.toFixed(1)}"
-                     fill="${fill}" />`);
-    // Peak hold — decays linearly.
-    let peak = eqSpectrumState.peakHold.get(fc) || { db: db, ts: now };
+    const y = (H * (1 - norm)).toFixed(2);
+    points.push(`${x},${y}`);
+    // Peak hold — 60 dB/sec decay, small dot at the peak.
+    let peak = eqSpectrumState.peakHold.get(fc) || { db, ts: now };
     if (db >= peak.db) {
       peak = { db, ts: now };
     } else {
-      // 60 dB/sec decay.
       const decayed = peak.db - 60 * (now - peak.ts) / 1000;
-      if (decayed > db) peak = { db: decayed, ts: peak.ts + (now - peak.ts) };
-      else peak = { db, ts: now };
+      peak = decayed > db ? { db: decayed, ts: peak.ts } : { db, ts: now };
     }
     eqSpectrumState.peakHold.set(fc, peak);
-    const peakNorm = (peak.db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
-    const peakY = H * (1 - peakNorm);
-    html.push(`<rect x="${x.toFixed(1)}" y="${peakY.toFixed(1)}"
-                     width="${w.toFixed(1)}" height="2"
-                     fill="rgba(248,113,113,0.85)" />`);
+    if (peak.db > db + 1) {
+      const peakNorm = (peak.db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
+      const peakY = (H * (1 - peakNorm)).toFixed(2);
+      peakDots.push(`<circle cx="${x}" cy="${peakY}" r="2" fill="rgba(248,113,113,0.95)"/>`);
+    }
   }
-  g.innerHTML = html.join('');
+  points.push(`${W},${H.toFixed(1)}`);
+  // The gradient is defined once in the static grid; here we just
+  // reference it via fill="url(#eq-spec-grad)".
+  g.innerHTML = `<polygon points="${points.join(' ')}" fill="url(#eq-spec-grad)" />`
+              + peakDots.join('');
 }
 
 // Render one IN or OUT meter block — label + L/R vertical bars.
@@ -3036,28 +3090,19 @@ function renderKnob(outputId, name, value, min, max, integer, logarithmic) {
 // Log hint → log-scaled mapping (treats min==0 as a small epsilon so
 // log() is defined). LSP "Output gain (G)" sweeps 0..1000 log, an
 // audio fader feel.
-function knobNormalise(value, min, max, logarithmic) {
+// Linear mapping by design — operator expectation is "midpoint of the
+// knob = midpoint of the value range". The LADSPA `logarithmic` hint
+// (LSP gain knobs declare it) made the arc fill non-uniformly and
+// confused the user, so we ignore it for now. dB-feel knobs can come
+// back as a per-plugin layout override if a future plugin really needs
+// it.
+function knobNormalise(value, min, max, _logarithmic) {
   if (max === min) return 0;
-  if (logarithmic) {
-    const lmin = Math.log(Math.max(min, 1e-6));
-    const lmax = Math.log(Math.max(max, 1e-6));
-    const lv   = Math.log(Math.max(value, 1e-6));
-    return Math.max(0, Math.min(1, (lv - lmin) / (lmax - lmin)));
-  }
   return Math.max(0, Math.min(1, (value - min) / (max - min)));
 }
 
-// Inverse of knobNormalise — used by the drag handler to turn the
-// updated arc position back into a value to PATCH.
-function knobDenormalise(norm, min, max, logarithmic, integer) {
-  let v;
-  if (logarithmic) {
-    const lmin = Math.log(Math.max(min, 1e-6));
-    const lmax = Math.log(Math.max(max, 1e-6));
-    v = Math.exp(lmin + (lmax - lmin) * norm);
-  } else {
-    v = min + (max - min) * norm;
-  }
+function knobDenormalise(norm, min, max, _logarithmic, integer) {
+  const v = min + (max - min) * norm;
   return integer ? Math.round(v) : v;
 }
 

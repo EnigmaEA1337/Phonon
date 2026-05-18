@@ -475,6 +475,27 @@ class TestMultiPluginChain:
         # No exception, no change.
         assert result.inserts == ()
 
+    @pytest.mark.asyncio()
+    async def test_set_insert_enabled_toggle(self, service: MixerService) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        # Disable slot 0 → renders passthrough conf.
+        result = await service.set_insert_enabled(out.id, slot=0, enabled=False)
+        assert result.inserts[0].enabled is False
+        # Re-enable → back to normal chain.
+        result = await service.set_insert_enabled(out.id, slot=0, enabled=True)
+        assert result.inserts[0].enabled is True
+
+    @pytest.mark.asyncio()
+    async def test_set_insert_enabled_invalid_slot_raises(
+        self, service: MixerService
+    ) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        with pytest.raises(MixerError, match="out of range"):
+            await service.set_insert_enabled(out.id, slot=0, enabled=False)
+
     def test_render_multi_plugin_conf_chains_them_in_series(self) -> None:
         from phonon_stage.mixer.models import Output, PluginInsert
 

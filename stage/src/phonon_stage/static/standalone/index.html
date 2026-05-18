@@ -976,16 +976,58 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   box-shadow: 0 0 6px rgba(255,68,68,0.65), inset 0 1px 3px rgba(0,0,0,0.95); }
 .vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; min-height: 1px;
   transition: background 30ms linear; }
-.fader-col { width: 22px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
-.fader-rail { position: absolute; left: 50%; top: 4px; bottom: 4px; width: 3px; transform: translateX(-50%);
-  background: linear-gradient(180deg, #050a10, #1a2230 50%, #050a10); border: 1px solid #050a10; border-radius: 1px; }
-.fader-fill { position: absolute; left: 50%; transform: translateX(-50%); width: 4px; bottom: 4px;
-  background: linear-gradient(180deg, var(--cyan) 0%, rgba(6,182,212,0.3) 100%); border-radius: 1px; }
-.fader-handle { position: absolute; left: 50%; width: 20px; height: 10px; transform: translate(-50%, -50%);
-  background: linear-gradient(180deg, #3a5078, #1a2230 50%, #060a10); border: 1px solid #050a10;
-  border-top-color: #4a6088; border-radius: 2px; cursor: grab; z-index: 2; }
-.fader-handle::before { content: ''; position: absolute; left: 3px; right: 3px; top: 50%; height: 1px;
-  background: var(--text); transform: translateY(-50%); }
+/* Console-style chrome fader — track in brushed dark metal, cap in
+   polished silver with a black playhead band. Same DOM as before
+   (rail / fill / handle), only the visuals change. */
+.fader-col { width: 28px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+.fader-rail {
+  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px;
+  transform: translateX(-50%);
+  background:
+    linear-gradient(180deg, #1a1d22 0%, #0d0f12 6%, #0a0c0e 50%, #0d0f12 94%, #1a1d22 100%),
+    linear-gradient(90deg, #0a0c0e 0%, #181a1f 35%, #1f2329 50%, #181a1f 65%, #0a0c0e 100%);
+  background-blend-mode: overlay;
+  border: 1px solid #050708;
+  border-radius: 2px;
+  box-shadow:
+    inset 1px 0 0 rgba(255,255,255,0.04),
+    inset -1px 0 0 rgba(255,255,255,0.02),
+    inset 0 1px 2px rgba(0,0,0,0.8),
+    0 1px 0 rgba(255,255,255,0.04);
+}
+/* Center groove — thin vertical highlight, gives the rail its 3D feel. */
+.fader-rail::after {
+  content: ''; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg,
+    transparent 0%, rgba(255,255,255,0.10) 20%, rgba(255,255,255,0.05) 80%, transparent 100%);
+}
+.fader-fill {
+  position: absolute; left: 50%; transform: translateX(-50%); width: 4px; bottom: 6px;
+  background: linear-gradient(180deg, rgba(6,182,212,0.55) 0%, rgba(6,182,212,0.12) 100%);
+  border-radius: 1px;
+  z-index: 1;
+}
+.fader-handle {
+  position: absolute; left: 50%; width: 26px; height: 18px;
+  transform: translate(-50%, -50%);
+  /* Silver brushed cap with a black playhead band right in the middle —
+     reads the dB value off the track at the band's vertical center. */
+  background: linear-gradient(180deg,
+    #c8ced5 0%, #f0f3f7 18%, #aeb5be 48%,
+    #2a2e34 50%,
+    #aeb5be 52%, #f0f3f7 82%, #6f7680 100%);
+  border: 1px solid #1a1d22;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    inset 0 -1px 0 rgba(0,0,0,0.35),
+    0 2px 4px rgba(0,0,0,0.6);
+  cursor: grab;
+  z-index: 2;
+}
+.fader-handle::before { content: none; }
+.fader-handle:active { cursor: grabbing; }
 .fader-ticks { position: absolute; right: -18px; top: 4px; bottom: 4px; display: flex;
   flex-direction: column; justify-content: space-between; font-family: var(--font-m); font-size: 6px; color: var(--text-fade); }
 .fader-ticks .unity { color: var(--cyan); font-weight: 700; }

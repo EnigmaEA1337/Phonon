@@ -498,16 +498,28 @@ class RealPipeWireBackend:
             f"# resolved chain {node_name} → node id {target.id} ({target.name})\n" + out
         )  # type: ignore[attr-defined]
         # Names in the params Struct are prefixed with the
-        # filter-graph node name (we use `name = fx` in the conf, so
-        # everything comes back as `fx:<control>`). Strip the prefix
-        # to mirror the LADSPA descriptor's flat names.
+        # filter-graph node name. v1 used `name = fx` → prefix `fx:`;
+        # the multi-plugin refactor renamed to `fx_0`, `fx_1`, …
+        # which made the prefix `fx_<N>:`. Accept either form so
+        # we keep reading the right values regardless of how the
+        # chain was rendered. PW's own audioconvert / channelmix
+        # housekeeping params carry NO prefix and get filtered out.
         result: dict[str, float] = {}
         pending: str | None = None
         name_re = re.compile(r'^\s*String\s+"([^"]+)"')
         num_re = re.compile(r"^\s*(?:Float|Int)\s+(-?\d+(?:\.\d+)?)")
-        # Bool params (Bypass, Ramping, Phase Invert *) → 0.0 / 1.0
-        # so the JS doesn't need a separate code path for booleans.
         bool_re = re.compile(r"^\s*Bool\s+(true|false)")
+        fx_prefix_re = re.compile(r"^(fx(?:_\d+)?):")
+
+        def _strip_fx_prefix(name: str) -> str | None:
+            """Return the unprefixed control name if `name` is
+            `fx:foo` or `fx_<N>:foo`. None otherwise (housekeeping
+            param)."""
+            m = fx_prefix_re.match(name)
+            if not m:
+                return None
+            return name[len(m.group(0)):]
+
         for line in out.splitlines():
             m = name_re.match(line)
             if m:
@@ -522,25 +534,19 @@ class RealPipeWireBackend:
                 except ValueError:
                     pending = None
                     continue
-                key = pending[3:] if pending.startswith("fx:") else pending
-                # We're only interested in the plugin's own params,
-                # not PW's audioconvert / channelmix / resample
-                # housekeeping — those don't carry the fx: prefix
-                # so they get filtered here.
-                if pending.startswith("fx:"):
+                key = _strip_fx_prefix(pending)
+                if key is not None:
                     result[key] = val
                 pending = None
                 continue
             mb = bool_re.match(line)
             if mb:
                 val = 1.0 if mb.group(1) == "true" else 0.0
-                if pending.startswith("fx:"):
-                    result[pending[3:]] = val
+                key = _strip_fx_prefix(pending)
+                if key is not None:
+                    result[key] = val
                 pending = None
                 continue
-            # Other value types (String, Array, Id) — drop the
-            # pending name so we don't accidentally pair it with
-            # something further down.
             pending = None
         return result
 
@@ -575,13 +581,26 @@ class RealPipeWireBackend:
             )
             return
         # pw-cli set-param Props expects spa-json. PW prefixes every
-        # filter-graph control with the filter.graph node name (we
-        # use `name = fx` in the conf), so the key in Props is
-        # `fx:<control>` — set-param with the bare name is a silent
-        # no-op (the engine has no param to match). Prefix here so
-        # the engine gets the write.
-        prefixed = control_name if control_name.startswith("fx:") else f"fx:{control_name}"
-        payload = '{ params = [ "' + prefixed + '" ' + str(float(value)) + " ] }"
+        # filter-graph control with the node name. v1 single-plugin
+        # conf used `name = fx` → prefix `fx:`. The multi-plugin
+        # refactor renamed nodes to `fx_0`, `fx_1`, … which changed
+        # the prefix to `fx_<N>:`. The caller doesn't know which
+        # slot the control lives in, so we ship the same value under
+        # every plausible prefix in one set-param call. The engine
+        # silently ignores prefixes that don't match a real param,
+        # so the broadcast is harmless. Costs nothing extra on
+        # set-param (one subprocess call regardless of how many
+        # keys are in the array).
+        prefixes = ["fx", *(f"fx_{i}" for i in range(8))]
+        if control_name.startswith("fx:") or control_name.startswith("fx_"):
+            # Caller already supplied the prefix — honour it and skip
+            # the broadcast. Used by callers that know the exact slot.
+            keys = [control_name]
+        else:
+            keys = [f"{p}:{control_name}" for p in prefixes]
+        val_str = str(float(value))
+        kv_parts = " ".join(f'"{k}" {val_str}' for k in keys)
+        payload = "{ params = [ " + kv_parts + " ] }"
         # Stash payload + last result so the diagnostic endpoint can
         # show us what pw-cli actually saw (silent set-param failures
         # are unobservable otherwise — rc=0 with no stdout/stderr).

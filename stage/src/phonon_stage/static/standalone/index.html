@@ -613,6 +613,78 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Reserve some right padding so the brand doesn't overlap controls */
 .dsp-calf { padding-right: 30px; }
 
+/* Calf toolbar — IN VU | Bypass rocker | OUT VU at the top of the
+   panel body. Matches the Calf hardware layout. */
+.dsp-calf .dsp-controls {
+  display: flex; flex-direction: column; gap: 10px; flex: 1;
+}
+.dsp-calf .dsp-calf-toolbar {
+  display: flex; flex-direction: row; align-items: center;
+  justify-content: space-between; gap: 16px;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, #1a2030, #131825);
+  border: 1px solid #0a0e16;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    inset 0 0 8px rgba(0,0,0,0.4);
+}
+.dsp-calf .dsp-calf-toolbar .dsp-vu-side { min-width: 200px; flex: 1; }
+.dsp-calf .dsp-calf-toolbar .dsp-vu-side .dsp-vu-pair {
+  height: 22px; width: 100%; flex-direction: column; gap: 1px;
+}
+.dsp-calf .dsp-calf-toolbar .vu-bar {
+  flex-direction: row; height: 10px; width: 100%;
+}
+.dsp-calf .dsp-calf-body {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch;
+}
+
+/* Bypass rocker — horizontal pill with sliding thumb. Cyan glow + thumb
+   on the right when bypass is engaged, dim grey + thumb on the left
+   when off. Matches the Calf horizontal bypass switch. */
+.dsp-calf .dsp-calf-bypass {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  min-width: 90px;
+}
+.dsp-calf .dsp-calf-bypass-label {
+  font-family: var(--font-m); font-size: 8px; letter-spacing: 1.5px;
+  color: #8b9aae; font-weight: 700; text-transform: uppercase;
+}
+.dsp-calf .dsp-calf-rocker {
+  position: relative; width: 70px; height: 28px;
+  background: linear-gradient(180deg, #1a2030, #0e131e);
+  border: 1px solid #050810;
+  border-radius: 14px;
+  cursor: pointer; padding: 0;
+  box-shadow:
+    inset 0 2px 4px rgba(0,0,0,0.7),
+    inset 0 -1px 0 rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.dsp-calf .dsp-calf-rocker .dsp-calf-rocker-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%,
+    #e8eef5 0%, #b0b8c4 50%, #5a6478 100%);
+  box-shadow:
+    inset 0 -2px 2px rgba(0,0,0,0.4),
+    0 1px 2px rgba(0,0,0,0.5);
+  transition: left 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.dsp-calf .dsp-calf-rocker.on {
+  background: linear-gradient(180deg, #1a3848, #0c2230);
+  border-color: #1a3540;
+  box-shadow:
+    inset 0 2px 4px rgba(0,0,0,0.6),
+    0 0 8px rgba(93,216,232,0.4);
+}
+.dsp-calf .dsp-calf-rocker.on .dsp-calf-rocker-thumb {
+  left: 46px;
+  background: radial-gradient(circle at 35% 30%,
+    #d4f4fa 0%, #5dd8e8 60%, #2a8c9c 100%);
+}
+
 /* MRLS button row — channel mutes + solo, Apple-style toggles.
    On the Master strip we hide the S button (no solo on the bus). */
 .row-mrls { display: flex; gap: 3px; justify-content: center; align-items: center; }
@@ -2485,13 +2557,35 @@ async function renderDspPanel() {
     const schemaByName = Object.fromEntries(
       (schema.controls || []).map(c => [c.name, c])
     );
-    const groupsHtml = (layout.groups || []).map(g =>
-      renderDspGroup(out.id, g, schemaByName, focusedIns.controls)
-    ).join('');
-    const monitorHtml = renderDspMonitoring(layout, focusedIns.controls);
-    // OUT VU joins the same row as the controls now that we're
-    // flex-column (no more grid 3rd column).
-    bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}${outSide}</div>`;
+    if (layout.useCalfSkin) {
+      // Calf-rack layout: top toolbar = IN VU | Bypass rocker | OUT VU.
+      // Bypass is rendered specially as a chrome rocker switch and
+      // therefore filtered out of any group's control list below so
+      // it doesn't appear twice.
+      const bypassToggle = renderCalfBypassRocker(
+        out.id, dspState.focusedSlot,
+        focusedIns.controls["Bypass"] ?? 0
+      );
+      const calfFilteredGroups = (layout.groups || []).map(g =>
+        renderDspGroup(out.id, {
+          ...g,
+          controls: (g.controls || []).filter(n => n !== "Bypass"),
+        }, schemaByName, focusedIns.controls)
+      ).join('');
+      const monitorHtml = renderDspMonitoring(layout, focusedIns.controls);
+      bodyHtml = `<div class="dsp-controls">
+        <div class="dsp-calf-toolbar">${inSide}${bypassToggle}${outSide}</div>
+        <div class="dsp-calf-body">${calfFilteredGroups}${monitorHtml}</div>
+      </div>`;
+    } else {
+      const groupsHtml = (layout.groups || []).map(g =>
+        renderDspGroup(out.id, g, schemaByName, focusedIns.controls)
+      ).join('');
+      const monitorHtml = renderDspMonitoring(layout, focusedIns.controls);
+      // OUT VU joins the same row as the controls now that we're
+      // flex-column (no more grid 3rd column).
+      bodyHtml = `<div class="dsp-controls">${inSide}${groupsHtml}${monitorHtml}${outSide}</div>`;
+    }
   } else {
     const controlsHtml = inputControls.map(c =>
       renderDspControl(out.id, c, focusedIns.controls[c.name])
@@ -3220,6 +3314,58 @@ function dspVuSide(labelText, kind, vuSource) {
       <div class="vu-bar" data-ch="R" data-vu-source="${safeSource}">${MIX_VU_SEGS}</div>
     </div>
   </div>`;
+}
+
+// Calf-style rocker switch for the Bypass control. Centered between
+// the IN and OUT VU pairs in the Calf-skin toolbar. Reads from the
+// plugin's `Bypass` control (continuous 0..1) — anything >= 0.5 is
+// "bypassed". Click flips the value via the existing slot-aware
+// dspSetControl path so the engine receives `Bypass = 0` or `1`.
+//
+// Note: this is the LSP plugin's INTERNAL bypass (crossfades dry/wet).
+// The strip-level ⏻ toggle on the FX badge is a DIFFERENT thing —
+// it sets PluginInsert.enabled, which renders a passthrough conf
+// (cleaner cut, but reloads filter-chain.service). The Calf rocker
+// here is for in-panel A/B without the conf reload.
+function renderCalfBypassRocker(outputId, slot, currentValue) {
+  const on = (currentValue || 0) >= 0.5;
+  const encName = encodeURIComponent("Bypass");
+  return `<div class="dsp-calf-bypass">
+    <div class="dsp-calf-bypass-label">Bypass</div>
+    <button class="dsp-calf-rocker${on ? ' on' : ''}"
+            data-output-id="${outputId}"
+            data-slot="${slot}"
+            data-ctl="${encName}"
+            onclick="calfBypassToggle(this)"
+            title="${on ? 'Bypass active — plugin signal frozen' : 'Engage plugin processing'}">
+      <span class="dsp-calf-rocker-thumb"></span>
+    </button>
+  </div>`;
+}
+
+async function calfBypassToggle(btn) {
+  const outputId = btn.dataset.outputId;
+  const slot = Number(btn.dataset.slot || 0);
+  const encName = btn.dataset.ctl;
+  const isOn = btn.classList.contains('on');
+  const next = isOn ? 0 : 1;
+  btn.classList.toggle('on', !isOn);
+  btn.title = !isOn ? 'Bypass active — plugin signal frozen' : 'Engage plugin processing';
+  try {
+    await fetch(API + '/mixer/outputs/' + outputId
+        + '/insert/controls/' + encName + '?slot=' + slot, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: next }),
+    });
+    // Mirror locally so the next render reads the right value.
+    const out = (mixerState.outputs || []).find(o => o.id === outputId);
+    const focusedIns = dspFocusedInsert(out);
+    if (focusedIns) focusedIns.controls["Bypass"] = next;
+  } catch (e) {
+    // Rollback the button class if the write fails.
+    btn.classList.toggle('on', isOn);
+  }
 }
 
 // Render one control's widget based on the LADSPA hints. No control

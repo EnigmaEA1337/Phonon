@@ -106,14 +106,49 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   transition: left 0.15s, background 0.15s; }
 .svc-toggle.on .svc-switch { background: var(--cyan); border-color: var(--cyan); }
 .svc-toggle.on .svc-switch::after { left: 12px; background: var(--bg-0); }
-.res-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px;
-  font-family: var(--font-m); font-size: 10px; }
-.res-label { width: 42px; color: var(--text-dim); font-weight: 600;
-  letter-spacing: 0.5px; flex-shrink: 0; }
-.res-bar { flex: 1; height: 8px; background: var(--bg-1); border: 1px solid var(--border);
-  border-radius: 2px; overflow: hidden; }
-.res-fill { height: 100%; transition: width 0.3s ease; }
-.res-val { color: var(--text); min-width: 130px; text-align: right; font-size: 9px; }
+/* Monitoring rows — horizontal mini-VUs sharing the chrome aesthetic
+   of the strip column. Recessed dark well, gradient fill, engraved
+   uppercase label, monospace value. */
+.res-row { display: flex; align-items: center; gap: 10px; padding: 4px 10px;
+  font-family: var(--font-m); font-size: 10px;
+  border-radius: 3px;
+  transition: background 80ms linear;
+}
+.res-row:hover { background: rgba(255,255,255,0.025); }
+.res-label {
+  width: 48px;
+  color: #c7ccd2;
+  font-family: var(--font-d);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+  flex-shrink: 0;
+}
+.res-bar {
+  flex: 1; height: 10px;
+  background: #0c1218;
+  border: 1px solid #050708;
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.85),
+    inset 0 0 0 1px rgba(255,255,255,0.03),
+    0 1px 0 rgba(255,255,255,0.03);
+}
+.res-fill {
+  height: 100%;
+  transition: width 0.3s ease, background 80ms linear;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 1px rgba(0,0,0,0.25);
+}
+.res-val {
+  color: rgba(225,235,245,0.92);
+  min-width: 140px; text-align: right;
+  font-size: 9px;
+  letter-spacing: -0.2px;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.65);
+}
 .tb-update { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
   border: 1px solid rgba(52,211,153,0.4); border-radius: 3px; font-family: var(--font-m);
   font-size: 9px; color: var(--green); cursor: pointer; font-weight: 700;
@@ -7965,14 +8000,22 @@ function renderSystemResources(r) {
   // showing load on the bar, the user sees the truth.
   const loadFrac = r.cpu_load_1m / Math.max(1, r.cpu_count);
   const cpuBarPct = Math.min(100, Math.round(loadFrac * 100));
-  const cpuColor = loadFrac > 0.90 ? 'var(--red)'
-                 : loadFrac > 0.70 ? 'var(--yellow)'
-                 : 'var(--cyan)';
-  const memColor = r.mem_pct > 90 ? 'var(--red)' : r.mem_pct > 70 ? 'var(--yellow)' : 'var(--green)';
-  const swapColor = r.swap_pct > 50 ? 'var(--yellow)' : 'var(--text-dim)';
-  const diskColor = r.disk_pct > 90 ? 'var(--red)' : r.disk_pct > 75 ? 'var(--yellow)' : 'var(--cyan)';
-  const tempColor = (r.temp_c ?? 0) > 75 ? 'var(--red)' : (r.temp_c ?? 0) > 65 ? 'var(--yellow)' : 'var(--green)';
-  const xrunColor = r.xrun_total > 100 ? 'var(--red)' : r.xrun_total > 0 ? 'var(--yellow)' : 'var(--green)';
+  // Each fill is a gradient (top-light → bottom-deep) so the bar
+  // reads as a backlit LED rather than a flat block.
+  const grad = (lo, mid, hi) => `linear-gradient(180deg, ${lo} 0%, ${mid} 50%, ${hi} 100%)`;
+  const GRAD_RED    = grad('#ff7878', '#ef4444', '#a01818');
+  const GRAD_AMBER  = grad('#ffd86a', '#f59e0b', '#9a6300');
+  const GRAD_GREEN  = grad('#86efac', '#22c55e', '#14803d');
+  const GRAD_CYAN   = grad('#7ce0f3', '#22d3ee', '#0e7490');
+  const GRAD_DIM    = grad('#6a7888', '#4b5663', '#2c333c');
+  const cpuColor = loadFrac > 0.90 ? GRAD_RED
+                 : loadFrac > 0.70 ? GRAD_AMBER
+                 : GRAD_CYAN;
+  const memColor  = r.mem_pct > 90 ? GRAD_RED   : r.mem_pct > 70 ? GRAD_AMBER : GRAD_GREEN;
+  const swapColor = r.swap_pct > 50 ? GRAD_AMBER : GRAD_DIM;
+  const diskColor = r.disk_pct > 90 ? GRAD_RED   : r.disk_pct > 75 ? GRAD_AMBER : GRAD_CYAN;
+  const tempColor = (r.temp_c ?? 0) > 75 ? GRAD_RED : (r.temp_c ?? 0) > 65 ? GRAD_AMBER : GRAD_GREEN;
+  const xrunColor = r.xrun_total > 100 ? GRAD_RED : r.xrun_total > 0 ? GRAD_AMBER : GRAD_GREEN;
 
   let html = '';
   // Bar uses load% (smooth), text shows both: load% (sustained) and

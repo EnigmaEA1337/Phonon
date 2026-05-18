@@ -1068,9 +1068,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 }
 .section.full-width .section-body { padding-left: 16px; padding-right: 16px; }
 
-/* Compact mode — hide every strip row except the fader so the only
-   visible elements are the cap + VU + value readout. Activates on
-   the body via the toggle in the Mix Console section header. */
+/* Compact mode — hide every strip row except the fader (and the
+   scotch nameplate so the operator still knows which strip is which).
+   !important is required because row-action carries an inline
+   display:flex style that would otherwise win on specificity. */
 body.mix-compact .strip > .row-action,
 body.mix-compact .strip > .row-io-in,
 body.mix-compact .strip > .row-route,
@@ -1078,16 +1079,23 @@ body.mix-compact .strip > .row-extra1,
 body.mix-compact .strip > .row-extra2,
 body.mix-compact .strip > .row-fx,
 body.mix-compact .strip > .row-mrls,
-body.mix-compact .strip > .row-io-out { display: none; }
-/* Keep the scotch nameplate visible so the operator still knows
-   which strip is which when everything else is hidden. */
+body.mix-compact .strip > .row-io-out { display: none !important; }
 body.mix-compact .strip {
-  /* Strip shrinks dramatically when only fader + scotch are kept. */
   padding: 4px 4px 6px 4px;
   width: 70px;
 }
 body.mix-compact .strip.mix-master { width: 70px; }
 body.mix-compact .row-scotch { font-size: 8px; height: 18px; line-height: 12px; padding: 2px 4px; letter-spacing: 0.6px; }
+/* The Studio One coloured-header gradient was calibrated for the
+   full strip height. In compact mode the strip is much shorter so
+   the same gradient ends up monopolising half the column. Replace
+   the type-tinted background with a flat dark fill, keep just the
+   2 px border-top as the role indicator. */
+body.mix-compact .strip.mix-src,
+body.mix-compact .strip.mix-master,
+body.mix-compact .strip.mix-out {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+}
 /* Strip variants — colour-coded edge to disambiguate at a glance. */
 /* Strips are locked-width so any new row (FX bar, future inserts)
    can't push the column wider than the IN/OUT labels. Inside-row

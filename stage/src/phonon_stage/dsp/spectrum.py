@@ -45,16 +45,20 @@ CHANNELS = 2
 SAMPLE_DTYPE = "<i2"  # s16le
 SAMPLE_BYTES = 2 * CHANNELS  # 4 bytes per stereo frame
 
-# 8192 frames @ 48 kHz = ~170 ms window. FFT bin width = 48000/8192 ≈
-# 5.86 Hz — fine enough that low-frequency bands (16 / 20 / 25 Hz)
-# have 1-2 bins each to peak-pick from instead of falling back to
-# the single-nearest-bin path. Was 4096 (11.7 Hz) which gave a
-# coarse low-end readout.
+# Default 8192 frames @ 48 kHz = ~170 ms window. FFT bin width =
+# 48000/8192 ≈ 5.86 Hz — fine enough that low-frequency bands have
+# 1-2 bins each to peak-pick from. UI can request a larger window
+# (up to MAX_FFT_SIZE) via the `fft` query param for higher
+# frequency resolution at the cost of temporal smearing on fast
+# transients (Standard 8192 = snappy; High 16384 = sharper bins,
+# slower frame).
 FFT_SIZE = 8192
+MAX_FFT_SIZE = 16384
 
-# Ring buffer holds 2x the FFT window so the snapshot read is always
-# safe (the producer may be mid-write).
-RING_SIZE = FFT_SIZE * 2
+# Ring buffer always sized for the MAX window so a request can grow
+# beyond the default without re-allocating. The snapshot read just
+# takes the last N samples where N = the request's FFT size.
+RING_SIZE = MAX_FFT_SIZE * 2
 
 # After this many seconds without a get_spectrum_db request the
 # parec capture is torn down. Operator closes the EQ panel → CPU
@@ -119,19 +123,35 @@ class LiveSpectrum:
                 await self._stop_capture_locked(name)
 
     async def get_spectrum_db(
-        self, node_name: str, band_centers_hz: list[float]
+        self,
+        node_name: str,
+        band_centers_hz: list[float],
+        fft_size: int = FFT_SIZE,
     ) -> list[float]:
         """Return one dBFS value per requested band center. Spawns
         the parec capture for the node on first call.
 
+        `fft_size` lets the caller pick a Standard (8192) or High
+        (16384) accuracy mode. Clamped to MAX_FFT_SIZE which is what
+        the ring buffer can hold.
+
         Raises SpectrumUnavailable if numpy isn't installed.
         """
         try:
-            import numpy as np
+            import numpy as np  # noqa: F401  — surfaces the import error
         except ImportError as exc:
             raise SpectrumUnavailableError(
                 "numpy not installed — install it on this host for the spectrum overlay"
             ) from exc
+        # Clamp + snap to a power of 2 ≤ MAX so the FFT stays well-formed.
+        n = max(512, min(int(fft_size), MAX_FFT_SIZE))
+        # Round down to a power of two — np.fft.rfft handles any
+        # length but power-of-two is what most callers expect, and
+        # the snapshot logic below also assumes contiguous N samples.
+        # (e.g. asking for 10000 → uses 8192; asking for 16384 → uses
+        # 16384.)
+        power_of_two = 1 << (n.bit_length() - 1) if n > 0 else FFT_SIZE
+        n = power_of_two
 
         async with self._lock:
             capture = self._captures.get(node_name)
@@ -141,15 +161,11 @@ class LiveSpectrum:
                 await self._start_capture_locked(capture)
             capture.last_request_ts = time.monotonic()
 
-        # Take a snapshot of the most-recent FFT_SIZE frames. We
-        # don't need the lock for the read — bytearray slicing is
-        # atomic enough for our pacing (writer is at ~150 KB/s,
-        # reader at 20 Hz max).
-        if capture.samples_seen < FFT_SIZE:
-            # No usable data yet — return the floor so the UI shows
-            # silence instead of garbage.
+        # Take a snapshot of the most-recent `n` frames. The ring is
+        # always sized for MAX_FFT_SIZE * 2, so any n ≤ MAX is safe.
+        if capture.samples_seen < n:
             return [SPECTRUM_FLOOR_DB] * len(band_centers_hz)
-        snapshot = self._snapshot_window(capture)
+        snapshot = self._snapshot_window(capture, n)
         return self._fft_bands(snapshot, band_centers_hz)
 
     # ── Internals ──────────────────────────────────────────────────
@@ -241,20 +257,20 @@ class LiveSpectrum:
         except Exception:
             logger.warning("spectrum.reader_loop_failed", node=capture.node_name, exc_info=True)
 
-    def _snapshot_window(self, capture: _NodeCapture) -> bytes:
-        """Return the last FFT_SIZE frames as a contiguous bytes
+    def _snapshot_window(self, capture: _NodeCapture, n_frames: int) -> bytes:
+        """Return the last `n_frames` frames as a contiguous bytes
         object. Reads the ring in one or two slices depending on
-        wrap position."""
+        wrap position. n_frames must be ≤ RING_SIZE."""
         buf = capture.buffer
         write_pos = capture.write_pos
-        start = (write_pos - FFT_SIZE) % RING_SIZE
-        end_frame = start + FFT_SIZE
+        start = (write_pos - n_frames) % RING_SIZE
+        end_frame = start + n_frames
         if end_frame <= RING_SIZE:
             return bytes(buf[start * SAMPLE_BYTES : end_frame * SAMPLE_BYTES])
         first = RING_SIZE - start
         return (
             bytes(buf[start * SAMPLE_BYTES : RING_SIZE * SAMPLE_BYTES])
-            + bytes(buf[: (FFT_SIZE - first) * SAMPLE_BYTES])
+            + bytes(buf[: (n_frames - first) * SAMPLE_BYTES])
         )
 
     def _fft_bands(
@@ -263,8 +279,22 @@ class LiveSpectrum:
         band_centers_hz: list[float],
     ) -> list[float]:
         """Run FFT on the snapshot + return dBFS per requested band.
-        Bands are peak-picked across the ±1/6-octave window so the
-        readout matches what a 1/3-octave RTA would show."""
+
+        Each band is peak-picked across an **adaptive** window: half
+        the log-frequency spacing to its nearest neighbour. This makes
+        the windows tile without overlap. With overlap (the previous
+        fixed ±1/6-octave approach), a single sharp tone at 1 kHz
+        bled into the 10-15 neighbouring display points because they
+        all peak-picked the same FFT bin — peaks looked flat-topped
+        ("squared") instead of sharp. Adaptive windows fix that:
+        adjacent display points read independent bin ranges → spikes
+        render as actual spikes, à la Calf Analyzer.
+
+        Single-band callers (a 1/3-octave RTA pattern) get a fallback
+        of ±1/6 octave so they still see the historic behaviour.
+        """
+        import math
+
         import numpy as np  # local import keeps top-of-module clean
 
         samples = np.frombuffer(snapshot, dtype=np.int16).astype(np.float32)
@@ -282,14 +312,34 @@ class LiveSpectrum:
         mag = np.abs(spec) / (len(samples) / 2)
         freqs = np.fft.rfftfreq(len(samples), 1.0 / SAMPLE_RATE)
 
+        # Pre-compute the log2 of each band center so the adaptive
+        # window math is one subtract per neighbour. Centers ≤ 0 get
+        # a sentinel of -inf so they always emit FLOOR_DB.
+        log_centers = [math.log2(c) if c > 0 else float("-inf") for c in band_centers_hz]
+        n = len(band_centers_hz)
         results: list[float] = []
-        log2_sixth = 1.0 / 6.0
-        for center in band_centers_hz:
+        for i, center in enumerate(band_centers_hz):
             if center <= 0:
                 results.append(SPECTRUM_FLOOR_DB)
                 continue
-            lo = center * (2 ** -log2_sixth)
-            hi = center * (2 ** log2_sixth)
+            # Adaptive half-window in octaves: half the spacing to
+            # the nearest neighbour. With this, windows tile without
+            # overlap → adjacent display points read distinct bin
+            # ranges → sharp peaks instead of plateaus.
+            if n == 1:
+                half_oct = 1.0 / 6.0  # single-band RTA fallback
+            elif i == 0:
+                half_oct = (log_centers[1] - log_centers[0]) / 2
+            elif i == n - 1:
+                half_oct = (log_centers[-1] - log_centers[-2]) / 2
+            else:
+                # Average half-spacing to both neighbours so the
+                # window centres on the band even when log spacing
+                # isn't perfectly uniform.
+                half_oct = (log_centers[i + 1] - log_centers[i - 1]) / 4
+            half_oct = max(half_oct, 1e-4)  # clamp to avoid zero-width
+            lo = center * (2 ** -half_oct)
+            hi = center * (2 ** half_oct)
             mask = (freqs >= lo) & (freqs <= hi)
             if not mask.any():
                 # Sub-bin band (very low end) — fall back to the

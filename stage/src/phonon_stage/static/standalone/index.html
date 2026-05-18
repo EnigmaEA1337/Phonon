@@ -315,6 +315,33 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 
 .dsp-controls { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; align-items: stretch; }
 
+/* Analyzer accuracy segmented control — STD / HIGH toggle in the EQ
+   toolbar. Calf "Accuracy" preset equivalent. */
+.eq-accuracy-toggle .eq-accuracy-segctl {
+  display: flex; gap: 0; border: 1px solid #0a0e16;
+  border-radius: 3px; overflow: hidden;
+  background: linear-gradient(180deg, #1a2030, #131825);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.eq-accuracy-toggle .eq-accuracy-segctl button {
+  font-family: var(--font-m); font-size: 8px; font-weight: 700;
+  letter-spacing: 1px;
+  background: transparent; color: #6b7a90;
+  border: none; padding: 3px 8px; cursor: pointer;
+  border-right: 1px solid #0a0e16;
+}
+.eq-accuracy-toggle .eq-accuracy-segctl button:last-child {
+  border-right: none;
+}
+.eq-accuracy-toggle .eq-accuracy-segctl button.on {
+  background: linear-gradient(180deg, #5dd8e8, #2a8c9c);
+  color: #0a0e16;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.25);
+}
+.eq-accuracy-toggle .eq-accuracy-segctl button:hover:not(.on) {
+  color: #aab7cc; background: rgba(93,216,232,0.08);
+}
+
 /* ── Graphic EQ x32 — vertical slider strip ─────────────────────── */
 .eq-x32-panel { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
 .eq-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px;
@@ -2924,11 +2951,24 @@ function renderGraphEq32(outputId, schema, values, inSide, outSide) {
   // conf when False — clean cut, no level wobble.
   const globals = ['Input gain (G)', 'Output gain (G)', 'Equalizer mode', 'Filter slope'];
   const schemaByName = Object.fromEntries((schema.controls || []).map(c => [c.name, c]));
-  const toolbar = globals.map(name => {
+  const toolbarKnobs = globals.map(name => {
     const c = schemaByName[name];
     if (!c) return '';
     return renderDspControl(outputId, c, values[name]);
   }).join('');
+  // Analyzer accuracy toggle — Calf-style. Standard (8192 FFT) is
+  // snappy on transients; High (16384) gives finer low-end bins
+  // at the cost of temporal smearing. Persists across panel
+  // renders via eqSpectrumFftSize (module-global).
+  const accuracyHigh = eqSpectrumFftSize >= 16384;
+  const accuracyToggle = `<div class="dsp-control eq-accuracy-toggle">
+    <div class="dsp-ctl-name" title="Analyzer FFT window size">Analyzer</div>
+    <div class="eq-accuracy-segctl">
+      <button class="${accuracyHigh ? '' : 'on'}" onclick="eqSetAccuracy(8192)" title="8192 FFT — 170 ms window, snappy">STD</button>
+      <button class="${accuracyHigh ? 'on' : ''}" onclick="eqSetAccuracy(16384)" title="16384 FFT — 340 ms window, finer low-end">HIGH</button>
+    </div>
+  </div>`;
+  const toolbar = toolbarKnobs + accuracyToggle;
   // Compact band readout row — no faders, no slider tracks. Each
   // column is just freq label / numeric dB / ON-OFF toggle. The
   // actual gain editing happens on the response curve above by
@@ -3264,6 +3304,17 @@ const EQ_SPECTRUM_CEIL_DB = 0;
 // 10-octave audio range at ~19 points per octave — about half a
 // semitone resolution.
 const EQ_SPECTRUM_RESOLUTION = 192;
+// User-toggleable accuracy. 8192 (Standard) = ~170 ms window, snappy
+// on transients. 16384 (High) = ~340 ms window, finer bin width,
+// sharper low-end but visibly smears fast transients. Stored as a
+// global so the toggle persists across panel re-renders.
+let eqSpectrumFftSize = 8192;
+function eqSetAccuracy(fftSize) {
+  eqSpectrumFftSize = fftSize;
+  // Re-render the EQ panel to flip the toolbar toggle's visual state.
+  // The next eqSpectrumTick picks up the new size automatically.
+  renderDspPanel();
+}
 let _eqSpectrumFreqs = null;
 function eqSpectrumFreqs() {
   if (_eqSpectrumFreqs) return _eqSpectrumFreqs;
@@ -3316,7 +3367,9 @@ async function eqSpectrumTick() {
   const bandsParam = freqs.map(f => f.toFixed(2)).join(',');
   eqSpectrumState.inFlight = true;
   try {
-    const r = await fetch(API + '/dsp/spectrum?node=phonon_master.monitor&bands=' + bandsParam);
+    const r = await fetch(API + '/dsp/spectrum?node=phonon_master.monitor'
+      + '&bands=' + bandsParam
+      + '&fft=' + eqSpectrumFftSize);
     if (r.ok) {
       const body = await r.json();
       eqRenderSpectrumBars(body.bands || [], freqs);

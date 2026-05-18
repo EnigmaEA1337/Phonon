@@ -198,18 +198,27 @@ class SpectrumResponse(BaseModel):
 
 
 @router.get("/spectrum", response_model=SpectrumResponse)
-async def get_spectrum(request: Request, node: str, bands: str) -> SpectrumResponse:
-    """Sample the latest ~85 ms of audio from a PipeWire monitor node
-    and return one dBFS magnitude per requested band center frequency.
+async def get_spectrum(
+    request: Request, node: str, bands: str, fft: int = 8192
+) -> SpectrumResponse:
+    """Sample the latest audio frames from a PipeWire monitor node and
+    return one dBFS magnitude per requested band center frequency.
 
     Args:
       node:  PW node name to capture (e.g. `phonon_master.monitor`).
              First call spawns a persistent parec; idle nodes are
              reaped after 5 s without a request.
       bands: comma-separated band center frequencies in Hz, e.g.
-             "16,20,25,31.5,...,20000". Each one gets one dBFS
-             reading peak-picked across the ±1/6-octave window
-             around it (matches a 1/3-octave RTA).
+             "16,20,25,31.5,...,20000". Each band uses an adaptive
+             window (half the log-spacing to its nearest neighbour)
+             so adjacent points read distinct bin ranges → sharp
+             peaks. Single-band callers fall back to ±1/6-octave.
+      fft:   FFT window size in frames. Default 8192 ("Standard" —
+             ~170 ms window, 5.86 Hz bin width, snappy on transients).
+             Use 16384 for "High" accuracy (~340 ms window, 2.93 Hz
+             bins, sharper low-end at the cost of temporal smearing).
+             Clamped to MAX_FFT_SIZE and snapped to the nearest
+             power of two below.
 
     Returns 503 when numpy isn't installed (Pi hosts without
     ladspa-sdk by project policy don't get a spectrum overlay).
@@ -233,7 +242,7 @@ async def get_spectrum(request: Request, node: str, bands: str) -> SpectrumRespo
     if not centers:
         raise HTTPException(status_code=400, detail="bands is empty")
     try:
-        values = await svc.get_spectrum_db(node, centers)
+        values = await svc.get_spectrum_db(node, centers, fft_size=fft)
     except SpectrumUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except FileNotFoundError as exc:

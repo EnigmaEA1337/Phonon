@@ -525,16 +525,18 @@ async def reconcile(request: Request) -> dict[str, str]:
 
     Use case: PW restart, a `pactl unload-module` cascade, or any
     out-of-band edit nuked the live audio graph. The `Resync` button
-    in the Mix Console points here. Previously it patched master
-    gain_db hoping that would trigger reconcile, but the server's
-    PATCH /master fast-paths volume-only changes (no topology touch),
-    so the reconcile never ran — links stayed broken.
+    in the Mix Console points here.
 
-    Idempotent. Safe to call repeatedly; each run snaps the live PW
-    state to whatever the store says.
+    Calls full_resync() — same routine init() runs at boot — not the
+    bare _reconcile(). Plain _reconcile() assumes phonon_master still
+    exists and the daemon's _owned_loopbacks list is accurate. After
+    a PipeWire restart neither holds: the master null-sink can be
+    gone, and pactl modules left over from the previous daemon would
+    double up the audio when we re-load fresh ones. full_resync()
+    runs _ensure_master_null_sink + cleanup orphans first.
     """
     svc: MixerService = request.app.state.mixer_service
-    await svc._reconcile()
+    await svc.full_resync()
     return {"status": "reconciled"}
 
 

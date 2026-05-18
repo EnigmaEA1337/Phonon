@@ -155,6 +155,18 @@ class MixerService:
         output would receive the audio twice (once from old + once
         from new), producing audible doubles / comb filter."""
         self._store.load()
+        await self.full_resync()
+
+    async def full_resync(self) -> None:
+        """Full from-scratch sync: ensure phonon_master, sweep
+        orphan loopbacks + filter-chains, then reconcile.
+
+        Used by init() at boot, and by POST /mixer/admin/reconcile
+        when the operator presses Resync. The plain _reconcile()
+        alone isn't enough after a PipeWire restart: the master
+        null-sink may have disappeared with the pactl modules, and
+        loopbacks left over from the previous daemon would
+        otherwise double-up the audio when we load fresh ones."""
         await self._ensure_master_null_sink()
         await self._cleanup_orphan_loopbacks()
         await self._cleanup_orphan_chains()

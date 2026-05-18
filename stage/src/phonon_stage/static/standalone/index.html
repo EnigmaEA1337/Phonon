@@ -1024,14 +1024,70 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit;
   text-align: center; letter-spacing: inherit; text-transform: inherit; }
 
-/* ── Mix Console (3-column strip view) ───────────────── */
-.mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0; overflow-x: auto; }
-.mix-col { display: flex; flex-direction: column; gap: 8px; min-width: 120px; }
+/* ── Mix Console — one wide horizontal strip lane ────── */
+.mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0;
+  overflow-x: auto; overflow-y: visible;
+  /* Custom scrollbar — chrome rail with a darker thumb. */
+  scrollbar-color: #2a2d33 #0c1218;
+  scrollbar-width: thin;
+}
+.mix-console::-webkit-scrollbar { height: 10px; }
+.mix-console::-webkit-scrollbar-track {
+  background: #0c1218;
+  border-radius: 5px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.85);
+}
+.mix-console::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #4a4e54 0%, #2a2d33 50%, #1d2025 100%);
+  border-radius: 5px;
+  border: 1px solid #050708;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+}
+.mix-console::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #5a5e64 0%, #3a3d43 50%, #2a2d33 100%);
+}
+.mix-col { display: flex; flex-direction: column; gap: 8px; min-width: 120px; flex-shrink: 0; }
 .mix-col-master { padding: 0 12px; border-left: 1px dashed var(--border); border-right: 1px dashed var(--border); }
 .mix-col-head { font-family: var(--font-m); font-size: 10px; font-weight: 700;
   letter-spacing: 1px; padding: 4px 0; display: flex; align-items: center;
   height: 32px; box-sizing: border-box; }
-.mix-col-body { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Strips inside each group flow LEFT→RIGHT on a single row.
+   Previously flex-wrap forced new rows once the strips ran out of
+   horizontal space; now they push out and the .mix-console
+   scrollbar handles the overflow — one continuous lane. */
+.mix-col-body { display: flex; flex-direction: row; gap: 8px; flex-wrap: nowrap; }
+
+/* Full-width override: makes the wrapping section break out of the
+   1200 px container so the strip lane uses the entire viewport. */
+.section.full-width {
+  margin-left: calc(-50vw + 50%);
+  margin-right: calc(-50vw + 50%);
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+.section.full-width .section-body { padding-left: 16px; padding-right: 16px; }
+
+/* Compact mode — hide every strip row except the fader so the only
+   visible elements are the cap + VU + value readout. Activates on
+   the body via the toggle in the Mix Console section header. */
+body.mix-compact .strip > .row-action,
+body.mix-compact .strip > .row-io-in,
+body.mix-compact .strip > .row-route,
+body.mix-compact .strip > .row-extra1,
+body.mix-compact .strip > .row-extra2,
+body.mix-compact .strip > .row-fx,
+body.mix-compact .strip > .row-mrls,
+body.mix-compact .strip > .row-io-out { display: none; }
+/* Keep the scotch nameplate visible so the operator still knows
+   which strip is which when everything else is hidden. */
+body.mix-compact .strip {
+  /* Strip shrinks dramatically when only fader + scotch are kept. */
+  padding: 4px 4px 6px 4px;
+  width: 70px;
+}
+body.mix-compact .strip.mix-master { width: 70px; }
+body.mix-compact .row-scotch { font-size: 8px; height: 18px; line-height: 12px; padding: 2px 4px; letter-spacing: 0.6px; }
 /* Strip variants — colour-coded edge to disambiguate at a glance. */
 /* Strips are locked-width so any new row (FX bar, future inserts)
    can't push the column wider than the IN/OUT labels. Inside-row
@@ -1491,14 +1547,15 @@ body.mode-live .edit-only select { opacity: 0.4; }
     </div>
 
     <!-- Mix Console — strip-based router (Sources / Master / Outputs).
-         Replaces the legacy Patch Bay + per-mapping Mixer that used to
-         live here; the legacy /mappings system is still on the server
-         side but no UI surface points at it any more. -->
-    <div class="section">
+         Full-width so the strip lane uses the viewport width; compact
+         toggle hides every row except the fader so a long lane fits
+         on smaller screens. -->
+    <div class="section full-width">
       <div class="section-head" style="display:flex;align-items:center;gap:8px">
         Mix Console
         <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
         <span style="flex:1"></span>
+        <button class="btn" id="mix-compact-toggle" style="font-size:9px;padding:2px 8px" onclick="mixToggleCompact()" title="Show only the fader + VU per strip (hides FX, M/R/L/S, routing, etc.)">Compact</button>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px;background:rgba(248,113,113,0.10);border-color:var(--red);color:var(--red)"
                 onclick="mixerRestartAudioStack()"
@@ -5532,6 +5589,36 @@ function mixOutputUpdateDelay(id, raw) {
     await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ delay_ms: v }) });
   }, 200);
 }
+
+// Compact view — collapses every strip to fader + scotch only. Both
+// the body class (CSS rules use it) and the toggle button label are
+// kept in sync; the choice persists in localStorage so the operator
+// gets the same view next time the page loads.
+function mixToggleCompact() {
+  const on = !document.body.classList.contains('mix-compact');
+  document.body.classList.toggle('mix-compact', on);
+  const btn = document.getElementById('mix-compact-toggle');
+  if (btn) {
+    btn.textContent = on ? 'Full' : 'Compact';
+    btn.title = on
+      ? 'Show full strip controls (FX, M/R/L/S, routing, etc.)'
+      : 'Show only the fader + VU per strip (hides FX, M/R/L/S, routing, etc.)';
+  }
+  try { localStorage.setItem('mixCompact', on ? '1' : '0'); } catch (e) { /* private mode */ }
+}
+// Restore the preference on load.
+(function _initMixCompact() {
+  try {
+    if (localStorage.getItem('mixCompact') === '1') {
+      document.body.classList.add('mix-compact');
+      // Defer the button label tweak until the DOM is ready.
+      window.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('mix-compact-toggle');
+        if (btn) btn.textContent = 'Full';
+      });
+    }
+  } catch (e) { /* private mode */ }
+})();
 
 async function mixerResync() {
   // Force the full mixer reconcile: tear down + rebuild every link,

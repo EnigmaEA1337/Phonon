@@ -2327,8 +2327,24 @@ function _renderSpotifySettings(s) {
         ${bool('sp-disable_audio_cache', s.disable_audio_cache, 'Disable on-disk audio cache (recommended — caches grow unbounded)')}
       `)}
 
+      ${section('Volume normalisation', `
+        ${bool('sp-volume_normalisation', s.volume_normalisation, 'Apply per-track loudness normalisation (useful in mixed-genre playlists)')}
+        ${num('sp-normalisation_pregain', s.normalisation_pregain, 0.1, -10, 10, 'Pre-gain in dB applied after normalisation. Negative = trim hot masters, positive = recover headroom')}
+      `, false)}
+
       ${section('Discovery', `
+        ${bool('sp-discovery', s.discovery, 'Advertise this receiver on the LAN via mDNS (Spotify Connect picker)')}
         ${num('sp-zeroconf_port', s.zeroconf_port, 1, 0, 65535, 'mDNS responder TCP port (0 = kernel picks a free one)')}
+      `, false)}
+
+      ${section('Network & login', `
+        ${text('sp-proxy', s.proxy, 512, 'HTTP proxy URL for Spotify traffic (e.g. http://proxy:8080) — empty = no proxy')}
+        ${text('sp-username', s.username, 128, 'Spotify username for direct login — empty = zeroconf discovery only')}
+        ${text('sp-password', s.password, 128, 'Spotify password — only used if username is set. Stored unencrypted in spotifyd.conf')}
+      `, false)}
+
+      ${section('Hooks', `
+        ${text('sp-on_song_change_hook', s.on_song_change_hook, 512, 'Shell command run on every track change (gets PLAYER_EVENT, TRACK_ID, etc. via env)')}
       `, false)}
 
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
@@ -2352,7 +2368,14 @@ async function savePluginSettings(name) {
       initial_volume: parseInt(v('sp-initial_volume').value, 10),
       autoplay: v('sp-autoplay').checked,
       disable_audio_cache: v('sp-disable_audio_cache').checked,
+      volume_normalisation: v('sp-volume_normalisation').checked,
+      normalisation_pregain: parseFloat(v('sp-normalisation_pregain').value),
+      discovery: v('sp-discovery').checked,
       zeroconf_port: parseInt(v('sp-zeroconf_port').value, 10),
+      proxy: v('sp-proxy').value,
+      username: v('sp-username').value,
+      password: v('sp-password').value,
+      on_song_change_hook: v('sp-on_song_change_hook').value,
     };
   } else {
   body = {

@@ -1002,16 +1002,15 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   z-index: 1;
 }
 .fader-handle {
-  position: absolute; left: 50%; width: 20px; height: 28px;
+  position: absolute; left: 50%; width: 22px; height: 36px;
   transform: translate(-50%, -50%);
-  background: transparent;
+  background: url('fader-cap.png') center/100% 100% no-repeat;
   border: none;
-  border-radius: 2px;
-  filter: drop-shadow(1px 0 1px rgba(0,0,0,0.45)) drop-shadow(0 1px 1px rgba(0,0,0,0.5));
+  border-radius: 0;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.55));
   cursor: grab;
   z-index: 2;
 }
-.fader-handle svg { width: 100%; height: 100%; display: block; pointer-events: none; }
 .fader-handle::before { content: none; }
 .fader-handle:active { cursor: grabbing; }
 
@@ -4908,60 +4907,12 @@ function _mixFaderScaleHtml() {
 // the equator), bottom half darkens and ends in a soft shadow.
 // Inkscape-style construction: body gradient + edge rim + top
 // specular highlight + bottom ambient shadow.
-// Modern soft-chrome cap. 50×100 viewBox. Dark "lips" at top and
-// bottom (the moulded-end look), darker shading along both side
-// edges (rolled aluminium), broad diffuse central highlight, and a
-// thin horizontal read line at ~1/3 from the top.
-const _MIX_FADER_CAP_SVG = `
-<svg viewBox="0 0 50 100" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-  <defs>
-    <linearGradient id="capBody" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0"    stop-color="#3e4148"/>
-      <stop offset="0.10" stop-color="#7a7f88"/>
-      <stop offset="0.30" stop-color="#b5bac1"/>
-      <stop offset="0.55" stop-color="#dde0e5"/>
-      <stop offset="0.78" stop-color="#a4a9b1"/>
-      <stop offset="0.92" stop-color="#5a5d64"/>
-      <stop offset="1"    stop-color="#2c2f34"/>
-    </linearGradient>
-    <linearGradient id="capLips" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="rgba(15,16,20,0.85)"/>
-      <stop offset="0.08" stop-color="rgba(40,42,48,0.45)"/>
-      <stop offset="0.15" stop-color="rgba(0,0,0,0)"/>
-      <stop offset="0.85" stop-color="rgba(0,0,0,0)"/>
-      <stop offset="0.92" stop-color="rgba(40,42,48,0.45)"/>
-      <stop offset="1"    stop-color="rgba(15,16,20,0.85)"/>
-    </linearGradient>
-    <radialGradient id="capHL" cx="0.5" cy="0.55" r="0.55">
-      <stop offset="0"   stop-color="rgba(255,255,255,0.42)"/>
-      <stop offset="0.55" stop-color="rgba(255,255,255,0.12)"/>
-      <stop offset="1"   stop-color="rgba(255,255,255,0)"/>
-    </radialGradient>
-  </defs>
-
-  <!-- Body with side-edge shading -->
-  <rect x="0" y="0" width="50" height="100" rx="6" ry="6" fill="url(#capBody)"/>
-
-  <!-- Dark lips at top + bottom + side-edge falloff (overlay) -->
-  <rect x="0" y="0" width="50" height="100" rx="6" ry="6" fill="url(#capLips)"/>
-
-  <!-- Diffuse central highlight -->
-  <ellipse cx="25" cy="55" rx="17" ry="38" fill="url(#capHL)"/>
-
-  <!-- Read line — thin dark horizontal at ~1/3 from the top -->
-  <rect x="3" y="32" width="44" height="2.4" fill="rgba(15,16,20,0.82)"/>
-  <line x1="3" y1="34.5" x2="47" y2="34.5" stroke="rgba(255,255,255,0.18)" stroke-width="0.35"/>
-
-  <!-- Outer rim — crisp dark edge -->
-  <rect x="0.5" y="0.5" width="49" height="99" rx="6" ry="6"
-        fill="none" stroke="rgba(0,0,0,0.80)" stroke-width="0.7"/>
-</svg>`.trim();
-
 function faderCol(kind, id, gainDb) {
   const y = faderDbToY(gainDb);
   // The mixer fader binds the FULL range (-90 → +12 dB) — use the
   // knee curve unchanged. The legacy clamp at [-12, 0] was a v1
-  // compromise; gone now.
+  // compromise; gone now. Cap visual is the fader-cap.png asset
+  // applied as background-image in .fader-handle.
   const dataAttr = `data-mix-fader-kind="${kind}" data-mix-fader-id="${id}"`;
   return `<div class="fader-col" ${dataAttr}
     onmousedown="mixFaderMouseDown(event, '${kind}', '${id}', this)"
@@ -4972,7 +4923,7 @@ function faderCol(kind, id, gainDb) {
     <div class="fader-rail"></div>
     <div class="fader-scale">${_mixFaderScaleHtml()}</div>
     <div class="fader-fill" style="height:${100 - y}%"></div>
-    <div class="fader-handle" style="top:${y}%">${_MIX_FADER_CAP_SVG}</div>
+    <div class="fader-handle" style="top:${y}%"></div>
     <div class="fader-db" ${dataAttr}>${gainDb.toFixed(1)} dB</div>
   </div>`;
 }

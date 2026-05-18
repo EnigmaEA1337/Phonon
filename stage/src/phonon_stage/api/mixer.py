@@ -540,6 +540,132 @@ async def reconcile(request: Request) -> dict[str, str]:
     return {"status": "reconciled"}
 
 
+# ── Sessions (save / list / load named snapshots) ────────────────
+
+
+class SessionSaveFull(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    comment: str = Field(default="", max_length=256)
+
+
+class SessionSaveFx(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: str = Field(min_length=1, max_length=128)
+    comment: str = Field(default="", max_length=256)
+
+
+class SessionMetaResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    timestamp: str
+    comment: str
+    scope: str
+    target: str | None = None
+
+
+class SessionFullResponse(SessionMetaResponse):
+    model_config = ConfigDict(extra="forbid")
+    payload: object  # dict for "full", list for "fx-only"
+
+
+def _to_session_meta_response(m: object) -> SessionMetaResponse:
+    return SessionMetaResponse(
+        id=getattr(m, "id"),
+        timestamp=getattr(m, "timestamp"),
+        comment=getattr(m, "comment"),
+        scope=getattr(m, "scope"),
+        target=getattr(m, "target", None),
+    )
+
+
+@router.get("/sessions", response_model=list[SessionMetaResponse])
+async def list_sessions(request: Request) -> list[SessionMetaResponse]:
+    """List every saved session, newest first. Returns header info
+    only (no payload) — the UI fetches the payload separately when
+    the operator clicks Load."""
+    svc = _service(request)
+    return [_to_session_meta_response(m) for m in svc.list_sessions()]
+
+
+@router.post(
+    "/sessions/full", response_model=SessionMetaResponse, status_code=201
+)
+async def save_session_full(
+    request: Request, body: SessionSaveFull
+) -> SessionMetaResponse:
+    """Snapshot the entire current state (sources + master + outputs +
+    every FX chain). The id is a UTC timestamp, the comment is free
+    text shown in the list view."""
+    svc = _service(request)
+    try:
+        session = svc.save_session_full(body.comment)
+    except MixerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_session_meta_response(session.meta)
+
+
+@router.post(
+    "/sessions/fx", response_model=SessionMetaResponse, status_code=201
+)
+async def save_session_fx(
+    request: Request, body: SessionSaveFx
+) -> SessionMetaResponse:
+    """Snapshot just the FX chain on one target. `target` is "master"
+    or "output:<id>". Use case: "j'aime ce que je viens de monter
+    sur le master, je veux pouvoir y revenir sans rappeler le mix
+    complet."""
+    svc = _service(request)
+    try:
+        session = svc.save_session_fx(body.target, body.comment)
+    except MixerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_session_meta_response(session.meta)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionFullResponse)
+async def get_session(request: Request, session_id: str) -> SessionFullResponse:
+    """Return the full session record — header + payload."""
+    svc = _service(request)
+    try:
+        session = svc.get_session(session_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionFullResponse(
+        id=session.meta.id,
+        timestamp=session.meta.timestamp,
+        comment=session.meta.comment,
+        scope=session.meta.scope,
+        target=session.meta.target,
+        payload=session.payload,
+    )
+
+
+@router.post("/sessions/{session_id}/load", response_model=SessionMetaResponse)
+async def load_session(request: Request, session_id: str) -> SessionMetaResponse:
+    """Apply a saved session. Full sessions replace the entire state;
+    fx-only sessions replace only the targeted chain. Either path
+    triggers a full_resync afterwards so PipeWire follows."""
+    svc = _service(request)
+    try:
+        session = await svc.load_session(session_id)
+    except MixerError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 400
+        raise HTTPException(status_code=status, detail=msg) from exc
+    return _to_session_meta_response(session.meta)
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(request: Request, session_id: str) -> None:
+    svc = _service(request)
+    try:
+        svc.delete_session(session_id)
+    except MixerError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 400
+        raise HTTPException(status_code=status, detail=msg) from exc
+
+
 @router.post("/admin/cleanup-orphan-chain")
 async def cleanup_orphan_chain(request: Request, filename: str) -> dict[str, object]:
     """Operator escape hatch: delete any file in the filter-chain

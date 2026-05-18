@@ -42,6 +42,7 @@ from phonon_stage.logging import configure_logging
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
 from phonon_stage.mixer.service import MixerService
+from phonon_stage.mixer.sessions import SessionStore
 from phonon_stage.mixer.store import MixerStore
 from phonon_stage.pipewire.real import RealPipeWireBackend
 from phonon_stage.plugins.registry import PluginRegistry
@@ -118,6 +119,9 @@ def create_app(
     # Mix console state lives next to mappings/plugins state — same
     # data dir, single backup tree.
     mixer_store = MixerStore(cfg.standalone_conf_path.parent / "mixer.conf.json")
+    # Sessions store: named snapshots of mixer state (full or fx-only).
+    # One JSON per session under <data-dir>/sessions/.
+    session_store = SessionStore(cfg.standalone_conf_path.parent / "sessions")
     # LADSPA plugin introspector — wired only on hosts that can run
     # filter-chain LSP plugins (x86_64 + analyseplugin installed).
     # Pis stay with introspector=None, which makes set_output_insert
@@ -125,7 +129,10 @@ def create_app(
     intr: LadspaIntrospector | None = ladspa_introspector
     if intr is None and _plugins_supported_on_host():
         intr = RealLadspaIntrospector()
-    mixer_service = MixerService(pw_backend=pw, store=mixer_store, introspector=intr)
+    mixer_service = MixerService(
+        pw_backend=pw, store=mixer_store, introspector=intr,
+        session_store=session_store,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

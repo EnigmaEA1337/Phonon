@@ -56,6 +56,7 @@ from phonon_stage.mixer.models import (
 
 if TYPE_CHECKING:
     from phonon_stage.dsp.ladspa import LadspaIntrospector
+    from phonon_stage.mixer.sessions import Session, SessionMeta, SessionStore
     from phonon_stage.mixer.store import MixerStore
     from phonon_stage.pipewire.backend import PipeWireBackend, PwNode, PwPort
 
@@ -94,10 +95,12 @@ class MixerService:
         pw_backend: PipeWireBackend,
         store: MixerStore,
         introspector: LadspaIntrospector | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self._pw = pw_backend
         self._store = store
         self._introspector = introspector
+        self._sessions = session_store
         # PW objects we own. Tracked so reconcile() can tear them down.
         self._owned_loopbacks: list[int] = []
         self._owned_links: list[int] = []
@@ -1134,6 +1137,96 @@ class MixerService:
         new_sources = [s for s in self._store.state.sources if s.id != source_id]
         self._store.replace_state(replace(self._store.state, sources=new_sources))
         await self._reconcile()
+
+    # ── Sessions (snapshot / restore) ───────────────────────────
+
+    def _require_sessions(self) -> SessionStore:
+        if self._sessions is None:
+            msg = "session store not configured on this MixerService"
+            raise MixerError(msg)
+        return self._sessions
+
+    def list_sessions(self) -> list[SessionMeta]:
+        return self._require_sessions().list()
+
+    def get_session(self, session_id: str) -> Session:
+        try:
+            return self._require_sessions().get(session_id)
+        except Exception as exc:
+            raise MixerError(str(exc)) from exc
+
+    def save_session_full(self, comment: str = "") -> Session:
+        """Snapshot the entire MixerState (sources + master + outputs
+        + every FX chain) as a new session. Returns the freshly
+        created Session record."""
+        store = self._require_sessions()
+        return store.save_full(self._store.state.to_dict(), comment)
+
+    def save_session_fx(self, target: str, comment: str = "") -> Session:
+        """Snapshot just the inserts on a single chain target.
+        `target` = "master" or "output:<id>". Anything else raises."""
+        store = self._require_sessions()
+        inserts = self._resolve_target_inserts(target)
+        body = [i.to_dict() for i in inserts]
+        return store.save_fx(target, body, comment)
+
+    async def load_session(self, session_id: str) -> Session:
+        """Apply a saved session. Full sessions overwrite the entire
+        state; fx-only sessions overwrite only the targeted chain.
+        Either path ends in a full_resync so PipeWire follows."""
+        session = self.get_session(session_id)
+        if session.meta.scope == "full":
+            self._apply_full_session(session.payload or {})
+        elif session.meta.scope == "fx-only":
+            target = session.meta.target or ""
+            self._apply_fx_session(target, session.payload or [])
+        else:
+            msg = f"unknown session scope: {session.meta.scope!r}"
+            raise MixerError(msg)
+        await self.full_resync()
+        return session
+
+    def delete_session(self, session_id: str) -> None:
+        try:
+            self._require_sessions().delete(session_id)
+        except Exception as exc:
+            raise MixerError(str(exc)) from exc
+
+    def _resolve_target_inserts(self, target: str) -> tuple[PluginInsert, ...]:
+        if target == "master":
+            return tuple(self._store.state.master.inserts)
+        if target.startswith("output:"):
+            output_id = target[len("output:") :]
+            return tuple(self._output(output_id).inserts)
+        msg = f"unknown session target: {target!r}"
+        raise MixerError(msg)
+
+    def _apply_full_session(self, payload: dict[str, object]) -> None:
+        try:
+            new_state = MixerState.from_dict(payload)
+        except Exception as exc:
+            msg = f"session payload could not be parsed: {exc}"
+            raise MixerError(msg) from exc
+        self._store.replace_state(new_state)
+
+    def _apply_fx_session(self, target: str, payload: list[dict[str, object]]) -> None:
+        new_inserts = tuple(PluginInsert.from_dict(p) for p in payload)
+        state = self._store.state
+        if target == "master":
+            new_master = replace(state.master, inserts=new_inserts)
+            self._store.replace_state(replace(state, master=new_master))
+            return
+        if target.startswith("output:"):
+            output_id = target[len("output:") :]
+            cur = self._output(output_id)
+            new_output = replace(cur, inserts=new_inserts)
+            new_outputs = [
+                new_output if o.id == output_id else o for o in state.outputs
+            ]
+            self._store.replace_state(replace(state, outputs=new_outputs))
+            return
+        msg = f"unknown session target: {target!r}"
+        raise MixerError(msg)
 
     # ── Reconciliation ──────────────────────────────────────────
 

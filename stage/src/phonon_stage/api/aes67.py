@@ -340,6 +340,13 @@ async def sync_bt_state(reason: str) -> dict[str, int]:
     return summary
 
 
+# Replay is sequential — two parallel replay paths (the manual UI
+# button and the _system_loop's auto-detect of fresh PIDs) would race
+# on _active_bridges, on the mixer's _owned_* tracking, and on the
+# pw_dump cache. See audit BUG #9.
+_replay_lock = asyncio.Lock()
+
+
 async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
     """Re-apply our app-level audio state after PipeWire/WirePlumber/
     pipewire-pulse have just been restarted.
@@ -358,8 +365,17 @@ async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
       3. Re-attach persisted user mappings to the freshly-numbered
          PipeWire nodes (3 retries — pacat sinks take time to appear).
 
-    Returns a small summary dict for logging/UI feedback.
+    Returns a small summary dict for logging/UI feedback. Calls
+    concurrent with a replay-in-flight are coalesced — the second
+    caller gets the same summary the first run produced.
     """
+    if _replay_lock.locked():
+        logger.info("audio_replay.concurrent_call_queued", reason=reason)
+    async with _replay_lock:
+        return await _replay_audio_state_impl(reason)
+
+
+async def _replay_audio_state_impl(reason: str) -> dict[str, int]:
     summary: dict[str, int] = {"bridges": 0, "mappings_total": 0, "mappings_ok": 0}
 
     # 1+2 — bluealsa bridges
@@ -454,13 +470,24 @@ async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
     # restart. Symptom we caught: VU on the filter-chain output kept
     # working (filter-chain conf reloaded on its own), but the loopback
     # output (insert-less) was silent until a manual /mixer/admin/reconcile.
+    #
+    # We call full_resync() not _reconcile() because the pipewire-pulse
+    # restart wiped the modules pactl-side; _owned_loopbacks /
+    # _owned_links / _owned_chains in memory now reference dead module
+    # ids. Clearing them first prevents the next reconcile from trying
+    # to unload phantom modules (no harm, just noise) AND prevents
+    # _apply_filter_chain_diff from seeing a stale "wanted == owned"
+    # match and skipping the diff that would actually rewrite the confs
+    # — see audit BUG #3.
     try:
         from phonon_stage.main import app as _app
 
         svc = getattr(_app.state, "mixer_service", None)
         if svc is not None:
-            await svc._ensure_master_null_sink()
-            await svc._reconcile()
+            svc._owned_loopbacks.clear()
+            svc._owned_links.clear()
+            svc._owned_chains.clear()
+            await svc.full_resync()
             logger.info("audio_replay.mixer_reconciled", reason=reason)
             summary["mixer_reconciled"] = 1
     except Exception:

@@ -1057,45 +1057,6 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    scrollbar handles the overflow — one continuous lane. */
 .mix-col-body { display: flex; flex-direction: row; gap: 8px; flex-wrap: nowrap; }
 
-/* Full-width override: makes the wrapping section break out of the
-   1200 px container so the strip lane uses the entire viewport. */
-.section.full-width {
-  margin-left: calc(-50vw + 50%);
-  margin-right: calc(-50vw + 50%);
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-}
-.section.full-width .section-body { padding-left: 16px; padding-right: 16px; }
-
-/* Compact mode — hide every strip row except the fader (and the
-   scotch nameplate so the operator still knows which strip is which).
-   !important is required because row-action carries an inline
-   display:flex style that would otherwise win on specificity. */
-body.mix-compact .strip > .row-action,
-body.mix-compact .strip > .row-io-in,
-body.mix-compact .strip > .row-route,
-body.mix-compact .strip > .row-extra1,
-body.mix-compact .strip > .row-extra2,
-body.mix-compact .strip > .row-fx,
-body.mix-compact .strip > .row-mrls,
-body.mix-compact .strip > .row-io-out { display: none !important; }
-body.mix-compact .strip {
-  padding: 4px 4px 6px 4px;
-  width: 70px;
-}
-body.mix-compact .strip.mix-master { width: 70px; }
-body.mix-compact .row-scotch { font-size: 8px; height: 18px; line-height: 12px; padding: 2px 4px; letter-spacing: 0.6px; }
-/* The Studio One coloured-header gradient was calibrated for the
-   full strip height. In compact mode the strip is much shorter so
-   the same gradient ends up monopolising half the column. Replace
-   the type-tinted background with a flat dark fill, keep just the
-   2 px border-top as the role indicator. */
-body.mix-compact .strip.mix-src,
-body.mix-compact .strip.mix-master,
-body.mix-compact .strip.mix-out {
-  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
-}
 /* Strip variants — colour-coded edge to disambiguate at a glance. */
 /* Strips are locked-width so any new row (FX bar, future inserts)
    can't push the column wider than the IN/OUT labels. Inside-row
@@ -1562,7 +1523,6 @@ body.mode-live .edit-only select { opacity: 0.4; }
         Mix Console
         <span style="font-weight:400;color:var(--text-dim);font-size:10px">Sources → Master → Outputs (delay/phasing per-output, set once)</span>
         <span style="flex:1"></span>
-        <button class="btn" id="mix-compact-toggle" style="font-size:9px;padding:2px 8px" onclick="mixToggleCompact()" title="Show only the fader + VU per strip (hides FX, M/R/L/S, routing, etc.)">Compact</button>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px" onclick="mixerResync()" title="Re-apply persisted state to PipeWire (use after a PW restart)">Resync</button>
         <button class="btn edit-only" style="font-size:9px;padding:2px 8px;background:rgba(248,113,113,0.10);border-color:var(--red);color:var(--red)"
                 onclick="mixerRestartAudioStack()"
@@ -5596,36 +5556,6 @@ function mixOutputUpdateDelay(id, raw) {
     await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ delay_ms: v }) });
   }, 200);
 }
-
-// Compact view — collapses every strip to fader + scotch only. Both
-// the body class (CSS rules use it) and the toggle button label are
-// kept in sync; the choice persists in localStorage so the operator
-// gets the same view next time the page loads.
-function mixToggleCompact() {
-  const on = !document.body.classList.contains('mix-compact');
-  document.body.classList.toggle('mix-compact', on);
-  const btn = document.getElementById('mix-compact-toggle');
-  if (btn) {
-    btn.textContent = on ? 'Full' : 'Compact';
-    btn.title = on
-      ? 'Show full strip controls (FX, M/R/L/S, routing, etc.)'
-      : 'Show only the fader + VU per strip (hides FX, M/R/L/S, routing, etc.)';
-  }
-  try { localStorage.setItem('mixCompact', on ? '1' : '0'); } catch (e) { /* private mode */ }
-}
-// Restore the preference on load.
-(function _initMixCompact() {
-  try {
-    if (localStorage.getItem('mixCompact') === '1') {
-      document.body.classList.add('mix-compact');
-      // Defer the button label tweak until the DOM is ready.
-      window.addEventListener('DOMContentLoaded', () => {
-        const btn = document.getElementById('mix-compact-toggle');
-        if (btn) btn.textContent = 'Full';
-      });
-    }
-  } catch (e) { /* private mode */ }
-})();
 
 async function mixerResync() {
   // Force the full mixer reconcile: tear down + rebuild every link,

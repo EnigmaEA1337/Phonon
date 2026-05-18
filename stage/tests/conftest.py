@@ -24,9 +24,15 @@ from phonon_stage.dsp.ladspa import (
 from phonon_stage.main import create_app
 from phonon_stage.mappings.service import MappingService
 from phonon_stage.mappings.store import MappingStore
+from phonon_stage.mixer.service import MixerService
 from phonon_stage.pipewire.backend import PwNode, PwPort
 from phonon_stage.pipewire.fake import FakePipeWireBackend
 from phonon_stage.plugins.system import FakeSystemBackend
+
+# Tests don't need to wait for the filter-chain.service cascade to
+# settle — the FakePipeWireBackend's reload_filter_chain is a no-op
+# and there's no real pipewire-pulse to re-stabilise.
+MixerService.POST_CHAIN_DIFF_SLEEP_S = 0.0
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

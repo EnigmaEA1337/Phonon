@@ -90,6 +90,12 @@ class MixerError(Exception):
 
 
 class MixerService:
+    # How long to wait after applying a filter-chain diff before
+    # poking PipeWire again. The diff cascades into a pipewire-pulse
+    # re-init that takes ~500-1500 ms to settle on this stage. Tests
+    # override to 0 — the FakePipeWireBackend doesn't cascade.
+    POST_CHAIN_DIFF_SLEEP_S: float = 1.5
+
     def __init__(
         self,
         pw_backend: PipeWireBackend,
@@ -1232,8 +1238,17 @@ class MixerService:
 
     async def _reconcile(self) -> None:
         """Tear down every PW object we own and rebuild from the
-        current MixerState. The master null-sink is never destroyed
-        here — it's created once at init and persists."""
+        current MixerState.
+
+        Order matters: the filter-chain diff has to fire BEFORE we
+        create loopbacks and source→master links. Reloading
+        filter-chain.service on this stage cascades into a
+        pipewire-pulse re-init that wipes every pactl-loaded module
+        (phonon_master null-sink, source plugin null-sinks, every
+        loopback). Doing the diff afterwards would mean we'd just
+        created loopbacks that the cascade then deletes — leaving
+        the live graph silent until the next user action.
+        """
         # 1. Tear down what we created on the previous reconcile.
         for owned_mid in self._owned_loopbacks:
             with contextlib.suppress(Exception):
@@ -1244,7 +1259,66 @@ class MixerService:
         self._owned_loopbacks.clear()
         self._owned_links.clear()
 
-        # 2. Lookups we'll need throughout the rebuild.
+        # 2. Compute the wanted filter-chain set BEFORE we touch
+        #    anything else. We need it to decide whether step 4 will
+        #    cascade (and therefore whether we have to re-list nodes
+        #    afterwards before creating loopbacks/links).
+        master = self._store.state.master
+        master_src = _effective_master_source(master)
+        wanted_chains: dict[str, str] = {}
+        if master.inserts:
+            wanted_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+                master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
+            )
+        for o in self._store.state.outputs:
+            if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
+                wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
+                    o, o.inserts, master_src
+                )
+
+        # 3. Apply the chain diff EARLY. The cascade (when it fires)
+        #    nukes phonon_master, all loopbacks, and any source-plugin
+        #    null-sink that lives as a pactl module — so anything we
+        #    rebuild has to wait until after this step.
+        chain_diff_fired = wanted_chains != self._owned_chains
+        if chain_diff_fired:
+            await self._apply_filter_chain_diff(wanted_chains)
+            self._owned_chains = wanted_chains
+            # Cascade just wiped pactl-side state — clear our in-memory
+            # tracking so we don't try to unload phantom module ids on
+            # the next reconcile.
+            self._owned_loopbacks.clear()
+            self._owned_links.clear()
+            # Give pipewire-pulse a moment to re-stabilise after the
+            # cascade. filter-chain.service restart triggers a re-init
+            # that takes ~500-1500 ms on this stage; jumping ahead to
+            # load_loopback while pipewire-pulse is still spinning up
+            # results in "No such entity" errors. Tests override
+            # POST_CHAIN_DIFF_SLEEP_S to 0 because the FakePipeWireBackend
+            # doesn't cascade.
+            if self.POST_CHAIN_DIFF_SLEEP_S > 0:
+                await asyncio.sleep(self.POST_CHAIN_DIFF_SLEEP_S)
+
+        # 4. Now the world is settled: ensure phonon_master exists
+        #    (cascade may have killed it) and grab fresh node/port
+        #    lists. The cache was invalidated by reload_filter_chain
+        #    in Fix 1, so list_nodes() actually re-runs pw-dump here.
+        try:
+            await self._ensure_master_null_sink()
+        except Exception:
+            logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
+            return
+        if master.inserts:
+            try:
+                await self._ensure_master_post_null_sink()
+            except Exception:
+                logger.warning("mixer.master_post_ensure_failed", exc_info=True)
+        else:
+            try:
+                await self._unload_master_post_null_sink()
+            except Exception:
+                logger.info("mixer.master_post_unload_skipped", exc_info=False)
+
         try:
             nodes = await self._pw.list_nodes()
             ports = await self._pw.list_ports()
@@ -1253,43 +1327,25 @@ class MixerService:
             return
         master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
         if master_node is None:
-            # Master null-sink got destroyed somehow (PW restart,
-            # filter-chain.service reload that cascaded into pactl,
-            # operator unloaded the module by accident...). Recreate
-            # it inline rather than bail — self-healing is cheaper
-            # than waiting for the next daemon restart.
-            #
-            # On Pi (slower CPU, USB-shared Ethernet bus) pactl
-            # load-module returns before pw-dump reflects the new
-            # node. Poll a few times before giving up — a 50ms
-            # backoff up to 1s catches every case we've seen in
-            # practice.
-            logger.warning("mixer.reconcile_master_missing_recreating")
-            try:
-                await self._ensure_master_null_sink()
-            except Exception:
-                logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
-                return
-            import asyncio as _asyncio
-
-            for attempt in range(20):  # 20 x 50ms = 1s budget
+            # Poll a few times in case load_module returned before
+            # pw-dump caught up (slow CPU / Pi USB-shared Ethernet).
+            for attempt in range(20):
+                await asyncio.sleep(0.1)
                 try:
                     nodes = await self._pw.list_nodes()
                     ports = await self._pw.list_ports()
                 except Exception:
-                    logger.warning("mixer.reconcile_master_recreate_listfailed", exc_info=True)
-                    return
+                    continue
                 master_node = next((n for n in nodes if n.name == MASTER_SINK_NAME), None)
                 if master_node is not None:
                     if attempt > 0:
                         logger.info("mixer.reconcile_master_visible", attempts=attempt + 1)
                     break
-                await _asyncio.sleep(0.05)
             if master_node is None:
                 logger.warning("mixer.reconcile_skip_no_master", attempted=20)
                 return
 
-        # 3. Determine solo state up front. A "solo group" is any
+        # 5. Determine solo state up front. A "solo group" is any
         #    set of strips with solo=True and mute=False — muting a
         #    solo'd strip cancels its solo intent (intuitive: the
         #    operator doesn't want silence everywhere just because
@@ -1299,7 +1355,7 @@ class MixerService:
         src_solo_active = any(s.solo and not s.mute for s in self._store.state.sources)
         out_solo_active = any(o.solo and not o.mute for o in self._store.state.outputs)
 
-        # 4. Master volume (per-channel for L/R mutes) + global mute.
+        # 6. Master volume (per-channel for L/R mutes) + global mute.
         master_lin = self._db_to_linear(self.master.gain_db)
         try:
             await self._pw.set_node_channel_volumes(
@@ -1313,7 +1369,7 @@ class MixerService:
         except Exception:
             logger.warning("mixer.master_apply_failed", exc_info=True)
 
-        # 5. For each output: per-channel volume on the sink, then the
+        # 7. For each output: per-channel volume on the sink, then the
         #    master→output bridge. The bridge is either a plain pactl
         #    module-loopback (legacy path, latency_msec carries delay
         #    but can't be retuned live) OR a PipeWire filter-chain
@@ -1322,31 +1378,6 @@ class MixerService:
         #    chain owns its own buffering; output.delay_ms is ignored
         #    while a chain is in place, the user manages delay via
         #    the plugin's controls instead.
-        wanted_chains: dict[str, str] = {}
-        # Master chain: if master.inserts non-empty, ensure the
-        # phonon_master_post null-sink exists and render the master
-        # filter-chain conf. When master.inserts becomes empty again
-        # we tear down both. Outputs below pick up the right source
-        # via _effective_master_source().
-        master = self._store.state.master
-        if master.inserts:
-            try:
-                await self._ensure_master_post_null_sink()
-            except Exception:
-                logger.warning("mixer.master_post_ensure_failed", exc_info=True)
-            wanted_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
-                master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
-            )
-        else:
-            # Master chain disabled — drop the post sink if it's still
-            # around. _apply_filter_chain_diff later notices the chain
-            # left wanted_chains and removes the conf.
-            try:
-                await self._unload_master_post_null_sink()
-            except Exception:
-                logger.info("mixer.master_post_unload_skipped", exc_info=False)
-        master_src = _effective_master_source(master)
-
         for o in self._store.state.outputs:
             sink_node = next((n for n in nodes if n.name == o.sink_node_name), None)
             if sink_node is None:
@@ -1387,9 +1418,9 @@ class MixerService:
             except Exception:
                 logger.warning("mixer.output_mute_failed", output_id=o.id, exc_info=True)
             if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
-                wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.inserts, master_src
-                )
+                # Chain already wired by filter-chain (step 3) — no
+                # loopback needed, the plugin's input/output streams
+                # do the routing.
                 continue
             if silenced:
                 continue
@@ -1401,14 +1432,6 @@ class MixerService:
                 )
                 if mid is not None:
                     self._owned_loopbacks.append(mid)
-
-        # 5b. Apply the chain diff. Reload filter-chain.service only
-        # if the wanted set differs from what we wrote last reconcile
-        # — keeps reconcile cheap for the common case of fader moves
-        # on chain-less outputs.
-        if wanted_chains != self._owned_chains:
-            await self._apply_filter_chain_diff(wanted_chains)
-            self._owned_chains = wanted_chains
 
         # 6. For each source: per-channel volume + outbound links.
         for s in self._store.state.sources:

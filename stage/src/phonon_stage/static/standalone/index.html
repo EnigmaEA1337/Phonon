@@ -1085,27 +1085,26 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .fader-handle::before { content: none; }
 .fader-handle:active { cursor: grabbing; }
 
-/* dB graduation pinned to the LEFT of the rail. Now sits entirely
-   in the column's left half (cap is 14 px from center, scale ends
-   at 8 px from center → 6 px of clearance). */
+/* dB graduation pinned to the RIGHT of the rail — ticks start at the
+   rail edge and grow outward, labels sit to the right of the ticks. */
 .fader-scale {
   position: absolute; left: 50%; top: 6px; bottom: 6px;
-  width: 20px; margin-left: -28px;
+  width: 22px; margin-left: 8px;
   pointer-events: none;
   font-family: var(--font-m); font-size: 7.5px;
   color: rgba(210,220,230,0.85);
   letter-spacing: -0.3px;
 }
 .fader-scale .tick {
-  position: absolute; right: 0; width: 3px;
+  position: absolute; left: 0; width: 3px;
   height: 1px; background: rgba(190,200,210,0.45);
 }
 .fader-scale .tick.major { background: rgba(230,235,240,0.85); width: 5px; }
 .fader-scale .tick-label {
-  position: absolute; right: 7px;
+  position: absolute; left: 7px;
   transform: translateY(-50%);
   white-space: nowrap;
-  text-align: right;
+  text-align: left;
 }
 .fader-ticks { position: absolute; right: -18px; top: 4px; bottom: 4px; display: flex;
   flex-direction: column; justify-content: space-between; font-family: var(--font-m); font-size: 6px; color: var(--text-fade); }
@@ -4970,20 +4969,28 @@ function mixScotchEdit(el, kind, id) {
 const MIX_FADER_DB_MIN = -90;
 const MIX_FADER_DB_MAX = 12;
 
-// Studer-style dB ladder rendered to the right of each fader rail.
-// Major ticks are labelled, minor ticks are just lines. Positions are
-// computed against the same knee curve that faderDbToY uses so the
-// numbers track the actual cap position, not a linear estimate.
+// dB ladder rendered to the right of each fader rail. Densified so a
+// label appears all the way down the column — Studio One-style. Major
+// ticks are emphasised (thicker, brighter); the chosen labels cover
+// the full range without collisions given the knee curve (80 % of
+// travel sits between 0 and -12 dB so the top half is rich, the
+// bottom half stays readable).
 const MIX_FADER_LADDER = [
   { db: 12,  major: true,  label: '+12' },
-  { db: 6,   major: false, label: null  },
+  { db: 9,   major: false, label: null  },
+  { db: 6,   major: true,  label: '+6'  },
+  { db: 3,   major: false, label: '+3'  },
   { db: 0,   major: true,  label: '0'   },
-  { db: -6,  major: false, label: null  },
+  { db: -3,  major: false, label: '-3'  },
+  { db: -6,  major: true,  label: '-6'  },
+  { db: -9,  major: false, label: null  },
   { db: -12, major: true,  label: '-12' },
+  { db: -18, major: false, label: '-18' },
   { db: -24, major: true,  label: '-24' },
-  { db: -40, major: true,  label: '-40' },
+  { db: -36, major: false, label: '-36' },
+  { db: -48, major: false, label: '-48' },
   { db: -60, major: true,  label: '-60' },
-  { db: -90, major: true,  label: '−∞' },
+  { db: -90, major: true,  label: '−∞'  },
 ];
 
 function _mixFaderScaleHtml() {

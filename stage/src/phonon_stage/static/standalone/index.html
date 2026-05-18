@@ -2182,6 +2182,10 @@ async function openPluginSettings(name) {
     return;
   }
   const s = await r.json();
+  if (name === 'spotify-v1') {
+    _renderSpotifySettings(s);
+    return;
+  }
   if (name !== 'airplay-v1') {
     alert('Settings UI for "' + name + '" not implemented yet');
     return;
@@ -2270,9 +2274,88 @@ async function openPluginSettings(name) {
   document.body.appendChild(overlay);
 }
 
+// Spotify Connect (spotifyd) settings modal. Mirrors the AirPlay
+// layout — same field helpers, same section wrapper, same Save &
+// restart button — only the controls differ.
+function _renderSpotifySettings(s) {
+  let overlay = document.getElementById('plugin-settings-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'plugin-settings-overlay';
+  overlay.className = 'modal-overlay open';
+
+  const text = (id, val, max, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <input type="text" id="${id}" ${max ? `maxlength="${max}"` : ''} value="${escapeHtml(val ?? '')}"
+      style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px"></label>`;
+  const num = (id, val, step, min, max, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <input type="number" id="${id}" step="${step}" min="${min}" max="${max}" value="${val}"
+      style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px"></label>`;
+  const sel = (id, val, opts, hint) => `<label style="display:block;margin-bottom:8px">
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${escapeHtml(hint)}</div>
+    <select id="${id}" style="width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text);font-family:var(--font-m);font-size:12px;padding:6px 8px;border-radius:3px">
+      ${opts.map(o => `<option value="${o}" ${String(val) === String(o) ? 'selected' : ''}>${o}</option>`).join('')}
+    </select></label>`;
+  const bool = (id, val, hint) => `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--text-mid)">
+    <input type="checkbox" id="${id}" ${val ? 'checked' : ''}>${escapeHtml(hint)}</label>`;
+  const section = (title, html, opened = true) => `
+    <details ${opened ? 'open' : ''} style="margin-bottom:6px;border:1px solid var(--border);border-radius:3px;background:var(--bg-1)">
+      <summary style="cursor:pointer;padding:6px 10px;font-size:11px;font-weight:600;color:var(--cyan);user-select:none">${escapeHtml(title)}</summary>
+      <div style="padding:8px 10px 4px 10px">${html}</div>
+    </details>`;
+
+  overlay.innerHTML = `<div class="modal" style="max-width:560px;max-height:80vh;overflow:auto">
+    <div class="modal-head"><h2>Spotify Connect — Settings</h2></div>
+    <div class="modal-body">
+
+      ${section('Identity', `
+        ${text('sp-name', s.name, 63, 'Receiver name (shown in Spotify app device picker)')}
+        ${sel('sp-device_type', s.device_type,
+          ['computer','tablet','smartphone','speaker','tv','avr','stb','audiodongle'],
+          'Device-type hint (icon + label in the Spotify picker)')}
+      `)}
+
+      ${section('Audio quality', `
+        ${sel('sp-bitrate', s.bitrate, [96, 160, 320], 'Stream bitrate in kbps — 320 = max quality')}
+        ${sel('sp-format', s.format, ['F32','F64','S32','S24','S24_3','S16'], 'Sample format written into the PA sink')}
+        ${num('sp-initial_volume', s.initial_volume, 1, 0, 100, 'Initial volume applied by spotifyd (0-100, stacks on top of the Phonon mixer gain)')}
+      `)}
+
+      ${section('Behaviour', `
+        ${bool('sp-autoplay', s.autoplay, 'Autoplay similar music when the queue ends')}
+        ${bool('sp-disable_audio_cache', s.disable_audio_cache, 'Disable on-disk audio cache (recommended — caches grow unbounded)')}
+      `)}
+
+      ${section('Discovery', `
+        ${num('sp-zeroconf_port', s.zeroconf_port, 1, 0, 65535, 'mDNS responder TCP port (0 = kernel picks a free one)')}
+      `, false)}
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+        <button class="btn" onclick="document.getElementById('plugin-settings-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="savePluginSettings('spotify-v1')">Save &amp; restart</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
 async function savePluginSettings(name) {
   const v = id => document.getElementById(id);
-  const body = {
+  let body;
+  if (name === 'spotify-v1') {
+    body = {
+      name: v('sp-name').value,
+      device_type: v('sp-device_type').value,
+      bitrate: parseInt(v('sp-bitrate').value, 10),
+      format: v('sp-format').value,
+      initial_volume: parseInt(v('sp-initial_volume').value, 10),
+      autoplay: v('sp-autoplay').checked,
+      disable_audio_cache: v('sp-disable_audio_cache').checked,
+      zeroconf_port: parseInt(v('sp-zeroconf_port').value, 10),
+    };
+  } else {
+  body = {
     airplay_version: parseInt(v('ap-airplay_version').value, 10),
     name: v('ap-name').value,
     password: v('ap-password').value,
@@ -2292,6 +2375,7 @@ async function savePluginSettings(name) {
     log_verbosity: parseInt(v('ap-log_verbosity').value, 10),
     statistics: v('ap-statistics').checked,
   };
+  }
   try {
     const r = await fetch(API + '/plugins/' + encodeURIComponent(name) + '/settings', {
       method: 'PUT',

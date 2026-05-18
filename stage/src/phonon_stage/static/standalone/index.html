@@ -971,7 +971,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 }
 .strip.mix-master {
   border-top: 2px solid var(--red);
-  width: 100px;
+  /* Master used to be narrower (100 px) because it had no FX bar and
+     no scotch input. Now it has both (master inserts + nameplate), so
+     it gets the same 120 px width as Sources and Outputs. */
+  width: 120px;
   background: linear-gradient(180deg,
     rgba(220,38,38,0.34) 0%,
     rgba(220,38,38,0.20) 12%,

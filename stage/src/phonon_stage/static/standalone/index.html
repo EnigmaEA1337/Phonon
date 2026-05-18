@@ -855,23 +855,42 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   background-size: 6px 1px;
   background-repeat: no-repeat;
 }
-/* Click-to-edit "scotch tape" label — slightly off-axis, cream
-   background with hand-drawn-feeling stroke. Visible at all times
-   so the operator can read it at a glance from across the room. */
+/* Click-to-edit engraved nameplate — brushed dark steel with an
+   incised (slightly recessed) caption. Replaces the cream scotch
+   tape so the footer matches the chrome cap + rocker switches. */
 .strip-scotch { width: 96%; margin: 4px auto 0;
-  background: linear-gradient(180deg, #f5ecc4 0%, #ece1ab 50%, #d8c98a 100%);
-  color: #2a1d0a; font-family: 'Comic Sans MS', 'Marker Felt', Chalkduster, cursive;
-  font-size: 11px; font-weight: 700; text-align: center;
-  padding: 4px 6px; border-radius: 1px;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.3), inset 0 0 8px rgba(180,140,40,0.18);
-  transform: rotate(-1.2deg); cursor: text;
+  background: linear-gradient(180deg,
+    #4a4f56 0%, #3a3e44 25%, #2c3036 50%,
+    #25292f 51%, #1e2126 75%, #161a1e 100%);
+  color: #d8dde3;
+  font-family: var(--font-d);
+  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 4px 6px; border-radius: 2px;
+  border: 1px solid #0a0c0e;
+  border-top-color: #5a5e64;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.65),
+    0 1px 1px rgba(0,0,0,0.5);
+  /* Incised lettering — dark above, faint highlight below. */
+  text-shadow:
+    0 -1px 0 rgba(0,0,0,0.85),
+    0 1px 0 rgba(255,255,255,0.10);
+  cursor: text;
   height: 24px; line-height: 16px; box-sizing: border-box;
-  border-left: 1px dashed rgba(0,0,0,0.18); border-right: 1px dashed rgba(0,0,0,0.18);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.strip-scotch:hover { background: linear-gradient(180deg, #f9f0c8 0%, #f0e5af 50%, #dccd8e 100%); }
-.strip-scotch.empty { color: rgba(42,29,10,0.4); font-style: italic; font-weight: 500; }
+.strip-scotch:hover {
+  background: linear-gradient(180deg,
+    #585d64 0%, #484c52 25%, #383c42 50%,
+    #303338 51%, #282b30 75%, #1e2228 100%);
+  color: #f0f3f7;
+}
+.strip-scotch.empty { color: rgba(216,221,227,0.4); font-style: italic; font-weight: 500; }
 .strip-scotch input { width: 100%; background: transparent; border: none; outline: none;
-  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit; text-align: center; }
+  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit;
+  text-align: center; letter-spacing: inherit; text-transform: inherit; }
 
 /* ── Mix Console (3-column strip view) ───────────────── */
 .mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0; overflow-x: auto; }

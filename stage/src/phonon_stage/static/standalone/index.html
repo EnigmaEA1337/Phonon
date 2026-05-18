@@ -1026,7 +1026,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .delay-unit { color: var(--text-fade); font-family: var(--font-m); font-size: 9px; }
 
 /* Vertical Fader */
-.fader-area { display: flex; gap: 2px; align-items: flex-end; height: 160px; }
+.fader-area { display: flex; gap: 2px; align-items: flex-end; height: 200px; }
 /* Ardour/console-style vertical meter */
 .vu-bar { width: 11px; height: 100%; background: #020409; border-radius: 2px;
   display: flex; flex-direction: column-reverse; gap: 0; padding: 1px;
@@ -4978,11 +4978,9 @@ const MIX_FADER_DB_MAX = 12;
 const MIX_FADER_LADDER = [
   { db: 12,  major: true,  label: '+12' },
   { db: 6,   major: true,  label: '+6'  },
-  { db: 3,   major: false, label: '+3'  },
   { db: 0,   major: true,  label: '0'   },
   { db: -3,  major: false, label: '-3'  },
   { db: -6,  major: true,  label: '-6'  },
-  { db: -9,  major: false, label: null  },
   { db: -12, major: true,  label: '-12' },
   { db: -24, major: true,  label: '-24' },
   { db: -48, major: false, label: '-48' },
@@ -6086,8 +6084,11 @@ const FADER_DB_TOP   = 12;    // top of travel
 const FADER_DB_UNITY = 0;     // unity gain — where the cap "should" sit
 const FADER_DB_KNEE  = -12;   // knee point
 const FADER_DB_FLOOR = -90;   // effective silence
-const FADER_UNITY_PCT = 15;
-const FADER_KNEE_PCT  = 78;
+// Knee zones — chosen so each labelled tick gets ≥ 8 px at 200 px
+// fader height, so the labels never overlap at the natural font size.
+const FADER_UNITY_PCT = 20;   // +12 → 0 dB lives in the top 20 %
+const FADER_KNEE_PCT  = 65;   // 0 → -12 dB lives in the middle 45 %
+                              // -12 → -90 dB lives in the bottom 35 %
 
 function faderYToDb(pct) {
   // pct: 0 = top of fader, 100 = bottom

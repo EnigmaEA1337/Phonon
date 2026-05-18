@@ -1099,6 +1099,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
+/* Network strips — sources or outputs whose PW node is an AES67
+   stream (name starts with "aes67-"). Override the type tint with
+   the network role colour: orange, per CLAUDE.md conventions for
+   anything that crosses the data plane. */
+.strip.mix-src.net,
+.strip.mix-out.net {
+  border-top-color: #f97316;
+  background: linear-gradient(180deg,
+    rgba(249,115,22,0.32) 0%,
+    rgba(249,115,22,0.18) 12%,
+    rgba(249,115,22,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
 /* Per-strip routing toggles (Source side). [M] = via master, [D] = direct picker. */
 .mix-route-bar { display: flex; gap: 3px; width: 100%; justify-content: center; }
 .mix-route-btn { flex: 1; padding: 2px 4px; font-family: var(--font-m); font-size: 9px;
@@ -5051,7 +5065,8 @@ function renderMixSources() {
     const ledColor = s.mute ? 'var(--red)' : 'var(--green)';
     const inputName = prettyPwName(s.source_node_name);
     const outputName = sourceDestinationSummary(s, outputsById);
-    return `<div class="strip mix-src" data-mix-source-id="${s.id}">
+    const isNet = (s.source_node_name || '').startsWith('aes67-');
+    return `<div class="strip mix-src${isNet ? ' net' : ''}" data-mix-source-id="${s.id}">
       <div class="row-action" style="display:flex;align-items:center;gap:3px">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
         <span style="flex:1"></span>
@@ -5141,7 +5156,8 @@ function renderMixOutputs() {
     if (directIn) inputParts.push(`${directIn} direct`);
     const inputName = inputParts.length ? '← ' + inputParts.join(' + ') : '← (no feed)';
     const sinkPretty = prettyPwName(o.sink_node_name);
-    return `<div class="strip mix-out" data-mix-output-id="${o.id}">
+    const isNet = (o.sink_node_name || '').startsWith('aes67-');
+    return `<div class="strip mix-out${isNet ? ' net' : ''}" data-mix-output-id="${o.id}">
       <div class="row-action" style="display:flex;align-items:center;gap:3px">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
         <span style="flex:1"></span>

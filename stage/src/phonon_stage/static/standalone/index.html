@@ -981,10 +981,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    stops + highlights (CSS gradients alone can't get that polished
    look). Track is matte black. Graduation pinned to the LEFT,
    between the VU bars and the rail. */
-/* Fader column is wider now (56 px) so the cap (28×16, Studio One
-   proportions: low + wide) doesn't overlap the dB graduation, which
-   lives entirely to the LEFT of the rail. */
-.fader-col { width: 56px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+/* Vintage console cap — tall + narrow (Neve / SSL profile), two-tone
+   brushed metal split by a deep-red playhead line. Cap reads against
+   the red line, not the cap edge. */
+.fader-col { width: 60px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
 .fader-rail {
   position: absolute; left: 50%; top: 6px; bottom: 6px; width: 8px;
   transform: translateX(-50%);
@@ -1002,12 +1002,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   z-index: 1;
 }
 .fader-handle {
-  position: absolute; left: 50%; width: 28px; height: 16px;
+  position: absolute; left: 50%; width: 30px; height: 44px;
   transform: translate(-50%, -50%);
   background: transparent;
   border: none;
   border-radius: 3px;
-  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.7));
+  filter: drop-shadow(2px 0 2px rgba(0,0,0,0.45)) drop-shadow(0 1px 2px rgba(0,0,0,0.5));
   cursor: grab;
   z-index: 2;
 }
@@ -4908,30 +4908,75 @@ function _mixFaderScaleHtml() {
 // the equator), bottom half darkens and ends in a soft shadow.
 // Inkscape-style construction: body gradient + edge rim + top
 // specular highlight + bottom ambient shadow.
-// Cap SVG. 28×16 viewBox = Studio One proportions (rectangle wider
-// than tall). Top half catches light, bottom half darkens; thin
-// equator groove suggests the read line.
+// Vintage SSL/Neve cap. 60×110 viewBox (tall + narrow). Top half
+// brushed dark metal, bottom half brushed silver, separated by a
+// deep-red read line. Horizontal "cylinder" overlay gradient gives
+// the edges that rolled-aluminium look.
 const _MIX_FADER_CAP_SVG = `
-<svg viewBox="0 0 28 16" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+<svg viewBox="0 0 60 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
   <defs>
-    <linearGradient id="capBody" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="#fbfcfd"/>
-      <stop offset="0.22" stop-color="#eaedf1"/>
-      <stop offset="0.5"  stop-color="#c2c7ce"/>
-      <stop offset="0.78" stop-color="#dde1e7"/>
-      <stop offset="1"    stop-color="#8a9098"/>
+    <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#aab0b7"/>
+      <stop offset="0.10" stop-color="#787e85"/>
+      <stop offset="0.32" stop-color="#a8aeb5"/>
+      <stop offset="0.62" stop-color="#828790"/>
+      <stop offset="0.92" stop-color="#a5abb3"/>
+      <stop offset="1"    stop-color="#6b6f76"/>
     </linearGradient>
-    <linearGradient id="capRim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"   stop-color="#9aa0a8"/>
-      <stop offset="0.5" stop-color="#4a4f56"/>
-      <stop offset="1"   stop-color="#1f2226"/>
+    <linearGradient id="capBot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#cfd2d7"/>
+      <stop offset="0.18" stop-color="#fafbfc"/>
+      <stop offset="0.45" stop-color="#e6e8ec"/>
+      <stop offset="0.78" stop-color="#f0f2f5"/>
+      <stop offset="1"    stop-color="#9da2a8"/>
+    </linearGradient>
+    <linearGradient id="capCyl" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"    stop-color="rgba(0,0,0,0.55)"/>
+      <stop offset="0.08" stop-color="rgba(0,0,0,0.18)"/>
+      <stop offset="0.30" stop-color="rgba(255,255,255,0.18)"/>
+      <stop offset="0.55" stop-color="rgba(255,255,255,0)"/>
+      <stop offset="0.78" stop-color="rgba(0,0,0,0.10)"/>
+      <stop offset="0.94" stop-color="rgba(0,0,0,0.32)"/>
+      <stop offset="1"    stop-color="rgba(0,0,0,0.55)"/>
+    </linearGradient>
+    <linearGradient id="capRedLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#5e1212"/>
+      <stop offset="0.35" stop-color="#8b1f1f"/>
+      <stop offset="0.7"  stop-color="#a02525"/>
+      <stop offset="1"    stop-color="#4a0e0e"/>
     </linearGradient>
   </defs>
-  <rect x="0"   y="0"   width="28" height="16" rx="2.5" ry="2.5" fill="url(#capRim)"/>
-  <rect x="0.7" y="0.7" width="26.6" height="14.6" rx="1.8" ry="1.8" fill="url(#capBody)"/>
-  <rect x="2" y="1.4" width="24" height="0.8" rx="0.4" fill="rgba(255,255,255,0.92)"/>
-  <line x1="3" y1="8" x2="25" y2="8" stroke="rgba(0,0,0,0.30)" stroke-width="0.5"/>
-  <line x1="3" y1="8.5" x2="25" y2="8.5" stroke="rgba(255,255,255,0.40)" stroke-width="0.3"/>
+
+  <!-- Top half (dark brushed) — rounded top corners only -->
+  <path d="M 4 1 L 56 1 Q 59 1 59 4 L 59 52 L 1 52 L 1 4 Q 1 1 4 1 Z" fill="url(#capTop)"/>
+  <!-- Bottom half (light brushed) — rounded bottom corners only -->
+  <path d="M 1 58 L 59 58 L 59 106 Q 59 109 56 109 L 4 109 Q 1 109 1 106 Z" fill="url(#capBot)"/>
+
+  <!-- Brush striations — top half -->
+  <line x1="3" y1="10" x2="57" y2="10" stroke="rgba(0,0,0,0.18)" stroke-width="0.4"/>
+  <line x1="3" y1="18" x2="57" y2="18" stroke="rgba(0,0,0,0.22)" stroke-width="0.4"/>
+  <line x1="3" y1="28" x2="57" y2="28" stroke="rgba(255,255,255,0.18)" stroke-width="0.3"/>
+  <line x1="3" y1="38" x2="57" y2="38" stroke="rgba(0,0,0,0.18)" stroke-width="0.4"/>
+  <line x1="3" y1="46" x2="57" y2="46" stroke="rgba(0,0,0,0.30)" stroke-width="0.5"/>
+
+  <!-- Brush striations — bottom half -->
+  <line x1="3" y1="64" x2="57" y2="64" stroke="rgba(0,0,0,0.10)" stroke-width="0.3"/>
+  <line x1="3" y1="74" x2="57" y2="74" stroke="rgba(0,0,0,0.08)" stroke-width="0.3"/>
+  <line x1="3" y1="84" x2="57" y2="84" stroke="rgba(0,0,0,0.10)" stroke-width="0.3"/>
+  <line x1="3" y1="94" x2="57" y2="94" stroke="rgba(0,0,0,0.12)" stroke-width="0.3"/>
+  <line x1="3" y1="102" x2="57" y2="102" stroke="rgba(0,0,0,0.15)" stroke-width="0.4"/>
+
+  <!-- Red playhead line, the actual read indicator -->
+  <rect x="0" y="52" width="60" height="6" fill="url(#capRedLine)"/>
+  <line x1="0" y1="52" x2="60" y2="52" stroke="rgba(0,0,0,0.45)" stroke-width="0.4"/>
+  <line x1="0" y1="58" x2="60" y2="58" stroke="rgba(0,0,0,0.45)" stroke-width="0.4"/>
+
+  <!-- Cylinder overlay (3D edge shading) — full height, on top of everything -->
+  <rect x="0" y="0" width="60" height="110" rx="3" ry="3" fill="url(#capCyl)"/>
+
+  <!-- Outer rim stroke for crisp edge -->
+  <rect x="0.5" y="0.5" width="59" height="109" rx="3" ry="3"
+        fill="none" stroke="rgba(0,0,0,0.7)" stroke-width="0.7"/>
 </svg>`.trim();
 
 function faderCol(kind, id, gainDb) {

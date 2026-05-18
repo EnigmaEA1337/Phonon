@@ -2842,8 +2842,15 @@ function eqQueueControlWrite(outputId, name, value) {
 }
 async function eqFireControlWrite(outputId, name, value) {
   const key = outputId + '::' + name;
+  // Target the slot whose plugin is currently focused — the EQ may
+  // not be slot 0 in a multi-plugin chain (e.g. delay → EQ has the
+  // EQ in slot 1). Without ?slot=, the server writes to slot 0 and
+  // the EQ control change quietly drops on the floor.
+  const slot = dspState.focusedSlot || 0;
   try {
-    await fetch(API + '/mixer/outputs/' + outputId + '/insert/controls/' + encodeURIComponent(name), {
+    await fetch(API + '/mixer/outputs/' + outputId
+        + '/insert/controls/' + encodeURIComponent(name)
+        + '?slot=' + slot, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
@@ -3263,9 +3270,15 @@ function dspDragControl(outputId, encName, value) {
 
 async function dspSetControl(outputId, encName, value) {
   const name = decodeURIComponent(encName);
+  // Slot-aware control update — see eqFireControlWrite for rationale.
+  // The knob/toggle handlers in the generic group-layout path go
+  // through here, so they need the same slot routing as the EQ.
+  const slot = dspState.focusedSlot || 0;
   try {
     const r = await fetch(
-      API + '/mixer/outputs/' + outputId + '/insert/controls/' + encodeURIComponent(name),
+      API + '/mixer/outputs/' + outputId
+          + '/insert/controls/' + encodeURIComponent(name)
+          + '?slot=' + slot,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

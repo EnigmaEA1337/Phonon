@@ -345,8 +345,11 @@ class TestServicePluginInsert:
 
     @pytest.mark.asyncio()
     async def test_live_control_without_insert_raises(self, service: MixerService) -> None:
+        # With the slot-aware refactor, the error message now talks
+        # about the slot being out of range (since the chain is empty,
+        # slot 0 is past the end).
         out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
-        with pytest.raises(MixerError, match="no plugin insert"):
+        with pytest.raises(MixerError, match="out of range"):
             await service.update_output_insert_control(out.id, "Time (ms)", 80.0)
 
     @pytest.mark.asyncio()
@@ -495,6 +498,39 @@ class TestMultiPluginChain:
         out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
         with pytest.raises(MixerError, match="out of range"):
             await service.set_insert_enabled(out.id, slot=0, enabled=False)
+
+    @pytest.mark.asyncio()
+    async def test_update_control_targets_focused_slot(
+        self, service: MixerService
+    ) -> None:
+        # Append the same plugin twice so both slots have the same
+        # controls schema. Then update slot=1 — slot=0 stays untouched.
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        result = await service.update_output_insert_control(
+            out.id, "Time (ms)", 123.4, slot=1
+        )
+        assert result.inserts[1].controls["Time (ms)"] == 123.4
+        # Slot 0 retains the seeded default (5.0 from the LSP descriptor).
+        assert result.inserts[0].controls["Time (ms)"] == 5.0
+
+    @pytest.mark.asyncio()
+    async def test_update_control_unknown_slot_raises(
+        self, service: MixerService
+    ) -> None:
+        out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
+        await service.append_chain_insert(
+            out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
+        )
+        with pytest.raises(MixerError, match="out of range"):
+            await service.update_output_insert_control(
+                out.id, "Time (ms)", 50.0, slot=5
+            )
 
     def test_render_multi_plugin_conf_chains_them_in_series(self) -> None:
         from phonon_stage.mixer.models import Output, PluginInsert

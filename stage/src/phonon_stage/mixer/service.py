@@ -606,7 +606,7 @@ class MixerService:
             return {}
 
     async def update_output_insert_control(
-        self, output_id: str, control_name: str, value: float
+        self, output_id: str, control_name: str, value: float, slot: int = 0
     ) -> Output:
         """Live-update one plugin control value. The whole point of
         the filter-chain migration: this path does NOT reload the
@@ -614,36 +614,43 @@ class MixerService:
         set-param against the running node. With LSP's Ramping=1 on
         comp_delay_stereo, retuning Time (ms) is click-free.
 
-        Raises MixerError if the output has no insert or if the
-        control isn't currently in the insert's dict (we won't
-        silently invent a new control name)."""
+        `slot` selects which plugin in the chain to address (default 0
+        keeps v1 single-plugin callers untouched). The DSP panel sends
+        dspState.focusedSlot from the UI so editing slot 1's EQ writes
+        to slot 1's controls, not slot 0's delay.
+
+        Raises MixerError if the slot is out of range, the slot has
+        no plugin, or the control isn't valid for that plugin."""
         cur = self._output(output_id)
-        if cur.insert is None:
-            msg = f"output {output_id} has no plugin insert"
+        if not (0 <= slot < len(cur.inserts)):
+            msg = (
+                f"slot {slot} out of range "
+                f"(output {output_id} chain has {len(cur.inserts)} plugins)"
+            )
             raise MixerError(msg)
-        if control_name not in cur.insert.controls:
+        target = cur.inserts[slot]
+        if control_name not in target.controls:
             # Auto-heal: if introspection had failed at the time the
-            # plugin was first attached, insert.controls is empty (or
-            # partial). Reconsult the introspector now — if the
-            # control IS valid for this plugin, accept the write and
-            # let it land in the dict. The first user move silently
-            # rebuilds the missing defaults.
+            # plugin was first attached, controls is empty (or partial).
+            # Reconsult the introspector now — if the control IS valid
+            # for this plugin, accept the write and let it land in the
+            # dict. The first user move silently rebuilds the missing
+            # defaults.
             valid = await self._introspect_control_exists(
-                cur.insert.backend, cur.insert.library, cur.insert.label, control_name
+                target.backend, target.library, target.label, control_name
             )
             if not valid:
                 msg = (
                     f"unknown control {control_name!r} on output {output_id}'s "
-                    f"insert {cur.insert.label!r}"
+                    f"slot {slot} plugin {target.label!r}"
                 )
                 raise MixerError(msg)
-        new_controls = dict(cur.insert.controls)
+        new_controls = dict(target.controls)
         new_controls[control_name] = float(value)
-        # v1 single-insert path: the only slot to update is index 0 of
-        # the chain. When multi-plugin UI lands, this becomes a typed
-        # endpoint with an explicit slot index.
-        new_insert = replace(cur.insert, controls=new_controls)
-        new_inserts = (new_insert, *cur.inserts[1:])
+        new_insert = replace(target, controls=new_controls)
+        new_inserts = tuple(
+            new_insert if i == slot else ins for i, ins in enumerate(cur.inserts)
+        )
         new = replace(cur, inserts=new_inserts)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))

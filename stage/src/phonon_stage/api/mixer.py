@@ -525,14 +525,21 @@ async def patch_output_insert_control(
     output_id: str,
     control_name: str,
     body: InsertControlUpdate,
+    slot: int = 0,
 ) -> OutputResponse:
     """Live-update one plugin control. Goes through pw-cli set-param
     against the running filter-chain node — no service reload, no
     audio glitch. control_name is URL-path-encoded so LSP names with
-    spaces and parens (e.g. `Time%20(ms)`) round-trip cleanly."""
+    spaces and parens (e.g. `Time%20(ms)`) round-trip cleanly.
+
+    `?slot=N` selects which chain slot to address (default 0 for the
+    v1 single-plugin path). UI sends dspState.focusedSlot so editing
+    slot 1's EQ doesn't trample slot 0's delay controls."""
     svc = _service(request)
     try:
-        out = await svc.update_output_insert_control(output_id, control_name, body.value)
+        out = await svc.update_output_insert_control(
+            output_id, control_name, body.value, slot=slot
+        )
     except MixerError as exc:
         # 404 for unknown output / control, 400 for bad shape.
         msg = str(exc)

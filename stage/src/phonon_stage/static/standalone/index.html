@@ -456,7 +456,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .knob .knob-tick   { stroke: var(--text-hi); stroke-width: 2; stroke-linecap: round; }
 .knob.dragging .knob-fill { stroke: var(--green); }
 .dsp-control .knob-readout { font-family: var(--font-m); font-size: 10px;
-  color: var(--cyan); font-weight: 700; text-align: center; }
+  color: var(--cyan); font-weight: 700; text-align: center;
+  cursor: text; border-radius: 2px; padding: 1px 2px;
+  transition: background 0.1s; }
+.dsp-control .knob-readout:hover {
+  background: rgba(6,182,212,0.12);
+  text-decoration: underline dotted rgba(6,182,212,0.5);
+}
 .dsp-control input[type=number] { width: 70px; background: var(--bg-1); color: var(--text-hi);
   border: 1px solid var(--border); border-radius: 2px; padding: 1px 4px;
   font-family: var(--font-m); font-size: 10px; }
@@ -3554,14 +3560,20 @@ function renderKnob(outputId, name, value, min, max, integer, logarithmic) {
   const arc = knobArcPath(norm);                              // svg `d` string
   const tickAngle = -135 + 270 * norm;                        // degrees
   const fmt = integer ? String(Math.round(value)) : Number(value).toFixed(2);
+  // Tooltip lists the precision modifiers so the operator
+  // discovers Shift/Ctrl without docs. Same hint on the readout
+  // so dragging the value text or hovering on it is obvious.
+  const tip = `Drag: adjust • Shift = ×5 finer • Ctrl/Alt = ×25 • Shift+Ctrl = ×100\nWheel: same modifiers • Dbl-click: reset to default\nClick value below to type exactly`;
+  const encName = encodeURIComponent(name);
   return `<div>
     <svg class="knob" width="42" height="42" viewBox="0 0 42 42"
          data-knob-output="${outputId}"
-         data-knob-name="${encodeURIComponent(name)}"
+         data-knob-name="${encName}"
          data-knob-min="${min}" data-knob-max="${max}"
          data-knob-integer="${integer ? 1 : 0}"
          data-knob-log="${logarithmic ? 1 : 0}"
          data-knob-value="${value}"
+         title="${tip}"
          onmousedown="knobStart(event, this)"
          onwheel="knobWheel(event, this)"
          ondblclick="knobReset(event, this)">
@@ -3573,8 +3585,64 @@ function renderKnob(outputId, name, value, min, max, integer, logarithmic) {
       <line class="knob-tick" x1="21" y1="21" x2="21" y2="14"
             transform="rotate(${tickAngle} 21 21)"></line>
     </svg>
-    <div class="knob-readout" data-ctl-readout="${encodeURIComponent(name)}">${fmt}</div>
+    <div class="knob-readout" data-ctl-readout="${encName}"
+         data-knob-min="${min}" data-knob-max="${max}"
+         data-knob-integer="${integer ? 1 : 0}"
+         onclick="knobReadoutEdit(this,'${outputId}','${encName}')"
+         title="Click to type an exact value">${fmt}</div>
   </div>`;
+}
+
+// Click-to-type on the value readout below a knob. Swaps the
+// numeric text for an <input>, focuses + selects it, and on
+// Enter/blur parses the new value and dispatches the standard
+// PATCH /insert/controls path. Bypasses the drag arithmetic
+// entirely → operator picks the exact step they want, no
+// modifier wrestling.
+function knobReadoutEdit(el, outputId, encName) {
+  if (el.querySelector('input')) return;  // already editing
+  const min = parseFloat(el.dataset.knobMin);
+  const max = parseFloat(el.dataset.knobMax);
+  const integer = el.dataset.knobInteger === '1';
+  const current = el.textContent.trim();
+  const original = current;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = current;
+  input.className = 'knob-readout-input';
+  input.style.cssText = 'width:100%;background:var(--bg-1);color:var(--cyan);'
+    + 'border:1px solid var(--cyan);border-radius:2px;padding:1px 4px;'
+    + 'font-family:var(--font-m);font-size:10px;font-weight:700;'
+    + 'text-align:center;box-sizing:border-box;';
+  el.textContent = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+  const commit = () => {
+    if (!input.parentElement) return;  // already cleaned up
+    const raw = input.value.trim();
+    const parsed = parseFloat(raw);
+    if (!isFinite(parsed)) {
+      // Restore previous text on invalid input.
+      el.textContent = original;
+      return;
+    }
+    const clamped = Math.max(min, Math.min(max, integer ? Math.round(parsed) : parsed));
+    el.textContent = integer ? String(Math.round(clamped)) : Number(clamped).toFixed(2);
+    // Also update the SVG knob next to it so the arc/tick reflect the new value.
+    const svg = el.previousElementSibling;
+    if (svg && svg.tagName === 'svg') {
+      const log = svg.dataset.knobLog === '1';
+      const norm = knobNormalise(clamped, min, max, log);
+      knobApplyVisual(svg, norm, clamped);
+    }
+    dspSetControl(outputId, encName, clamped);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); input.blur(); }
+    else if (e.key === 'Escape') { el.textContent = original; input.blur(); }
+  });
+  input.addEventListener('blur', commit);
 }
 
 // Convert a value to normalised [0..1] position on the knob arc.
@@ -3642,9 +3710,15 @@ function knobStart(ev, svg) {
 function knobMove(ev) {
   if (!knobDrag) return;
   ev.preventDefault();
-  // 200 px of vertical drag = full 0→1 sweep. Shift-drag = fine
-  // (4× slower). Up moves the value up, down moves it down.
-  const sensitivity = ev.shiftKey ? 800 : 200;
+  // Modifier-stacked sensitivity:
+  //   default            = 200 px for the full sweep
+  //   Shift              = 1000 px (×5 finer)
+  //   Ctrl/Alt           = 5000 px (×25 finer)
+  //   Shift+Ctrl(or Alt) = 20000 px (×100 finer, pixel-perfect)
+  // Up moves the value up, down moves it down.
+  let sensitivity = 200;
+  if (ev.shiftKey) sensitivity *= 5;
+  if (ev.ctrlKey || ev.altKey) sensitivity *= 25;
   const dy = knobDrag.startY - ev.clientY;
   const norm = Math.max(0, Math.min(1, knobDrag.startNorm + dy / sensitivity));
   const value = knobDenormalise(norm, knobDrag.min, knobDrag.max, knobDrag.log, knobDrag.integer);
@@ -3678,7 +3752,14 @@ function knobWheel(ev, svg) {
   const integer = svg.dataset.knobInteger === '1';
   const value = parseFloat(svg.dataset.knobValue);
   const norm = knobNormalise(value, min, max, log);
-  const step = ev.shiftKey ? 0.005 : 0.02;
+  // Wheel step scales with the same modifier ladder as drag.
+  //   default           = 0.02 of the full range per notch
+  //   Shift             = 0.004 (×5 finer)
+  //   Ctrl/Alt          = 0.0008 (×25 finer)
+  //   Shift+Ctrl(or Alt)= 0.0002 (×100 finer)
+  let step = 0.02;
+  if (ev.shiftKey) step /= 5;
+  if (ev.ctrlKey || ev.altKey) step /= 25;
   const sign = ev.deltaY > 0 ? -1 : 1;
   const newNorm = Math.max(0, Math.min(1, norm + sign * step));
   const newValue = knobDenormalise(newNorm, min, max, log, integer);

@@ -436,6 +436,183 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border-radius: 2px; padding: 2px 6px; cursor: pointer; }
 .dsp-control button.toggle.on { background: var(--green); color: #fff; border-color: var(--green); }
 
+/* ─── Calf-style skin ────────────────────────────────────────────────
+   Opted into via class="dsp-calf" on the panel. Brushed-metal slate
+   background, inset-beveled section frames, chrome knobs with a cyan
+   indicator pip, green phosphor mini-display for monitoring values.
+   Mirrors the visual language of Calf Studio Gear plugins so the
+   operator gets a DAW-like feel inside a routing app. */
+.dsp-calf {
+  background:
+    linear-gradient(180deg, #2c3954 0%, #1c2336 50%, #1a2030 100%);
+  border: 1px solid #0f1420;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.5),
+    0 1px 2px rgba(0,0,0,0.6);
+  padding: 10px 12px;
+}
+/* Subtle brushed-metal banding overlay */
+.dsp-calf::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg, transparent 0, transparent 2px,
+    rgba(255,255,255,0.012) 2px, rgba(255,255,255,0.012) 3px);
+  border-radius: 6px;
+}
+.dsp-calf { position: relative; }
+
+.dsp-calf .dsp-panel-meta {
+  background: linear-gradient(180deg, #1a2030, #131825);
+  border: 1px solid #0a0e16;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.6);
+  color: #b8c4d6;
+}
+.dsp-calf .dsp-panel-meta .dsp-output-label,
+.dsp-calf .dsp-panel-meta .dsp-plugin-name { color: #d8e0ec; }
+.dsp-calf .dsp-panel-meta .dsp-plugin-maker { color: #6b7a90; }
+
+/* Calf section frame — inset, recessed look */
+.dsp-calf .dsp-group {
+  background: linear-gradient(180deg, #232b40 0%, #1a2132 100%);
+  border: 1px solid #0e131e;
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    inset 0 0 6px rgba(0,0,0,0.4);
+  padding: 18px 14px 12px;
+  position: relative;
+}
+/* Section header ribbon — sits on top of the frame border */
+.dsp-calf .dsp-group-head {
+  position: absolute; top: -6px; left: 10px;
+  background: linear-gradient(180deg, #2c3954, #1f273c);
+  color: #aab7cc;
+  font-size: 8px; letter-spacing: 1.5px; font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 8px;
+  border: 1px solid #0e131e;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 1px 2px rgba(0,0,0,0.4);
+}
+.dsp-calf .dsp-group.active {
+  background: linear-gradient(180deg, #2a4a5a 0%, #1f3a4a 100%);
+  border-color: #2d6878;
+  box-shadow:
+    inset 0 1px 0 rgba(93,216,232,0.15),
+    inset 0 0 8px rgba(93,216,232,0.18);
+}
+.dsp-calf .dsp-group.active .dsp-group-head {
+  background: linear-gradient(180deg, #3e7c8c, #2a5564);
+  color: #d8f4fa;
+  border-color: #1a3540;
+}
+.dsp-calf .dsp-group-body { gap: 10px; padding-top: 2px; }
+
+/* Calf knob box — no frame, lighter typography */
+.dsp-calf .dsp-control {
+  background: transparent; border: none; padding: 0 4px;
+  min-width: 64px; align-items: center;
+}
+.dsp-calf .dsp-control .dsp-ctl-name {
+  color: #8b9aae; font-size: 8px; letter-spacing: 1px;
+  font-weight: 600; text-align: center;
+}
+.dsp-calf .dsp-control .knob-readout,
+.dsp-calf .dsp-control .dsp-ctl-value {
+  color: #b8c4d6; font-weight: 700; font-size: 10px;
+}
+
+/* Calf chrome knob — bigger, brushed silver body, cyan pip */
+.dsp-calf .knob { width: 48px; height: 48px; }
+.dsp-calf .knob .knob-track { stroke: #0e131e; stroke-width: 3; }
+.dsp-calf .knob .knob-fill   { stroke: #5dd8e8; stroke-width: 3;
+  filter: drop-shadow(0 0 2px rgba(93,216,232,0.6)); }
+.dsp-calf .knob .knob-hub {
+  fill: url(#calf-knob-gradient);
+  stroke: #0a0e16; stroke-width: 1;
+}
+.dsp-calf .knob .knob-tick {
+  stroke: #1a2030; stroke-width: 2.5; stroke-linecap: round;
+}
+
+/* Calf toggle — small chrome rocker, cyan glow when on */
+.dsp-calf .dsp-control button.toggle {
+  background: linear-gradient(180deg, #232b40, #181f2f);
+  color: #6b7a90; border: 1px solid #0e131e;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  font-size: 8px; padding: 3px 8px; letter-spacing: 1px;
+}
+.dsp-calf .dsp-control button.toggle.on {
+  background: linear-gradient(180deg, #5dd8e8, #2a8c9c);
+  color: #0a0e16; border-color: #2d6878;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.3),
+    0 0 8px rgba(93,216,232,0.5);
+}
+.dsp-calf .dsp-control select {
+  background: linear-gradient(180deg, #1a2030, #131825);
+  color: #b8c4d6; border: 1px solid #0e131e;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+/* Calf monitoring readout — green phosphor display style */
+.dsp-calf .dsp-monitor {
+  background: linear-gradient(180deg, #2d3a1a 0%, #1f2a10 100%);
+  border: 1px solid #0a0e08;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 0 12px rgba(0,0,0,0.5);
+  padding: 8px 12px;
+}
+.dsp-calf .dsp-monitor .dsp-monitor-label {
+  color: #8aa066; font-size: 8px; letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.dsp-calf .dsp-monitor .dsp-monitor-value {
+  color: #d4f078; font-family: var(--font-m);
+  font-weight: 700; font-size: 16px;
+  text-shadow: 0 0 4px rgba(212,240,120,0.6);
+  letter-spacing: 1px;
+}
+/* Side ornament — "phonon studio gear" vertical wordmark */
+.dsp-calf .dsp-calf-brand {
+  position: absolute; right: 8px; top: 50%;
+  transform: translateY(-50%) rotate(90deg);
+  transform-origin: right center;
+  font-family: var(--font-m); font-size: 9px;
+  color: #4a5468; letter-spacing: 3px;
+  pointer-events: none; white-space: nowrap;
+  text-transform: uppercase;
+}
+/* Rack-mount corner screws — 4 silver dots with slot. Decorative. */
+.dsp-calf .dsp-rack-screw {
+  position: absolute; width: 10px; height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%,
+    #d0d6de 0%, #909aa6 40%, #2a3040 90%);
+  box-shadow:
+    inset 0 -1px 1px rgba(0,0,0,0.5),
+    0 1px 2px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+/* Cross-slot mark on each screw */
+.dsp-calf .dsp-rack-screw::before,
+.dsp-calf .dsp-rack-screw::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 1px; height: 6px; background: #1a2030;
+  transform: translate(-50%, -50%) rotate(35deg);
+}
+.dsp-calf .dsp-rack-screw::after {
+  width: 6px; height: 1px;
+}
+/* Reserve some right padding so the brand doesn't overlap controls */
+.dsp-calf { padding-right: 30px; }
+
 /* MRLS button row — channel mutes + solo, Apple-style toggles.
    On the Master strip we hide the S button (no solo on the bus). */
 .row-mrls { display: flex; gap: 3px; justify-content: center; align-items: center; }
@@ -1362,6 +1539,19 @@ body.mode-live .edit-only select { opacity: 0.4; }
 <!-- FX plugin picker modal — page-root level so it works from any tab.
      Triggered from the Mix Console's "+ FX" buttons and chain "+" badge.
      State carried by `fxPickerState`. -->
+<!-- SVG gradient defs reused by .dsp-calf chrome knobs. Hidden via
+     width/height 0 + aria-hidden — only the <defs> children matter. -->
+<svg width="0" height="0" aria-hidden="true" style="position:absolute">
+  <defs>
+    <radialGradient id="calf-knob-gradient" cx="35%" cy="30%" r="80%">
+      <stop offset="0%"   stop-color="#e0e6ed"/>
+      <stop offset="40%"  stop-color="#a8b0bc"/>
+      <stop offset="75%"  stop-color="#5a6478"/>
+      <stop offset="100%" stop-color="#1c2236"/>
+    </radialGradient>
+  </defs>
+</svg>
+
 <div id="fx-picker-modal" class="modal-overlay" style="display:none">
   <div class="modal" style="max-width:680px;width:96%">
     <div class="modal-head">
@@ -2308,7 +2498,18 @@ async function renderDspPanel() {
     ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
     bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}${outSide}</div>`;
   }
-  panel.innerHTML = meta + bodyHtml;
+  // Calf-rack ornaments: 4 corner screws + vertical brand wordmark.
+  // Pure decoration — sits absolute over the panel, doesn't affect
+  // the control flow.
+  const ornaments = (layout && layout.useCalfSkin) ? `
+    <div class="dsp-rack-screw" style="top:5px;left:5px"></div>
+    <div class="dsp-rack-screw" style="top:5px;right:5px"></div>
+    <div class="dsp-rack-screw" style="bottom:5px;left:5px"></div>
+    <div class="dsp-rack-screw" style="bottom:5px;right:5px"></div>
+    <div class="dsp-calf-brand">phonon studio gear</div>` : '';
+  // Toggle .dsp-calf on the panel container so the scoped CSS kicks in.
+  panel.classList.toggle('dsp-calf', !!(layout && layout.useCalfSkin));
+  panel.innerHTML = meta + bodyHtml + ornaments;
 }
 
 // Render one named section of a plugin (e.g. Signal, Distance...).
@@ -2470,6 +2671,10 @@ function cssEscape(s) {
 // not in this map fall back to the flat row of knobs.
 const PLUGIN_LAYOUTS = {
   "http://lsp-plug.in/plugins/ladspa/comp_delay_stereo": {
+    // 19" rack-unit Calf-style skin: brushed slate background, chrome
+    // knobs with cyan pip, inset section frames, green-phosphor
+    // monitoring display, "phonon studio gear" wordmark on the right.
+    useCalfSkin: true,
     groups: [
       {
         name: "Signal",

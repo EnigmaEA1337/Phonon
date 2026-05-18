@@ -426,7 +426,28 @@ async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
         except Exception:
             logger.warning("audio_replay.mappings_failed", exc_info=True)
 
-    # 4 — mixer (master null-sink + per-output filter-chains/loopbacks).
+    # 4 — source-plugin null-sinks (airplay_in, spotify_in, etc).
+    # Must run BEFORE the mixer reconcile so the mixer finds the
+    # source nodes when re-linking sources → master. Symptom that
+    # made us add this step: after audio-stack/restart the mixer's
+    # master + loopbacks came back but airplay_in / spotify_in
+    # stayed gone — operator saw a working master with no sources
+    # feeding it until they hit /plugins/admin/heal-null-sinks.
+    try:
+        from phonon_stage.main import app as _app
+
+        reg = getattr(_app.state, "plugin_registry", None)
+        if reg is not None:
+            healed = await reg.heal_null_sinks()
+            logger.info("audio_replay.plugin_null_sinks_healed", reason=reason, **healed)
+            summary["plugin_null_sinks_healed"] = sum(
+                1 for v in healed.values() if v == "ok"
+            )
+    except Exception:
+        logger.warning("audio_replay.plugin_null_sinks_failed", exc_info=True)
+        summary["plugin_null_sinks_healed"] = 0
+
+    # 5 — mixer (master null-sink + per-output filter-chains/loopbacks).
     # Without this the mixer's persisted state stays in memory but its
     # live PW resources are gone: phonon_master null-sink, filter-chain
     # confs and module-loopback entries are all reset by the PA shim
@@ -434,8 +455,6 @@ async def replay_audio_state(reason: str = "manual") -> dict[str, int]:
     # working (filter-chain conf reloaded on its own), but the loopback
     # output (insert-less) was silent until a manual /mixer/admin/reconcile.
     try:
-        # mixer service is stored on app.state; we don't have a Request
-        # here, so reach via the app singleton.
         from phonon_stage.main import app as _app
 
         svc = getattr(_app.state, "mixer_service", None)

@@ -36,7 +36,13 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from phonon_stage.mixer.filter_chain import chain_name_for, render_filter_chain_conf
+from phonon_stage.mixer.filter_chain import (
+    MASTER_CHAIN_NAME,
+    MASTER_POST_SINK_NAME,
+    chain_name_for,
+    render_filter_chain_conf,
+    render_master_filter_chain_conf,
+)
 from phonon_stage.mixer.models import (
     MasterBus,
     MixerState,
@@ -61,6 +67,20 @@ logger = structlog.get_logger()
 # coordinated UI update. Keep it stable.
 MASTER_SINK_NAME = "phonon_master"
 MASTER_SINK_DESCRIPTION = "Phonon-Master"
+# Post-master null-sink: only created when master.inserts is non-empty.
+# Outputs read from this sink's monitor instead of phonon_master.monitor
+# when a master FX chain is active. See filter_chain.MASTER_POST_SINK_NAME
+# (kept in sync — both names point at the same string).
+MASTER_POST_DESCRIPTION = "Phonon-Master-Post"
+
+
+def _effective_master_source(master: MasterBus) -> str:
+    """Name of the PW node whose .monitor port outputs should read
+    from. When the master has 0 plugins → phonon_master (current
+    behaviour). When master FX is active → phonon_master_post (sits
+    downstream of the master chain). Outputs don't care which one;
+    they just consume from .monitor of whichever this returns."""
+    return MASTER_POST_SINK_NAME if master.inserts else MASTER_SINK_NAME
 
 
 class MixerError(Exception):
@@ -185,11 +205,19 @@ class MixerService:
         # Build the body we'd generate for each wanted chain so the
         # first _reconcile's diff sees the on-disk state as already
         # in-sync — no spurious rewrite + reload.
+        master = self._store.state.master
+        master_src = _effective_master_source(master)
         wanted_bodies: dict[str, str] = {}
+        # Master chain conf if master has any inserts (enabled or not —
+        # passthrough is still rendered to keep the node.name present).
+        if master.inserts:
+            wanted_bodies[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+                master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
+            )
         for o in self._store.state.outputs:
             if o.inserts and any(i.enabled for i in o.inserts) and o.receives_master:
                 wanted_bodies[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.inserts, MASTER_SINK_NAME
+                    o, o.inserts, master_src
                 )
         stale = [c for c in on_disk if c not in wanted_bodies]
         if not stale:
@@ -261,6 +289,46 @@ class MixerService:
                 logger.info("mixer.master_duplicate_unloaded", module_id=mid, kept=keep)
             except Exception:
                 logger.warning("mixer.master_dedupe_unload_failed", module_id=mid, exc_info=True)
+
+    async def _ensure_master_post_null_sink(self) -> None:
+        """phonon_master_post is the SECOND null-sink, created ONLY
+        when the master has at least one plugin in its chain. The
+        master filter-chain reads from phonon_master.monitor and
+        writes to phonon_master_post.playback; every Output then
+        reads from phonon_master_post.monitor instead of phonon_master.
+
+        When master.inserts is empty, this sink is torn down via
+        _unload_master_post_null_sink and Outputs go back to reading
+        from phonon_master directly.
+        """
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            nodes = []
+        existing = sum(1 for n in nodes if n.name == MASTER_POST_SINK_NAME)
+        if existing == 0:
+            await self._pw.load_null_sink(MASTER_POST_SINK_NAME, MASTER_POST_DESCRIPTION)
+
+    async def _unload_master_post_null_sink(self) -> None:
+        """Tear down phonon_master_post + every loopback pointing at it.
+        Called when the master chain becomes empty so we revert to the
+        single-master topology."""
+        try:
+            modules = await self._pw.list_null_sink_modules()
+        except Exception:
+            logger.info("mixer.master_post_unload_list_failed", exc_info=False)
+            return
+        for mid, name in modules.items():
+            if name == MASTER_POST_SINK_NAME:
+                try:
+                    await self._pw.unload_module(mid)
+                    logger.info("mixer.master_post_unloaded", module_id=mid)
+                except Exception:
+                    logger.warning(
+                        "mixer.master_post_unload_failed",
+                        module_id=mid,
+                        exc_info=True,
+                    )
 
     # ── Master mutations ────────────────────────────────────────
 
@@ -517,9 +585,7 @@ class MixerService:
         await self._reconcile()
         return new
 
-    async def set_insert_enabled(
-        self, output_id: str, slot: int, enabled: bool
-    ) -> Output:
+    async def set_insert_enabled(self, output_id: str, slot: int, enabled: bool) -> Output:
         """Flip the .enabled flag on a chain slot. When all slots in
         the chain are disabled the filter-chain conf renders a
         passthrough (builtin copy node) so the audio passes through
@@ -538,14 +604,122 @@ class MixerService:
         if target.enabled == enabled:
             return cur
         new_insert = replace(target, enabled=enabled)
-        new_inserts = tuple(
-            new_insert if i == slot else ins for i, ins in enumerate(cur.inserts)
-        )
+        new_inserts = tuple(new_insert if i == slot else ins for i, ins in enumerate(cur.inserts))
         new = replace(cur, inserts=new_inserts)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
         await self._reconcile()
         return new
+
+    # ── Master chain mutations ─────────────────────────────────────
+    # Mirrors the Output chain methods above but operates on the
+    # single MasterBus.inserts tuple. Each call triggers a reconcile
+    # which ensures (or tears down) phonon_master_post + the master
+    # filter-chain conf so the routing matches the new state.
+
+    async def append_master_insert(self, backend: str, library: str, label: str) -> MasterBus:
+        from phonon_stage.mixer.models import MAX_CHAIN_DEPTH
+
+        master = self._store.state.master
+        if len(master.inserts) >= MAX_CHAIN_DEPTH:
+            msg = f"master chain depth at cap ({MAX_CHAIN_DEPTH}); remove a plugin before adding"
+            raise MixerError(msg)
+        defaults = await self._introspect_defaults(backend, library, label)
+        new_insert = PluginInsert(
+            backend=backend,
+            library=library,
+            label=label,
+            controls=defaults,
+            enabled=True,
+        )
+        new_master = replace(master, inserts=(*master.inserts, new_insert))
+        self._store.replace_state(replace(self._store.state, master=new_master))
+        await self._reconcile()
+        return new_master
+
+    async def remove_master_insert(self, slot: int) -> MasterBus:
+        master = self._store.state.master
+        if not (0 <= slot < len(master.inserts)):
+            msg = f"slot {slot} out of range (master chain has {len(master.inserts)} plugins)"
+            raise MixerError(msg)
+        remaining = tuple(i for idx, i in enumerate(master.inserts) if idx != slot)
+        new_master = replace(master, inserts=remaining)
+        self._store.replace_state(replace(self._store.state, master=new_master))
+        await self._reconcile()
+        return new_master
+
+    async def reset_master_chain(self) -> MasterBus:
+        master = self._store.state.master
+        if not master.inserts:
+            return master
+        new_master = replace(master, inserts=())
+        self._store.replace_state(replace(self._store.state, master=new_master))
+        await self._reconcile()
+        return new_master
+
+    async def set_master_insert_enabled(self, slot: int, enabled: bool) -> MasterBus:
+        master = self._store.state.master
+        if not (0 <= slot < len(master.inserts)):
+            msg = f"slot {slot} out of range (master chain has {len(master.inserts)} plugins)"
+            raise MixerError(msg)
+        target = master.inserts[slot]
+        if target.enabled == enabled:
+            return master
+        new_insert = replace(target, enabled=enabled)
+        new_inserts = tuple(
+            new_insert if i == slot else ins for i, ins in enumerate(master.inserts)
+        )
+        new_master = replace(master, inserts=new_inserts)
+        self._store.replace_state(replace(self._store.state, master=new_master))
+        await self._reconcile()
+        return new_master
+
+    async def update_master_insert_control(
+        self, control_name: str, value: float, slot: int = 0
+    ) -> MasterBus:
+        """Live-update one master plugin control value. Same shape as
+        update_output_insert_control: writes to the persisted state,
+        keeps the in-memory chain body cache in sync, and pushes a
+        live set-param to the engine so the change is heard
+        immediately without a chain reload."""
+        master = self._store.state.master
+        if not (0 <= slot < len(master.inserts)):
+            msg = f"slot {slot} out of range (master chain has {len(master.inserts)} plugins)"
+            raise MixerError(msg)
+        target = master.inserts[slot]
+        if control_name not in target.controls:
+            valid = await self._introspect_control_exists(
+                target.backend, target.library, target.label, control_name
+            )
+            if not valid:
+                msg = (
+                    f"unknown control {control_name!r} on master slot {slot} "
+                    f"plugin {target.label!r}"
+                )
+                raise MixerError(msg)
+        new_controls = dict(target.controls)
+        new_controls[control_name] = float(value)
+        new_insert = replace(target, controls=new_controls)
+        new_inserts = tuple(
+            new_insert if i == slot else ins for i, ins in enumerate(master.inserts)
+        )
+        new_master = replace(master, inserts=new_inserts)
+        self._store.replace_state(replace(self._store.state, master=new_master))
+        # In-memory body cache sync so the next non-control reconcile
+        # doesn't reload filter-chain.service for nothing.
+        if MASTER_CHAIN_NAME in self._owned_chains and new_master.inserts:
+            self._owned_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+                new_master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
+            )
+        try:
+            await self._pw.set_filter_node_control(MASTER_CHAIN_NAME, control_name, value)
+        except Exception:
+            logger.warning(
+                "mixer.master_insert_control_set_failed",
+                control=control_name,
+                exc_info=True,
+            )
+        return new_master
 
     async def _introspect_control_exists(
         self, backend: str, library: str, label: str, control_name: str
@@ -605,6 +779,19 @@ class MixerService:
             logger.info("mixer.read_insert_live_failed", output_id=output_id, exc_info=False)
             return {}
 
+    async def read_master_insert_live_controls(self) -> dict[str, float]:
+        """Live read of the master chain's control values — same role
+        as read_output_insert_live_controls but reads the single
+        phonon_master_fx node. Returns {} when the master chain is
+        empty / unloaded."""
+        if not self._store.state.master.inserts:
+            return {}
+        try:
+            return await self._pw.read_filter_node_controls(MASTER_CHAIN_NAME)
+        except Exception:
+            logger.info("mixer.read_master_insert_live_failed", exc_info=False)
+            return {}
+
     async def update_output_insert_control(
         self, output_id: str, control_name: str, value: float, slot: int = 0
     ) -> Output:
@@ -648,9 +835,7 @@ class MixerService:
         new_controls = dict(target.controls)
         new_controls[control_name] = float(value)
         new_insert = replace(target, controls=new_controls)
-        new_inserts = tuple(
-            new_insert if i == slot else ins for i, ins in enumerate(cur.inserts)
-        )
+        new_inserts = tuple(new_insert if i == slot else ins for i, ins in enumerate(cur.inserts))
         new = replace(cur, inserts=new_inserts)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
@@ -660,9 +845,8 @@ class MixerService:
         # control move and reload the service for nothing.
         chain = chain_name_for(new)
         if chain in self._owned_chains and new.inserts:
-            self._owned_chains[chain] = render_filter_chain_conf(
-                new, new.inserts, MASTER_SINK_NAME
-            )
+            master_src = _effective_master_source(self._store.state.master)
+            self._owned_chains[chain] = render_filter_chain_conf(new, new.inserts, master_src)
         try:
             await self._pw.set_filter_node_control(chain, control_name, value)
         except Exception:
@@ -982,6 +1166,7 @@ class MixerService:
                 logger.warning("mixer.reconcile_master_recreate_failed", exc_info=True)
                 return
             import asyncio as _asyncio
+
             for attempt in range(20):  # 20 x 50ms = 1s budget
                 try:
                     nodes = await self._pw.list_nodes()
@@ -1033,6 +1218,30 @@ class MixerService:
         #    while a chain is in place, the user manages delay via
         #    the plugin's controls instead.
         wanted_chains: dict[str, str] = {}
+        # Master chain: if master.inserts non-empty, ensure the
+        # phonon_master_post null-sink exists and render the master
+        # filter-chain conf. When master.inserts becomes empty again
+        # we tear down both. Outputs below pick up the right source
+        # via _effective_master_source().
+        master = self._store.state.master
+        if master.inserts:
+            try:
+                await self._ensure_master_post_null_sink()
+            except Exception:
+                logger.warning("mixer.master_post_ensure_failed", exc_info=True)
+            wanted_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+                master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
+            )
+        else:
+            # Master chain disabled — drop the post sink if it's still
+            # around. _apply_filter_chain_diff later notices the chain
+            # left wanted_chains and removes the conf.
+            try:
+                await self._unload_master_post_null_sink()
+            except Exception:
+                logger.info("mixer.master_post_unload_skipped", exc_info=False)
+        master_src = _effective_master_source(master)
+
         for o in self._store.state.outputs:
             sink_node = next((n for n in nodes if n.name == o.sink_node_name), None)
             if sink_node is None:
@@ -1074,14 +1283,14 @@ class MixerService:
                 logger.warning("mixer.output_mute_failed", output_id=o.id, exc_info=True)
             if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
                 wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.inserts, MASTER_SINK_NAME
+                    o, o.inserts, master_src
                 )
                 continue
             if silenced:
                 continue
             if o.receives_master:
                 mid = await self._pw.load_loopback(
-                    f"{MASTER_SINK_NAME}.monitor",
+                    f"{master_src}.monitor",
                     o.sink_node_name,
                     int(o.delay_ms),
                 )

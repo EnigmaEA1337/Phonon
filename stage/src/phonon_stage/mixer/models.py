@@ -138,6 +138,20 @@ class MasterBus:
     # down link topology entirely). The master has no solo by spec.
     mute_left: bool = False
     mute_right: bool = False
+    # Master FX chain (limiter / glue comp / mastering EQ etc).
+    # When non-empty + at least one slot is enabled, the mixer service
+    # creates a phonon_master_post null-sink, inserts a filter-chain
+    # between phonon_master.monitor and phonon_master_post, and
+    # re-points every Output to read from phonon_master_post.monitor
+    # instead of phonon_master.monitor. Per-Output chains still run
+    # downstream of that, in series.
+    inserts: tuple[PluginInsert, ...] = ()
+
+    @property
+    def insert(self) -> PluginInsert | None:
+        """Back-compat shim, mirrors Output.insert. Returns the
+        chain's first plugin or None when the chain is empty."""
+        return self.inserts[0] if self.inserts else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,15 +159,21 @@ class MasterBus:
             "mute": self.mute,
             "mute_left": self.mute_left,
             "mute_right": self.mute_right,
+            "inserts": [i.to_dict() for i in self.inserts],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MasterBus:
+        raw_inserts = data.get("inserts") or []
+        inserts: tuple[PluginInsert, ...] = tuple(
+            PluginInsert.from_dict(item) for item in raw_inserts if item
+        )
         return cls(
             gain_db=float(data.get("gain_db", 0.0)),
             mute=bool(data.get("mute", False)),
             mute_left=bool(data.get("mute_left", False)),
             mute_right=bool(data.get("mute_right", False)),
+            inserts=inserts,
         )
 
 

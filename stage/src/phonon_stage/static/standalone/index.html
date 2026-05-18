@@ -2204,6 +2204,44 @@ function dspFocusedInsert(out) {
   return out.insert || null;
 }
 
+// Resolve a DSP target by id — either a real Output, or a synthetic
+// Output-shaped object representing the master bus when id is the
+// "_master_" sentinel. Lets every DSP/EQ path treat master and
+// output focus uniformly: the only thing that differs is the
+// PATCH/GET URL, handled by dspInsertControlsUrl / dspInsertMonitoringUrl
+// below.
+function dspResolveTarget(outputId) {
+  if (outputId === '_master_') {
+    const m = mixerState.master || {};
+    // sink_node_name doubles as the OUT VU source. For master FX
+    // the chain dumps into phonon_master_post (the post-FX null-sink),
+    // so VU on that node reflects what's actually leaving the chain
+    // before it fans out to the outputs.
+    return {
+      id: '_master_',
+      label: 'MASTER',
+      sink_node_name: 'phonon_master_post',
+      inserts: Array.isArray(m.inserts) ? m.inserts : [],
+      insert: null,
+    };
+  }
+  return (mixerState.outputs || []).find(o => o.id === outputId) || null;
+}
+
+function dspInsertControlsUrl(outputId, encName) {
+  if (outputId === '_master_') {
+    return API + '/mixer/master/insert/controls/' + encName;
+  }
+  return API + '/mixer/outputs/' + outputId + '/insert/controls/' + encName;
+}
+
+function dspInsertMonitoringUrl(outputId) {
+  if (outputId === '_master_') {
+    return API + '/mixer/master/insert/monitoring';
+  }
+  return API + '/mixer/outputs/' + outputId + '/insert/monitoring';
+}
+
 async function fetchDspCapability() {
   // Mirrors the /capabilities call already made elsewhere — we
   // re-read just the flag so dspState.available is set even on
@@ -2290,6 +2328,50 @@ function fxRow(o) {
             onclick="appendChainInsert('${o.id}')" title="Add another plugin to the chain">+</button>
     <button class="fx-btn" style="padding:0;justify-content:center;color:var(--red);border-color:var(--red)"
             onclick="resetChain('${o.id}')" title="Reset the whole chain — output reverts to plain loopback">⌫</button>
+  </div>`;
+  return `<div class="row-fx">${slotsHtml}${trailing}</div>`;
+}
+
+// Master strip FX row — same visual shape as the per-output fxRow
+// but routes every action to the /mixer/master/* endpoints. The
+// strip uses the special id sentinel "_master_" in dspState.focusedId
+// so the DSP panel knows to read/write master.inserts instead of
+// scanning mixerState.outputs by id.
+function fxRowForMaster(m) {
+  if (!dspState.available) return '<div class="row-fx empty"></div>';
+  const chain = m.inserts || (m.insert ? [m.insert] : []);
+  const focused = dspState.focusedId === '_master_';
+  if (!chain.length) {
+    return `<div class="row-fx">
+      <button class="fx-btn${focused ? ' focused' : ''}" onclick="openFxPickerMaster()" title="Attach a master plugin">
+        <span class="fx-led"></span><span class="fx-name">+ FX</span>
+      </button>
+    </div>`;
+  }
+  const slotsHtml = chain.map((ins, idx) => {
+    const stateCls = ins.enabled ? 'active' : 'bypassed';
+    const slotFocused = focused && dspState.focusedSlot === idx;
+    const friendly = fxPluginFriendlyName(ins.library, ins.label);
+    const bypassTitle = ins.enabled ? 'Bypass master plugin' : 'Re-enable master plugin';
+    const bypassIcon = ins.enabled ? '⏻' : '⌀';
+    const bypassAff = `<span class="fx-slot-bypass edit-only"
+      onclick="event.stopPropagation();toggleMasterSlotBypass(${idx})"
+      title="${bypassTitle}">${bypassIcon}</span>`;
+    const removeAff = chain.length > 1
+      ? `<span class="fx-slot-x edit-only" onclick="event.stopPropagation();removeMasterChainSlot(${idx})" title="Remove from master chain">×</span>`
+      : '';
+    return `<button class="fx-btn ${stateCls}${slotFocused ? ' focused' : ''}"
+      onclick="focusMasterDspPanel(${idx})"
+      title="Master slot ${idx + 1}: ${escapeHtml(ins.label)}">
+      <span class="fx-led"></span><span class="fx-name">${escapeHtml(friendly)}</span>
+      ${bypassAff}${removeAff}
+    </button>`;
+  }).join('');
+  const trailing = `<div class="fx-chain-actions edit-only">
+    <button class="fx-btn" style="padding:0;justify-content:center"
+            onclick="appendMasterChainInsert()" title="Add a plugin to the master chain">+</button>
+    <button class="fx-btn" style="padding:0;justify-content:center;color:var(--red);border-color:var(--red)"
+            onclick="resetMasterChain()" title="Reset the master chain">⌫</button>
   </div>`;
   return `<div class="row-fx">${slotsHtml}${trailing}</div>`;
 }
@@ -2430,7 +2512,16 @@ async function fxPickerSelect(backendEnc, libraryEnc, labelEnc) {
   closeFxPicker();
   try {
     let r;
-    if (mode === 'set') {
+    if (mode === 'master-append') {
+      // Master chain append — POST /master/inserts. Always appends
+      // a new slot (no separate "set" path for the master since the
+      // master strip surfaces chain-mode directly).
+      r = await fetch(API + '/mixer/master/inserts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend, library, label }),
+      });
+    } else if (mode === 'set') {
       // Back-compat path: PATCH /insert (replaces slot 0, clears any
       // following slots — same as the v1 detach + attach flow). The
       // user is on an empty chain so there's nothing to clobber.
@@ -2448,18 +2539,18 @@ async function fxPickerSelect(backendEnc, libraryEnc, labelEnc) {
     }
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
-      alert((mode === 'set' ? 'Attach' : 'Append') + ' failed: ' + (e.detail || r.status));
+      const verb = mode === 'set' ? 'Attach' : 'Append';
+      alert(verb + ' failed: ' + (e.detail || r.status));
       return;
     }
-    // Focus the DSP panel on this output so the user can immediately
-    // tune the plugin they just added (slot 0 controls only — for
-    // v1 the panel still binds to first slot).
     if (mode === 'set') {
       dspState.focusedId = outputId;
+    } else if (mode === 'master-append') {
+      dspState.focusedId = '_master_';
     }
     await fetchMixer();
     await renderDspPanel();
-    if (mode === 'set') startDspMonitorPolling();
+    if (mode === 'set' || mode === 'master-append') startDspMonitorPolling();
   } catch (e) {
     alert('Plugin pick error: ' + e.message);
   }
@@ -2536,6 +2627,88 @@ async function focusDspPanel(outputId, slot = 0) {
   startDspMonitorPolling();
 }
 
+// ── Master chain helpers — UI side ─────────────────────────────────
+// Mirror the output-side functions but call /mixer/master/* and use
+// the "_master_" sentinel in dspState.focusedId.
+
+async function focusMasterDspPanel(slot = 0) {
+  eqStopSpectrumPolling();
+  dspState.focusedId = '_master_';
+  dspState.focusedSlot = slot;
+  renderMixer();
+  await renderDspPanel();
+  startDspMonitorPolling();
+}
+
+async function openFxPickerMaster() {
+  fxPickerState.outputId = '_master_';
+  fxPickerState.mode = 'master-append';
+  await _showFxPicker('Attach a master plugin');
+}
+
+async function appendMasterChainInsert() {
+  fxPickerState.outputId = '_master_';
+  fxPickerState.mode = 'master-append';
+  await _showFxPicker('Add a plugin to the master chain');
+}
+
+async function removeMasterChainSlot(slot) {
+  if (!confirm(`Remove master plugin at slot ${slot + 1}?`)) return;
+  try {
+    const r = await fetch(API + '/mixer/master/inserts/' + slot, { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Remove failed: ' + (e.detail || r.status));
+      return;
+    }
+    await fetchMixer();
+  } catch (e) {
+    alert('Remove error: ' + e.message);
+  }
+}
+
+async function resetMasterChain() {
+  if (!confirm('Reset the entire master plugin chain? Outputs revert to reading from the master directly.')) return;
+  try {
+    const r = await fetch(API + '/mixer/master/inserts', { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Reset failed: ' + (e.detail || r.status));
+      return;
+    }
+    stopDspMonitorPolling();
+    if (dspState.focusedId === '_master_') {
+      dspState.focusedId = null;
+    }
+    await fetchMixer();
+    await renderDspPanel();
+  } catch (e) {
+    alert('Reset error: ' + e.message);
+  }
+}
+
+async function toggleMasterSlotBypass(slot) {
+  const m = mixerState.master || {};
+  const chain = m.inserts || [];
+  if (!chain[slot]) return;
+  const next = !chain[slot].enabled;
+  try {
+    const r = await fetch(API + '/mixer/master/inserts/' + slot, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Bypass failed: ' + (e.detail || r.status));
+      return;
+    }
+    await fetchMixer();
+  } catch (e) {
+    alert('Bypass error: ' + e.message);
+  }
+}
+
 async function clearDspFocus() {
   stopDspMonitorPolling();
   eqStopSpectrumPolling();
@@ -2571,7 +2744,7 @@ async function renderDspPanel() {
     section.style.display = 'none';
     return;
   }
-  const out = (mixerState.outputs || []).find(o => o.id === dspState.focusedId);
+  const out = dspResolveTarget(dspState.focusedId);
   const focusedIns = dspFocusedInsert(out);
   if (!out || !focusedIns) {
     section.style.display = 'none';
@@ -2579,6 +2752,7 @@ async function renderDspPanel() {
     dspState.focusedSlot = 0;
     return;
   }
+  const isMasterFocus = out.id === '_master_';
   // Clamp focusedSlot if the chain shrank under us (operator removed
   // a slot while the panel was open).
   if (Array.isArray(out.inserts) && dspState.focusedSlot >= out.inserts.length) {
@@ -2604,6 +2778,14 @@ async function renderDspPanel() {
   // name, maker, then Close/Remove pushed to the right by the spacer.
   // Replaces the old 200 px left column which used to crop wide
   // plugin UIs (EQ x32 in particular).
+  // Remove button on the master panel resets the whole master chain
+  // (PluginInsert.detach isn't a thing on the master — there's no
+  // PATCH /master/insert single-slot path; the chain shape was always
+  // multi-slot. Single-slot chains still go through DELETE-all here
+  // because the master strip's FX badges are the per-slot affordance.)
+  const removeAction = isMasterFocus
+    ? `<button class="btn edit-only" onclick="removeMasterChainSlot(${dspState.focusedSlot})" title="Remove this plugin from the master chain">Remove</button>`
+    : `<button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>`;
   const meta = `<div class="dsp-panel-meta">
     <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}${escapeHtml(slotLabel)}</div>
     <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(focusedIns.library, focusedIns.label))}</div>
@@ -2611,7 +2793,7 @@ async function renderDspPanel() {
     <div class="dsp-meta-spacer"></div>
     <div class="dsp-actions">
       <button class="btn" onclick="clearDspFocus()" title="Close panel">Close</button>
-      <button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>
+      ${removeAction}
     </div>
   </div>`;
   const layout = PLUGIN_LAYOUTS[focusedIns.label];
@@ -2810,12 +2992,12 @@ function stopDspMonitorPolling() {
 async function pollDspMonitoring() {
   const outputId = dspState.focusedId;
   if (!outputId) return;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!out || !focusedIns) return;
   const layout = PLUGIN_LAYOUTS[focusedIns.label];
   try {
-    const r = await fetch(API + '/mixer/outputs/' + outputId + '/insert/monitoring');
+    const r = await fetch(dspInsertMonitoringUrl(outputId));
     if (!r.ok) return;
     const liveValues = await r.json();
     updateDspMonitoringCells(liveValues, layout);
@@ -2827,7 +3009,7 @@ async function pollDspMonitoring() {
 // .dsp-group element in-place — no innerHTML, no DOM rebuild, no
 // interaction lost.
 function updateDspActiveGroups(outputId) {
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!out || !focusedIns) return;
   const layout = PLUGIN_LAYOUTS[focusedIns.label];
@@ -3320,7 +3502,7 @@ function eqRedrawCurve(outputId) {
   const path = document.getElementById('eq-response-curve');
   const handlesG = document.getElementById('eq-band-handles');
   if (!path || !handlesG) return;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!out || !focusedIns) return;
   const values = focusedIns.controls || {};
@@ -3398,7 +3580,7 @@ function eqHandleDragStart(ev, circleEl) {
   };
   // Ensure the band's ON toggle is active when the operator starts
   // dragging — otherwise the gain change is invisible.
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   const onKey = `Band on ${freq}`;
   if (focusedIns && (focusedIns.controls[onKey] || 0) < 0.5) {
@@ -3438,7 +3620,7 @@ function eqHandleApplyEvent(ev) {
   // without API roundtrip. Target the focused chain slot — slot 0
   // by default, but if the EQ was attached as slot 1+ we mirror
   // there so eqRedrawCurve sees the new value on the next tick.
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (focusedIns && focusedIns.controls) focusedIns.controls[gainKey] = gainG;
   // Update readout cell in the strip below.
@@ -3475,8 +3657,7 @@ async function eqFireControlWrite(outputId, name, value) {
   // the EQ control change quietly drops on the floor.
   const slot = dspState.focusedSlot || 0;
   try {
-    await fetch(API + '/mixer/outputs/' + outputId
-        + '/insert/controls/' + encodeURIComponent(name)
+    await fetch(dspInsertControlsUrl(outputId, encodeURIComponent(name))
         + '?slot=' + slot, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -3484,7 +3665,7 @@ async function eqFireControlWrite(outputId, name, value) {
     });
     // Update local mirror on the focused chain slot so the model
     // stays in sync with what the server just accepted.
-    const out = (mixerState.outputs || []).find(o => o.id === outputId);
+    const out = dspResolveTarget(outputId);
     const focusedIns = dspFocusedInsert(out);
     if (focusedIns && focusedIns.controls) focusedIns.controls[name] = value;
   } catch (e) { /* transient — next gesture re-fires */ }
@@ -3505,7 +3686,7 @@ async function eqToggleBand(ev, btn) {
   if (!band) return;
   const outputId = band.dataset.outputId;
   const onKey = band.dataset.onKey;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!focusedIns) return;
   const cur = focusedIns.controls[onKey] >= 0.5;
@@ -3607,7 +3788,7 @@ function paraEq16RedrawCurve(outputId) {
   const path = document.getElementById('eq-response-curve');
   const handlesG = document.getElementById('paraeq16-band-handles');
   if (!path || !handlesG) return;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!out || !focusedIns) return;
   const v = focusedIns.controls || {};
@@ -3685,7 +3866,7 @@ function paraEq16HandleDragStart(ev, circleEl) {
   const idx = parseInt(circleEl.dataset.bandIdx, 10);
   const outputId = circleEl.dataset.outputId;
   if (!svg || !outputId) return;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!focusedIns) return;
   paraEq16DragState = {
@@ -3727,7 +3908,7 @@ function paraEq16HandleDragMove(ev) {
   db = Math.round(db * 10) / 10;
   const gainG = eqDbToGain(db);
   // Local mirror + redraw.
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!focusedIns || !focusedIns.controls) return;
   focusedIns.controls[paraEq16Key(idx, "freq")] = freq;
@@ -3754,7 +3935,7 @@ async function paraEq16ToggleMute(ev, btn, idx) {
   const band = btn.closest('.eq-band');
   const outputId = band ? band.dataset.outputId : null;
   if (!outputId) return;
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!focusedIns) return;
   const key = paraEq16Key(idx, "mute");
@@ -3840,7 +4021,7 @@ async function eqSpectrumTick() {
   if (!outputId) return;
   // Bail if the EQ panel is gone (operator switched plugin or closed
   // the panel) — saves a fetch + a useless paint.
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   // Spectrum polling is shared between the graph EQ x32 and the
   // parametric EQ x16 — both have a green-phosphor analyzer behind
@@ -3975,14 +4156,13 @@ async function calfBypassToggle(btn) {
   btn.classList.toggle('on', !isOn);
   btn.title = !isOn ? 'Bypass active — plugin signal frozen' : 'Engage plugin processing';
   try {
-    await fetch(API + '/mixer/outputs/' + outputId
-        + '/insert/controls/' + encName + '?slot=' + slot, {
+    await fetch(dspInsertControlsUrl(outputId, encName) + '?slot=' + slot, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: next }),
     });
     // Mirror locally so the next render reads the right value.
-    const out = (mixerState.outputs || []).find(o => o.id === outputId);
+    const out = dspResolveTarget(outputId);
     const focusedIns = dspFocusedInsert(out);
     if (focusedIns) focusedIns.controls["Bypass"] = next;
   } catch (e) {
@@ -4268,7 +4448,7 @@ function knobReset(ev, svg) {
   // Look up the control's schema default from the cached descriptor.
   const outputId = svg.dataset.knobOutput;
   const name = decodeURIComponent(svg.dataset.knobName);
-  const out = (mixerState.outputs || []).find(o => o.id === outputId);
+  const out = dspResolveTarget(outputId);
   const focusedIns = dspFocusedInsert(out);
   if (!focusedIns) return;
   const key = focusedIns.library + '' + focusedIns.label;
@@ -4325,8 +4505,7 @@ async function dspSetControl(outputId, encName, value) {
   const slot = dspState.focusedSlot || 0;
   try {
     const r = await fetch(
-      API + '/mixer/outputs/' + outputId
-          + '/insert/controls/' + encodeURIComponent(name)
+      dspInsertControlsUrl(outputId, encodeURIComponent(name))
           + '?slot=' + slot,
       {
         method: 'PATCH',
@@ -4335,10 +4514,14 @@ async function dspSetControl(outputId, encName, value) {
       }
     );
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const out = await r.json();
-    mixerState.outputs = (mixerState.outputs || []).map(
-      o => o.id === outputId ? out : o
-    );
+    const body = await r.json();
+    if (outputId === '_master_') {
+      mixerState.master = body;
+    } else {
+      mixerState.outputs = (mixerState.outputs || []).map(
+        o => o.id === outputId ? body : o
+      );
+    }
     // Re-evaluate Mode-bound section highlights in-place. No
     // innerHTML, so any in-flight drag stays bound to its knob.
     updateDspActiveGroups(outputId);
@@ -4412,7 +4595,7 @@ function renderMixSources() {
 function renderMixMaster() {
   const el = document.getElementById('mix-master');
   if (!el) return;
-  const m = mixerState.master || { gain_db: 0, mute: false };
+  const m = mixerState.master || { gain_db: 0, mute: false, inserts: [] };
   const ledColor = m.mute ? 'var(--red)' : 'var(--cyan)';
   // Count sources actually feeding the master + outputs actually
   // drawing from it — informs the operator at a glance whether the
@@ -4432,14 +4615,15 @@ function renderMixMaster() {
     <div class="row-io-in strip-io input master" title="Sources feeding the master bus">▶ ${sourcesIn} source${sourcesIn > 1 ? 's' : ''}</div>
     <div class="row-route mix-route-bar"><span style="font-size:8px;color:var(--text-fade)">phonon_master</span></div>
     <div class="row-extra1"></div>
-    <div class="row-extra2"></div>
-    <div class="row-fx">
+    <div class="row-extra2">
       <button class="fx-btn${ttActive}" onclick="mixerTestToneToggle(event)"
               oncontextmenu="mixerTestToneCycle(event); return false;"
+              style="width:100%;height:100%"
               title="${escapeHtml(ttTitle)} — right-click to cycle kind">
         <span class="fx-led"></span><span class="fx-name">${escapeHtml(ttLabel)}</span>
       </button>
     </div>
+    ${fxRowForMaster(m)}
     ${mrlsRow('mix-master', '', m)}
     <div class="row-fader fader-area">
       ${MIX_VU_TICKS}

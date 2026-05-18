@@ -13,11 +13,15 @@ class TestSnapshot:
         resp = await client.get("/mixer")
         assert resp.status_code == 200
         body = resp.json()
+        # Master gains an `insert` + `inserts` field once we added the
+        # master FX chain — same shape as the Output response.
         assert body["master"] == {
             "gain_db": 0.0,
             "mute": False,
             "mute_left": False,
             "mute_right": False,
+            "insert": None,
+            "inserts": [],
         }
         assert body["outputs"] == []
         assert body["sources"] == []

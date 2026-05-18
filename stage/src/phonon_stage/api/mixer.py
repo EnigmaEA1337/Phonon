@@ -36,6 +36,12 @@ class MasterResponse(BaseModel):
     mute: bool
     mute_left: bool
     mute_right: bool
+    # Master FX chain — mirrors Output's `inserts` list. Empty
+    # means no master chain at all (outputs read directly from
+    # phonon_master). Non-empty means a phonon_master_post sink +
+    # master filter-chain are wired in between.
+    insert: PluginInsertResponse | None = None
+    inserts: list[PluginInsertResponse] = Field(default_factory=list)
 
 
 class PluginInsertResponse(BaseModel):
@@ -168,11 +174,15 @@ class SourceUpdate(BaseModel):
 
 
 def _to_master_resp(m: MasterBus) -> MasterResponse:
+    chain = [_to_insert_resp(i) for i in m.inserts]
+    chain_resp: list[PluginInsertResponse] = [c for c in chain if c is not None]
     return MasterResponse(
         gain_db=m.gain_db,
         mute=m.mute,
         mute_left=m.mute_left,
         mute_right=m.mute_right,
+        insert=chain_resp[0] if chain_resp else None,
+        inserts=chain_resp,
     )
 
 
@@ -370,9 +380,7 @@ async def post_output_chain_insert(
 
 
 @router.delete("/outputs/{output_id}/inserts/{slot}", response_model=OutputResponse)
-async def delete_output_chain_slot(
-    request: Request, output_id: str, slot: int
-) -> OutputResponse:
+async def delete_output_chain_slot(request: Request, output_id: str, slot: int) -> OutputResponse:
     """Remove the plugin at slot N. Slots > N shift down by one."""
     svc = _service(request)
     try:
@@ -419,6 +427,95 @@ async def patch_output_chain_slot(
         status = 404 if "unknown output id" in str(exc) else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     return _to_output_resp(out)
+
+
+# ── Master chain endpoints ────────────────────────────────────────
+# Parallels the /outputs/{id}/inserts surface but operates on the
+# single MasterBus. When master.inserts becomes non-empty the
+# reconcile loop creates a phonon_master_post null-sink + the
+# master filter-chain conf and re-points every Output to read from
+# it instead of phonon_master.monitor — handled entirely server-
+# side, the UI just calls these endpoints same as Output ones.
+
+
+@router.post("/master/inserts", response_model=MasterResponse, status_code=201)
+async def post_master_chain_insert(request: Request, body: InsertAppend) -> MasterResponse:
+    svc = _service(request)
+    if body.backend not in PLUGIN_BACKENDS:
+        raise HTTPException(
+            status_code=400, detail=f"backend must be one of {list(PLUGIN_BACKENDS)}"
+        )
+    try:
+        m = await svc.append_master_insert(
+            backend=body.backend, library=body.library, label=body.label
+        )
+    except MixerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _to_master_resp(m)
+
+
+@router.delete("/master/inserts/{slot}", response_model=MasterResponse)
+async def delete_master_chain_slot(request: Request, slot: int) -> MasterResponse:
+    svc = _service(request)
+    try:
+        m = await svc.remove_master_insert(slot=slot)
+    except MixerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_master_resp(m)
+
+
+@router.delete("/master/inserts", response_model=MasterResponse)
+async def reset_master_chain(request: Request) -> MasterResponse:
+    svc = _service(request)
+    m = await svc.reset_master_chain()
+    return _to_master_resp(m)
+
+
+@router.patch("/master/inserts/{slot}", response_model=MasterResponse)
+async def patch_master_chain_slot(
+    request: Request, slot: int, body: InsertEnabledUpdate
+) -> MasterResponse:
+    """Update a single master chain slot's flags. v1: only `enabled`
+    is settable from here — wired to the strip-level bypass button."""
+    svc = _service(request)
+    try:
+        m = await svc.set_master_insert_enabled(slot, enabled=body.enabled)
+    except MixerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_master_resp(m)
+
+
+@router.get("/master/insert/monitoring")
+async def get_master_insert_monitoring(request: Request) -> dict[str, float]:
+    """Live read of the master chain's plugin control values. Mirror
+    of /outputs/{id}/insert/monitoring but for the master FX node.
+    Used by the DSP panel's Monitoring block when a master plugin is
+    focused."""
+    svc = _service(request)
+    return await svc.read_master_insert_live_controls()
+
+
+@router.patch(
+    "/master/insert/controls/{control_name:path}",
+    response_model=MasterResponse,
+)
+async def patch_master_insert_control(
+    request: Request,
+    control_name: str,
+    body: InsertControlUpdate,
+    slot: int = 0,
+) -> MasterResponse:
+    """Live-update one master plugin control. Same shape as the
+    output-side endpoint — slot picks which plugin in the master
+    chain to address; UI sends dspState.focusedSlot."""
+    svc = _service(request)
+    try:
+        m = await svc.update_master_insert_control(control_name, body.value, slot=slot)
+    except MixerError as exc:
+        msg = str(exc)
+        status = 404 if "unknown" in msg or "no plugin" in msg else 400
+        raise HTTPException(status_code=status, detail=msg) from exc
+    return _to_master_resp(m)
 
 
 @router.post("/admin/reconcile")

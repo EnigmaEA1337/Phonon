@@ -981,9 +981,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    stops + highlights (CSS gradients alone can't get that polished
    look). Track is matte black. Graduation pinned to the LEFT,
    between the VU bars and the rail. */
-.fader-col { width: 42px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+/* Fader column is wider now (56 px) so the cap (28×16, Studio One
+   proportions: low + wide) doesn't overlap the dB graduation, which
+   lives entirely to the LEFT of the rail. */
+.fader-col { width: 56px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
 .fader-rail {
-  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px;
+  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 8px;
   transform: translateX(-50%);
   background: #060709;
   border: 1px solid #000;
@@ -998,15 +1001,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border-radius: 1px;
   z-index: 1;
 }
-/* Cap — wrapper carries the drop-shadow + cursor; the SVG inside is
-   pointer-events:none so drag clicks register on the wrapper. */
 .fader-handle {
-  position: absolute; left: 50%; width: 38px; height: 26px;
+  position: absolute; left: 50%; width: 28px; height: 16px;
   transform: translate(-50%, -50%);
   background: transparent;
   border: none;
-  border-radius: 4px;
-  filter: drop-shadow(0 3px 4px rgba(0,0,0,0.65));
+  border-radius: 3px;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.7));
   cursor: grab;
   z-index: 2;
 }
@@ -1014,23 +1015,24 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .fader-handle::before { content: none; }
 .fader-handle:active { cursor: grabbing; }
 
-/* dB graduation pinned to the LEFT of the rail. Labels right-align
-   so the long ones (-12, −∞) hang together. */
+/* dB graduation pinned to the LEFT of the rail. Now sits entirely
+   in the column's left half (cap is 14 px from center, scale ends
+   at 8 px from center → 6 px of clearance). */
 .fader-scale {
   position: absolute; left: 50%; top: 6px; bottom: 6px;
-  width: 22px; margin-left: -29px;
+  width: 20px; margin-left: -28px;
   pointer-events: none;
-  font-family: var(--font-m); font-size: 8px;
+  font-family: var(--font-m); font-size: 7.5px;
   color: rgba(210,220,230,0.85);
   letter-spacing: -0.3px;
 }
 .fader-scale .tick {
-  position: absolute; right: 0; width: 4px;
+  position: absolute; right: 0; width: 3px;
   height: 1px; background: rgba(190,200,210,0.45);
 }
-.fader-scale .tick.major { background: rgba(230,235,240,0.85); width: 6px; }
+.fader-scale .tick.major { background: rgba(230,235,240,0.85); width: 5px; }
 .fader-scale .tick-label {
-  position: absolute; right: 8px;
+  position: absolute; right: 7px;
   transform: translateY(-50%);
   white-space: nowrap;
   text-align: right;
@@ -4906,16 +4908,18 @@ function _mixFaderScaleHtml() {
 // the equator), bottom half darkens and ends in a soft shadow.
 // Inkscape-style construction: body gradient + edge rim + top
 // specular highlight + bottom ambient shadow.
+// Cap SVG. 28×16 viewBox = Studio One proportions (rectangle wider
+// than tall). Top half catches light, bottom half darkens; thin
+// equator groove suggests the read line.
 const _MIX_FADER_CAP_SVG = `
-<svg viewBox="0 0 38 26" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 28 16" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
   <defs>
     <linearGradient id="capBody" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0"    stop-color="#fbfcfd"/>
-      <stop offset="0.18" stop-color="#eef0f3"/>
-      <stop offset="0.46" stop-color="#c9ced5"/>
-      <stop offset="0.55" stop-color="#aab0b8"/>
-      <stop offset="0.78" stop-color="#cdd1d8"/>
-      <stop offset="1"    stop-color="#7e848d"/>
+      <stop offset="0.22" stop-color="#eaedf1"/>
+      <stop offset="0.5"  stop-color="#c2c7ce"/>
+      <stop offset="0.78" stop-color="#dde1e7"/>
+      <stop offset="1"    stop-color="#8a9098"/>
     </linearGradient>
     <linearGradient id="capRim" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0"   stop-color="#9aa0a8"/>
@@ -4923,12 +4927,11 @@ const _MIX_FADER_CAP_SVG = `
       <stop offset="1"   stop-color="#1f2226"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="38" height="26" rx="4" ry="4" fill="url(#capRim)"/>
-  <rect x="1" y="1" width="36" height="24" rx="3" ry="3" fill="url(#capBody)"/>
-  <rect x="3" y="2" width="32" height="1" rx="0.5" fill="rgba(255,255,255,0.9)"/>
-  <rect x="3" y="23" width="32" height="1" rx="0.5" fill="rgba(0,0,0,0.18)"/>
-  <line x1="6" y1="13" x2="32" y2="13" stroke="rgba(0,0,0,0.22)" stroke-width="0.6"/>
-  <line x1="6" y1="14" x2="32" y2="14" stroke="rgba(255,255,255,0.45)" stroke-width="0.4"/>
+  <rect x="0"   y="0"   width="28" height="16" rx="2.5" ry="2.5" fill="url(#capRim)"/>
+  <rect x="0.7" y="0.7" width="26.6" height="14.6" rx="1.8" ry="1.8" fill="url(#capBody)"/>
+  <rect x="2" y="1.4" width="24" height="0.8" rx="0.4" fill="rgba(255,255,255,0.92)"/>
+  <line x1="3" y1="8" x2="25" y2="8" stroke="rgba(0,0,0,0.30)" stroke-width="0.5"/>
+  <line x1="3" y1="8.5" x2="25" y2="8.5" stroke="rgba(255,255,255,0.40)" stroke-width="0.3"/>
 </svg>`.trim();
 
 function faderCol(kind, id, gainDb) {

@@ -512,6 +512,49 @@ class TestMultiPluginChain:
         # Two distinct plugin nodes in the chain — fx_0 and fx_1.
         assert "name = fx_0" in body
         assert "name = fx_1" in body
+        # Explicit links block wires fx_0:Output → fx_1:Input on both
+        # channels — without this, fx_1 gets no audio and the chain
+        # is silent past slot 0.
+        assert "links = [" in body
+        assert 'output = "fx_0:Output L"' in body
+        assert 'input = "fx_1:Input L"' in body
+        assert 'output = "fx_0:Output R"' in body
+        assert 'input = "fx_1:Input R"' in body
+
+    def test_render_single_plugin_no_links_block(self) -> None:
+        # One plugin = capture/playback auto-route, no explicit links
+        # needed. Skipping the block avoids a noisy empty section.
+        from phonon_stage.mixer.models import Output, PluginInsert
+
+        o = Output(
+            id="abc12345",
+            sink_node_name="alsa_output.dg60_1",
+            label="DG60",
+            inserts=(
+                PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL),
+            ),
+        )
+        body = render_filter_chain_conf(o, o.inserts, "phonon_master")
+        assert "links = [" not in body
+
+    def test_render_three_plugin_chain_links_consecutive(self) -> None:
+        # 3 plugins → 2 link pairs (fx_0→fx_1, fx_1→fx_2).
+        from phonon_stage.mixer.models import Output, PluginInsert
+
+        o = Output(
+            id="abc12345",
+            sink_node_name="alsa_output.dg60_1",
+            label="DG60",
+            inserts=tuple(
+                PluginInsert(backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL)
+                for _ in range(3)
+            ),
+        )
+        body = render_filter_chain_conf(o, o.inserts, "phonon_master")
+        assert 'input = "fx_1:Input L"' in body
+        assert 'input = "fx_2:Input L"' in body
+        # No phantom fx_3.
+        assert "fx_3:Input L" not in body
 
     def test_render_with_all_bypassed_emits_passthrough(self) -> None:
         from phonon_stage.mixer.models import Output, PluginInsert

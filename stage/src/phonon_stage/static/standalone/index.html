@@ -238,33 +238,83 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Match .strip-io's typography exactly — 8px, no uppercase, no
    letter-spacing — so the FX bar never forces the strip column
    wider than the IN/OUT labels above and below it. */
+/* FX slot — looks like a small rack module: brushed-dark plate with
+   a 3D LED that lights green when the plugin is active, amber when
+   bypassed. Matches the rocker / scotch / cap chrome aesthetic. */
 .fx-btn { flex: 1; display: flex; align-items: center; gap: 4px;
-  font-family: var(--font-m); font-size: 8px; font-weight: 400;
-  background: var(--bg-2); color: var(--text-mid);
-  border: 1px solid var(--border); border-radius: 3px;
-  padding: 0 4px; cursor: pointer; min-width: 0; overflow: hidden; }
-.fx-btn:hover { background: var(--bg-3); color: var(--text-hi); }
-.fx-btn.active { background: rgba(52,211,153,0.10); border-color: var(--green); color: var(--green); }
-.fx-btn.bypassed { background: rgba(251,191,36,0.10); border-color: var(--yellow); color: var(--yellow); }
-.fx-btn .fx-led { width: 5px; height: 5px; border-radius: 50%;
-  background: var(--text-fade); flex-shrink: 0; }
-.fx-btn.active .fx-led    { background: var(--green); box-shadow: 0 0 3px var(--green); }
-.fx-btn.bypassed .fx-led  { background: var(--yellow); box-shadow: 0 0 3px var(--yellow); }
+  font-family: var(--font-m); font-size: 8px; font-weight: 600;
+  color: #c7ccd2;
+  background: linear-gradient(180deg,
+    #3c4047 0%, #2a2d33 48%,
+    #1d2025 52%, #15181c 100%);
+  border: 1px solid #060709;
+  border-top-color: #4f5258;
+  border-radius: 3px;
+  padding: 0 5px; cursor: pointer; min-width: 0; overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    0 1px 1px rgba(0,0,0,0.45);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+  letter-spacing: 0.3px;
+  transition: background 80ms linear, box-shadow 80ms linear, color 80ms linear; }
+.fx-btn:hover {
+  background: linear-gradient(180deg,
+    #4c5057 0%, #383b41 48%,
+    #2a2d33 52%, #1f2228 100%);
+  color: #f0f3f7; }
+.fx-btn.active {
+  color: #d4f5e0;
+  border-color: rgba(52,211,153,0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    inset 0 0 6px rgba(52,211,153,0.18),
+    0 0 4px rgba(52,211,153,0.30),
+    0 1px 1px rgba(0,0,0,0.45); }
+.fx-btn.bypassed {
+  color: rgba(199,204,210,0.50);
+  background: linear-gradient(180deg,
+    #32353b 0%, #25282d 48%,
+    #1a1d22 52%, #131618 100%); }
+.fx-btn .fx-led { width: 6px; height: 6px; border-radius: 50%;
+  background: #1a1d22;
+  border: 1px solid rgba(0,0,0,0.55);
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.6); }
+.fx-btn.active .fx-led {
+  background: radial-gradient(circle at 30% 30%,
+    #6affba 0%, #34d399 55%, #1a8859 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    0 0 4px rgba(52,211,153,0.85);
+  border-color: rgba(0,0,0,0.55); }
+.fx-btn.bypassed .fx-led {
+  background: radial-gradient(circle at 30% 30%,
+    #fff3a8 0%, #fbbf24 55%, #b88a10 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.30),
+    0 0 3px rgba(251,191,36,0.70);
+  border-color: rgba(0,0,0,0.55); }
 .fx-btn .fx-name { flex: 1; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.fx-btn.focused { outline: 1px solid var(--cyan); outline-offset: -2px; }
-/* Per-slot × shown when the chain has 2+ plugins. Stops click
-   propagation so removing a slot doesn't also focus the DSP panel
-   on this output. */
-.fx-slot-x { padding: 0 2px; color: var(--text-fade); cursor: pointer;
-  font-size: 10px; line-height: 1; flex-shrink: 0; }
+.fx-btn.focused {
+  outline: 1px solid var(--cyan); outline-offset: -2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    inset 0 0 6px rgba(34,211,238,0.22),
+    0 0 4px rgba(34,211,238,0.45),
+    0 1px 1px rgba(0,0,0,0.45); }
+/* Per-slot × shown when the chain has 2+ plugins. */
+.fx-slot-x { padding: 0 2px; color: rgba(199,204,210,0.55); cursor: pointer;
+  font-size: 10px; line-height: 1; flex-shrink: 0;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7); }
 .fx-slot-x:hover { color: var(--red); }
-/* Bypass toggle — power-icon next to the chain badge. Inherits
-   the .fx-btn.bypassed yellow when the slot is off, default
-   text-fade otherwise. Stops click propagation so toggling doesn't
-   also focus the panel on this slot. */
-.fx-slot-bypass { padding: 0 2px; color: var(--text-fade); cursor: pointer;
-  font-size: 9px; line-height: 1; flex-shrink: 0; }
+/* Bypass toggle — power icon next to the chain badge. */
+.fx-slot-bypass { padding: 0 2px; color: rgba(199,204,210,0.55); cursor: pointer;
+  font-size: 9px; line-height: 1; flex-shrink: 0;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7); }
 .fx-slot-bypass:hover { color: var(--cyan); }
 .fx-btn.bypassed .fx-slot-bypass { color: var(--yellow); }
 /* On the Source / Master strips the fx row is intentionally empty

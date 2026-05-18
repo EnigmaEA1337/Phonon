@@ -322,21 +322,26 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Response curve graph — sits above the strip. SVG fills its
    container width, height fixed so the curve doesn't squash on
    narrow viewports. */
-.eq-graph { width: 100%; height: 280px; background: linear-gradient(180deg,
-  rgba(15,24,32,0.95), rgba(8,16,24,0.95));
-  border: 1px solid var(--border); border-radius: 4px; display: block;
-  user-select: none; }
-.eq-grid-v { stroke: rgba(255,255,255,0.06); stroke-width: 1; }
-.eq-grid-h { stroke: rgba(255,255,255,0.05); stroke-width: 1;
+.eq-graph { width: 100%; height: 280px;
+  background: radial-gradient(ellipse at 40% 30%,
+    #d6e842 0%, #aac030 40%, #5f7a18 90%, #2c3a0a 100%);
+  border: 1px solid #1a200a;
+  border-radius: 4px; display: block; user-select: none;
+  box-shadow:
+    inset 0 0 24px rgba(0,0,0,0.5),
+    inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.eq-grid-v { stroke: rgba(20,40,90,0.2); stroke-width: 1; }
+.eq-grid-h { stroke: rgba(20,40,90,0.15); stroke-width: 1;
   stroke-dasharray: 2 3; }
-.eq-grid-zero { stroke: rgba(6,182,212,0.35); stroke-width: 1; }
-.eq-grid-label { fill: var(--text-fade); font-family: var(--font-m);
-  font-size: 9px; }
-.eq-grid-label-zero { fill: var(--cyan); font-family: var(--font-m);
+.eq-grid-zero { stroke: rgba(20,40,90,0.45); stroke-width: 1.2; }
+.eq-grid-label { fill: rgba(40,55,30,0.7); font-family: var(--font-m);
   font-size: 9px; font-weight: 600; }
-.eq-response-curve { fill: none; stroke: var(--cyan); stroke-width: 1.6;
+.eq-grid-label-zero { fill: rgba(20,50,90,0.85); font-family: var(--font-m);
+  font-size: 9px; font-weight: 700; }
+.eq-response-curve { fill: none; stroke: #1a3060; stroke-width: 1.8;
   stroke-linejoin: round; stroke-linecap: round;
-  filter: drop-shadow(0 0 2px rgba(6,182,212,0.5)); }
+  filter: drop-shadow(0 0 2px rgba(20,40,80,0.6)); }
 /* Compact band readout row — no faders. Each column is just the
    ISO frequency, the current gain in dB, and a tiny ON/OFF toggle.
    All actual gain editing is done by dragging the band handle on
@@ -364,11 +369,11 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    we leave hit area generous via cursor + transition. Off bands
    fade out — they still respond to drag (which re-enables the band
    on first move). */
-.eq-handle { fill: var(--cyan); stroke: var(--bg-1); stroke-width: 1.5;
-  cursor: ns-resize; transition: fill 0.1s, r 0.1s;
-  filter: drop-shadow(0 0 3px rgba(6,182,212,0.8)); }
-.eq-handle:hover { fill: var(--text-hi); }
-.eq-handle.off { fill: var(--text-fade); opacity: 0.6;
+.eq-handle { fill: #1a3060; stroke: #d6e842; stroke-width: 1.5;
+  cursor: ns-resize; transition: fill 0.1s, stroke 0.1s, r 0.1s;
+  filter: drop-shadow(0 0 3px rgba(20,40,80,0.8)); }
+.eq-handle:hover { fill: #2d5090; stroke: #fff; }
+.eq-handle.off { fill: #4a5040; stroke: #6a7050; opacity: 0.6;
   filter: none; }
 
 /* Plugin sections — match the LSP native layout (Signal / Samples /
@@ -579,14 +584,34 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   text-shadow: 0 0 4px rgba(212,240,120,0.6);
   letter-spacing: 1px;
 }
-/* Side ornament — "phonon studio gear" vertical wordmark */
+/* Side ornament — vertical brand badge on a luminous blue panel,
+   sits flush against the right edge of the Calf rack. The badge
+   glows with a soft outer halo + inner cyan-blue gradient and
+   carries the wordmark in bright cyan. Consistent across every
+   Calf-skinned plugin (delay, EQ, …). */
 .dsp-calf .dsp-calf-brand {
-  position: absolute; right: 8px; top: 50%;
-  transform: translateY(-50%) rotate(90deg);
-  transform-origin: right center;
-  font-family: var(--font-m); font-size: 9px;
-  color: #4a5468; letter-spacing: 3px;
-  pointer-events: none; white-space: nowrap;
+  position: absolute; right: 4px; top: 28px; bottom: 28px;
+  width: 22px;
+  background: linear-gradient(180deg,
+    #1f3a78 0%, #0c1f4a 50%, #1f3a78 100%);
+  border: 1px solid #050e22;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -1px 0 rgba(0,0,0,0.4),
+    0 0 14px rgba(60,140,255,0.45);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.dsp-calf .dsp-calf-brand-text {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--font-h); font-size: 9px; font-weight: 700;
+  letter-spacing: 4px;
+  color: #9bd0ff;
+  text-shadow:
+    0 0 4px rgba(120,180,255,0.9),
+    0 0 8px rgba(60,140,255,0.5);
   text-transform: uppercase;
 }
 /* Rack-mount corner screws — 4 silver dots with slot. Decorative. */
@@ -2547,10 +2572,43 @@ async function renderDspPanel() {
     </div>
   </div>`;
   const layout = PLUGIN_LAYOUTS[focusedIns.label];
+  // Decoration applied across BOTH render paths (custom + group-based)
+  // when the layout opts into useCalfSkin. Pulled out here so both
+  // branches end with the same panel.innerHTML assignment.
+  const ornaments = (layout && layout.useCalfSkin) ? `
+    <div class="dsp-rack-screw" style="top:5px;left:5px"></div>
+    <div class="dsp-rack-screw" style="top:5px;right:5px"></div>
+    <div class="dsp-rack-screw" style="bottom:5px;left:5px"></div>
+    <div class="dsp-rack-screw" style="bottom:5px;right:5px"></div>
+    <div class="dsp-calf-brand"><span class="dsp-calf-brand-text">phonon studio gear</span></div>` : '';
+  panel.classList.toggle('dsp-calf', !!(layout && layout.useCalfSkin));
+
   let bodyHtml;
   if (layout && layout.customRenderer && typeof window[layout.customRenderer] === 'function') {
-    bodyHtml = window[layout.customRenderer](out.id, schema, focusedIns.controls, inSide, outSide);
-    panel.innerHTML = meta + `<div class="dsp-controls">${bodyHtml}</div>`;
+    // Calf skin path: prepend the IN VU | Bypass rocker | OUT VU
+    // toolbar so the EQ (and any other custom-renderer plugin that
+    // opts into the skin) gets the same top-row treatment as the
+    // group-based layouts. The custom renderer receives EMPTY VU
+    // markers in this case — the toolbar already shows them.
+    if (layout.useCalfSkin) {
+      const bypassToggle = renderCalfBypassRocker(
+        out.id, dspState.focusedSlot,
+        focusedIns.controls["Bypass"] ?? 0
+      );
+      const customBody = window[layout.customRenderer](
+        out.id, schema, focusedIns.controls, '', ''
+      );
+      bodyHtml = `<div class="dsp-controls">
+        <div class="dsp-calf-toolbar">${inSide}${bypassToggle}${outSide}</div>
+        <div class="dsp-calf-body">${customBody}</div>
+      </div>`;
+    } else {
+      bodyHtml = window[layout.customRenderer](
+        out.id, schema, focusedIns.controls, inSide, outSide
+      );
+      bodyHtml = `<div class="dsp-controls">${bodyHtml}</div>`;
+    }
+    panel.innerHTML = meta + bodyHtml + ornaments;
     return;
   }
   if (layout) {
@@ -2592,17 +2650,9 @@ async function renderDspPanel() {
     ).join('') || '<div class="dsp-panel-empty">Plugin has no input controls.</div>';
     bodyHtml = `<div class="dsp-controls">${inSide}${controlsHtml}${outSide}</div>`;
   }
-  // Calf-rack ornaments: 4 corner screws + vertical brand wordmark.
-  // Pure decoration — sits absolute over the panel, doesn't affect
-  // the control flow.
-  const ornaments = (layout && layout.useCalfSkin) ? `
-    <div class="dsp-rack-screw" style="top:5px;left:5px"></div>
-    <div class="dsp-rack-screw" style="top:5px;right:5px"></div>
-    <div class="dsp-rack-screw" style="bottom:5px;left:5px"></div>
-    <div class="dsp-rack-screw" style="bottom:5px;right:5px"></div>
-    <div class="dsp-calf-brand">phonon studio gear</div>` : '';
-  // Toggle .dsp-calf on the panel container so the scoped CSS kicks in.
-  panel.classList.toggle('dsp-calf', !!(layout && layout.useCalfSkin));
+  // .dsp-calf class + ornaments were already applied above before the
+  // custom-renderer return. Just append the ornaments for the group
+  // path here.
   panel.innerHTML = meta + bodyHtml + ornaments;
 }
 
@@ -2829,6 +2879,7 @@ const PLUGIN_LAYOUTS = {
   // mixer-style slider strip, one fader per band, frequency below.
   "http://lsp-plug.in/plugins/ladspa/graph_equalizer_x32_stereo": {
     customRenderer: "renderGraphEq32",
+    useCalfSkin: true,
   },
 };
 
@@ -2935,14 +2986,16 @@ function eqRenderGraphGrid() {
   // Vertical gradient for the spectrum polygon — blue/violet at the
   // bottom (near -90 dBFS silence), green mid, yellow upper-mid,
   // red at the top (0 dBFS). Bottom of the SVG = high y = low level.
+  // Spectrum gradient — dark olive bars on the green-phosphor bg,
+  // matches Calf Analyzer's "dark spectrum filled area" look. Darker
+  // top (loud) → lighter mid → almost transparent at the floor so
+  // the phosphor glow shows through.
   parts.push(`<defs>
     <linearGradient id="eq-spec-grad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%"   stop-color="#f87171" stop-opacity="0.85"/>
-      <stop offset="15%"  stop-color="#fb923c" stop-opacity="0.75"/>
-      <stop offset="35%"  stop-color="#fbbf24" stop-opacity="0.6"/>
-      <stop offset="60%"  stop-color="#34d399" stop-opacity="0.45"/>
-      <stop offset="85%"  stop-color="#67e8f9" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#a5b4fc" stop-opacity="0.15"/>
+      <stop offset="0%"   stop-color="#1a2208" stop-opacity="0.85"/>
+      <stop offset="40%"  stop-color="#2c3a10" stop-opacity="0.7"/>
+      <stop offset="70%"  stop-color="#3e5018" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#5a7020" stop-opacity="0.2"/>
     </linearGradient>
   </defs>`);
   for (const f of vLines) {

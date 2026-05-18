@@ -905,9 +905,40 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    can't push the column wider than the IN/OUT labels. Inside-row
    ellipsis handles long content. Master stays at 100px (no FX bar,
    no scotch tape input — narrower by design). */
-.strip.mix-src { border-top: 3px solid var(--green); width: 120px; }
-.strip.mix-master { border-top: 3px solid var(--red); width: 100px; }
-.strip.mix-out { border-top: 3px solid var(--magenta); width: 120px; }
+/* Type-coloured header — top ~18 % of the strip is tinted in the
+   strip's role colour (Studio One style), fading into the regular
+   dark background. The thin border-top keeps the role visible even
+   when the strip is scrolled out from under its header. */
+.strip.mix-src {
+  border-top: 2px solid var(--green);
+  width: 120px;
+  background: linear-gradient(180deg,
+    rgba(52,211,153,0.32) 0%,
+    rgba(52,211,153,0.18) 12%,
+    rgba(52,211,153,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
+.strip.mix-master {
+  border-top: 2px solid var(--red);
+  width: 100px;
+  background: linear-gradient(180deg,
+    rgba(220,38,38,0.34) 0%,
+    rgba(220,38,38,0.20) 12%,
+    rgba(220,38,38,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
+.strip.mix-out {
+  border-top: 2px solid var(--magenta);
+  width: 120px;
+  background: linear-gradient(180deg,
+    rgba(232,121,249,0.30) 0%,
+    rgba(232,121,249,0.18) 12%,
+    rgba(232,121,249,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
 /* Per-strip routing toggles (Source side). [M] = via master, [D] = direct picker. */
 .mix-route-bar { display: flex; gap: 3px; width: 100%; justify-content: center; }
 .mix-route-btn { flex: 1; padding: 2px 4px; font-family: var(--font-m); font-size: 9px;

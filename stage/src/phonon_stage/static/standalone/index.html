@@ -1131,13 +1131,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Vertical Fader */
 .fader-area { display: flex; gap: 2px; align-items: flex-end; height: 230px; }
 /* Console-style vertical VU meter — recessed chrome frame with a
-   deep matte-black well. 1 px gap between cells reveals the dark
-   well between LEDs (segmented look) instead of a continuous fill. */
-.vu-bar { width: 11px; height: 100%; background: #010204; border-radius: 2px;
+   matte-dark well. 60 fine segments give a digital-precision feel;
+   the well bg sits close to the unlit-seg colour so the 1 px gap
+   between cells reads as a subtle separator, not a stark line. */
+.vu-bar { width: 11px; height: 100%; background: #0c1218; border-radius: 2px;
   display: flex; flex-direction: column-reverse; gap: 1px; padding: 1px;
   border: 1px solid #050708;
   box-shadow:
-    inset 0 2px 4px rgba(0,0,0,1),
+    inset 0 2px 4px rgba(0,0,0,0.9),
     inset 0 0 0 1px rgba(255,255,255,0.04),
     0 1px 1px rgba(0,0,0,0.5);
   overflow: visible;       /* the dB readout sits above the bar */
@@ -1149,10 +1150,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .vu-bar.clipping { outline-color: #ff3333;
   box-shadow:
     0 0 6px rgba(255,68,68,0.65),
-    inset 0 2px 4px rgba(0,0,0,1),
+    inset 0 2px 4px rgba(0,0,0,0.9),
     inset 0 0 0 1px rgba(255,68,68,0.5); }
-.vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; min-height: 1px;
-  border-radius: 0.5px;
+.vu-bar .vu-seg { width: 100%; flex: 1; background: #0e1620; min-height: 1px;
+  border-radius: 0;
   transition: background 30ms linear; }
 
 /* dB peak-hold readout INSIDE the top of the VU bar (peak-zone segs
@@ -2320,10 +2321,10 @@ function escapeHtml(s) {
 // render from a fresh fetch (server is source of truth).
 
 let mixerState = { master: { gain_db: 0, mute: false }, outputs: [], sources: [] };
-// VU bars stamp the 20 segs + a <span class="vu-readout"> at the end.
-// Only the L bar shows the readout (the R is hidden via CSS) so we
-// get one number per strip without duplicating DOM.
-const MIX_VU_SEGS = Array.from({length: 20}, () => '<div class="vu-seg"></div>').join('')
+// VU bars stamp 60 thin segs — fine-grained, digital look (vs the
+// old 20-cell chunky-LED-from-the-80s feel) — plus a vu-readout span
+// at the end. Only the L bar shows the readout (R is hidden via CSS).
+const MIX_VU_SEGS = Array.from({length: 60}, () => '<div class="vu-seg"></div>').join('')
   + '<span class="vu-readout">−∞</span>';
 
 async function fetchMixer() {
@@ -7629,7 +7630,7 @@ function animateVU() {
           segs[i].style.background = '#67e8f9';
           segs[i].style.boxShadow = '0 0 3px #67e8f9';
         } else {
-          segs[i].style.background = '#0a141c';
+          segs[i].style.background = '#0e1620';
           segs[i].style.boxShadow = 'none';
         }
       }

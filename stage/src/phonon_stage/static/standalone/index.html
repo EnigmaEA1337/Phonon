@@ -1002,8 +1002,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   z-index: 1;
 }
 .fader-handle {
-  position: absolute; left: 50%; width: 22px; height: 36px;
+  position: absolute; left: 50%; width: 18px; height: 48px;
   transform: translate(-50%, -50%);
+  /* Native PNG is 295×800 (≈ 0.37 aspect) — display size keeps the
+     same ratio so the cap doesn't get squashed wide. */
   background: url('fader-cap.png') center/100% 100% no-repeat;
   border: none;
   border-radius: 0;

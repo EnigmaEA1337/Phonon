@@ -976,58 +976,77 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   box-shadow: 0 0 6px rgba(255,68,68,0.65), inset 0 1px 3px rgba(0,0,0,0.95); }
 .vu-bar .vu-seg { width: 100%; flex: 1; background: #0a141c; min-height: 1px;
   transition: background 30ms linear; }
-/* Console-style chrome fader — track in brushed dark metal, cap in
-   polished silver with a black playhead band. Same DOM as before
-   (rail / fill / handle), only the visuals change. */
-.fader-col { width: 28px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
+/* Studer/Avid-style fader — matte-black track, two-tone cap
+   (silver top, matte-black base) with the playhead reading off the
+   silver/black seam. Graduation ticks rendered absolutely to the
+   right of the rail by .fader-scale below. */
+.fader-col { width: 32px; height: 100%; position: relative; cursor: pointer; touch-action: none; }
 .fader-rail {
-  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px;
+  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 14px;
   transform: translateX(-50%);
-  background:
-    linear-gradient(180deg, #1a1d22 0%, #0d0f12 6%, #0a0c0e 50%, #0d0f12 94%, #1a1d22 100%),
-    linear-gradient(90deg, #0a0c0e 0%, #181a1f 35%, #1f2329 50%, #181a1f 65%, #0a0c0e 100%);
-  background-blend-mode: overlay;
-  border: 1px solid #050708;
-  border-radius: 2px;
+  background: linear-gradient(180deg, #050608 0%, #000 50%, #050608 100%);
+  border: 1px solid #000;
+  border-radius: 1px;
   box-shadow:
-    inset 1px 0 0 rgba(255,255,255,0.04),
-    inset -1px 0 0 rgba(255,255,255,0.02),
-    inset 0 1px 2px rgba(0,0,0,0.8),
-    0 1px 0 rgba(255,255,255,0.04);
+    inset 0 1px 3px rgba(0,0,0,0.95),
+    inset 1px 0 0 rgba(255,255,255,0.03),
+    inset -1px 0 0 rgba(255,255,255,0.015);
 }
-/* Center groove — thin vertical highlight, gives the rail its 3D feel. */
+/* Center highlight — gives the rail its 3D feel without going brushed. */
 .fader-rail::after {
   content: ''; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1px;
   transform: translateX(-50%);
   background: linear-gradient(180deg,
-    transparent 0%, rgba(255,255,255,0.10) 20%, rgba(255,255,255,0.05) 80%, transparent 100%);
+    transparent 0%, rgba(200,210,220,0.14) 25%, rgba(200,210,220,0.08) 75%, transparent 100%);
 }
 .fader-fill {
   position: absolute; left: 50%; transform: translateX(-50%); width: 4px; bottom: 6px;
-  background: linear-gradient(180deg, rgba(6,182,212,0.55) 0%, rgba(6,182,212,0.12) 100%);
+  background: linear-gradient(180deg, rgba(6,182,212,0.50) 0%, rgba(6,182,212,0.10) 100%);
   border-radius: 1px;
   z-index: 1;
 }
 .fader-handle {
-  position: absolute; left: 50%; width: 26px; height: 18px;
+  position: absolute; left: 50%; width: 28px; height: 24px;
   transform: translate(-50%, -50%);
-  /* Silver brushed cap with a black playhead band right in the middle —
-     reads the dB value off the track at the band's vertical center. */
+  /* Top 60% silver/polished, bottom 40% matte black — the seam at
+     ~60% is what reads against the graduation as the dB position. */
   background: linear-gradient(180deg,
-    #c8ced5 0%, #f0f3f7 18%, #aeb5be 48%,
-    #2a2e34 50%,
-    #aeb5be 52%, #f0f3f7 82%, #6f7680 100%);
-  border: 1px solid #1a1d22;
-  border-radius: 2px;
+    #d8dde3 0%, #f5f7fa 15%, #c8ced5 50%, #9aa1ab 58%,
+    #1a1c20 62%, #0a0b0d 82%, #050608 100%);
+  border: 1px solid #050708;
+  border-radius: 1px;
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.55),
-    inset 0 -1px 0 rgba(0,0,0,0.35),
-    0 2px 4px rgba(0,0,0,0.6);
+    inset 0 1px 0 rgba(255,255,255,0.7),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    0 2px 4px rgba(0,0,0,0.7);
   cursor: grab;
   z-index: 2;
 }
 .fader-handle::before { content: none; }
 .fader-handle:active { cursor: grabbing; }
+
+/* dB graduation strip pinned to the right of the rail. Numbers are
+   the canonical fader ladder; the position of each label is set in
+   JS so it tracks the actual knee curve used by faderDbToY. */
+.fader-scale {
+  position: absolute; left: 50%; top: 6px; bottom: 6px;
+  width: 10px; margin-left: 9px;        /* sits just right of the rail */
+  pointer-events: none;
+  font-family: var(--font-m); font-size: 6.5px;
+  color: rgba(190,200,210,0.65);
+}
+.fader-scale .tick {
+  position: absolute; left: 0; right: 0;
+  height: 1px; background: rgba(190,200,210,0.35);
+}
+.fader-scale .tick.major { height: 1px; background: rgba(220,230,240,0.7); }
+.fader-scale .tick-label {
+  position: absolute; left: 3px;
+  transform: translateY(-50%);
+  letter-spacing: -0.3px;
+  color: rgba(210,220,230,0.85);
+  white-space: nowrap;
+}
 .fader-ticks { position: absolute; right: -18px; top: 4px; bottom: 4px; display: flex;
   flex-direction: column; justify-content: space-between; font-family: var(--font-m); font-size: 6px; color: var(--text-fade); }
 .fader-ticks .unity { color: var(--cyan); font-weight: 700; }
@@ -4867,6 +4886,33 @@ function mixScotchEdit(el, kind, id) {
 const MIX_FADER_DB_MIN = -90;
 const MIX_FADER_DB_MAX = 12;
 
+// Studer-style dB ladder rendered to the right of each fader rail.
+// Major ticks are labelled, minor ticks are just lines. Positions are
+// computed against the same knee curve that faderDbToY uses so the
+// numbers track the actual cap position, not a linear estimate.
+const MIX_FADER_LADDER = [
+  { db: 12,  major: true,  label: '+12' },
+  { db: 6,   major: false, label: null  },
+  { db: 0,   major: true,  label: '0'   },
+  { db: -6,  major: false, label: null  },
+  { db: -12, major: true,  label: '-12' },
+  { db: -24, major: true,  label: '-24' },
+  { db: -40, major: true,  label: '-40' },
+  { db: -60, major: true,  label: '-60' },
+  { db: -90, major: true,  label: '−∞' },
+];
+
+function _mixFaderScaleHtml() {
+  return MIX_FADER_LADDER.map(t => {
+    const y = faderDbToY(t.db);
+    const cls = 'tick' + (t.major ? ' major' : '');
+    const lbl = t.label
+      ? `<span class="tick-label" style="top:${y}%">${escapeHtml(t.label)}</span>`
+      : '';
+    return `<span class="${cls}" style="top:${y}%"></span>${lbl}`;
+  }).join('');
+}
+
 function faderCol(kind, id, gainDb) {
   const y = faderDbToY(gainDb);
   // The mixer fader binds the FULL range (-90 → +12 dB) — use the
@@ -4880,6 +4926,7 @@ function faderCol(kind, id, gainDb) {
     ondblclick="mixFaderReset('${kind}', '${id}')"
     title="Drag to set · Shift+drag fine · Scroll ±1 dB (Shift = 0.1) · Double-click 0 dB">
     <div class="fader-rail"></div>
+    <div class="fader-scale">${_mixFaderScaleHtml()}</div>
     <div class="fader-fill" style="height:${100 - y}%"></div>
     <div class="fader-handle" style="top:${y}%"></div>
     <div class="fader-db" ${dataAttr}>${gainDb.toFixed(1)} dB</div>

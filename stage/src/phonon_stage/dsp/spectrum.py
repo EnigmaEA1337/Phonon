@@ -45,10 +45,12 @@ CHANNELS = 2
 SAMPLE_DTYPE = "<i2"  # s16le
 SAMPLE_BYTES = 2 * CHANNELS  # 4 bytes per stereo frame
 
-# 4096 frames @ 48 kHz = ~85 ms window. FFT bin width = 48000/4096 ≈
-# 11.72 Hz which lets us discriminate the lowest EQ bands (16 / 20 /
-# 25 Hz are separated by enough bins to read independent peaks).
-FFT_SIZE = 4096
+# 8192 frames @ 48 kHz = ~170 ms window. FFT bin width = 48000/8192 ≈
+# 5.86 Hz — fine enough that low-frequency bands (16 / 20 / 25 Hz)
+# have 1-2 bins each to peak-pick from instead of falling back to
+# the single-nearest-bin path. Was 4096 (11.7 Hz) which gave a
+# coarse low-end readout.
+FFT_SIZE = 8192
 
 # Ring buffer holds 2x the FFT window so the snapshot read is always
 # safe (the producer may be mid-write).

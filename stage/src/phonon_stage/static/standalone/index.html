@@ -3258,6 +3258,23 @@ async function eqToggleBand(ev, btn) {
 const EQ_SPECTRUM_INTERVAL_MS = 70;
 const EQ_SPECTRUM_FLOOR_DB = -90;
 const EQ_SPECTRUM_CEIL_DB = 0;
+// Number of log-spaced frequency points to request from the server
+// per tick. Higher = smoother / "more continuous" spectrum trace
+// (Calf Analyzer style). 192 points across 20 Hz–20 kHz spans the
+// 10-octave audio range at ~19 points per octave — about half a
+// semitone resolution.
+const EQ_SPECTRUM_RESOLUTION = 192;
+let _eqSpectrumFreqs = null;
+function eqSpectrumFreqs() {
+  if (_eqSpectrumFreqs) return _eqSpectrumFreqs;
+  const arr = [];
+  const lo = Math.log2(20), hi = Math.log2(20000);
+  for (let i = 0; i < EQ_SPECTRUM_RESOLUTION; i++) {
+    arr.push(Math.pow(2, lo + (hi - lo) * i / (EQ_SPECTRUM_RESOLUTION - 1)));
+  }
+  _eqSpectrumFreqs = arr;
+  return arr;
+}
 
 let eqSpectrumState = {
   outputId: null,
@@ -3295,13 +3312,14 @@ async function eqSpectrumTick() {
     eqStopSpectrumPolling();
     return;
   }
-  const bandsParam = GRAPH_EQ_BANDS.join(',');
+  const freqs = eqSpectrumFreqs();
+  const bandsParam = freqs.map(f => f.toFixed(2)).join(',');
   eqSpectrumState.inFlight = true;
   try {
     const r = await fetch(API + '/dsp/spectrum?node=phonon_master.monitor&bands=' + bandsParam);
     if (r.ok) {
       const body = await r.json();
-      eqRenderSpectrumBars(body.bands || []);
+      eqRenderSpectrumBars(body.bands || [], freqs);
     } else if (r.status === 503) {
       // No numpy / parec on this host — stop polling silently.
       eqStopSpectrumPolling();
@@ -3310,29 +3328,40 @@ async function eqSpectrumTick() {
   eqSpectrumState.inFlight = false;
 }
 
-function eqRenderSpectrumBars(bandDbs) {
+function eqRenderSpectrumBars(bandDbs, freqs) {
   const g = document.getElementById('eq-spectrum-bars');
   if (!g) return;
-  if (bandDbs.length !== GRAPH_EQ_BANDS.length) return;
+  if (bandDbs.length !== freqs.length) return;
   const W = EQ_VIEW_W, H = EQ_VIEW_H;
-  // We build a single closed polygon connecting all band tops — gives
-  // a continuous "spectrum filled area" look like the LSP screenshot
-  // instead of 32 discrete rectangles. A SVG <linearGradient> tints
-  // it by Y position (blue/violet at the bottom near silence, yellow
-  // mid, red at the top near 0 dBFS).
+  // Closed polygon connecting all 192 spectrum points → continuous
+  // analyzer trace like the Calf reference. SVG <linearGradient>
+  // tints by Y. Peak hold is attached to the 32 ISO band centers
+  // (not the 192 spectrum points) so the dots stay aligned with
+  // the EQ band positions — useful for sound-check level reads.
   const points = [];
-  const peakDots = [];
   const now = performance.now();
-  // Start at bottom-left for the closed-path floor.
   points.push(`0,${H.toFixed(1)}`);
-  for (let i = 0; i < GRAPH_EQ_BANDS.length; i++) {
-    const fc = GRAPH_EQ_BANDS[i];
+  for (let i = 0; i < freqs.length; i++) {
+    const f = freqs[i];
     const db = Math.max(EQ_SPECTRUM_FLOOR_DB, bandDbs[i]);
-    const x = (eqLogX(fc) * W).toFixed(2);
+    const x = (eqLogX(f) * W).toFixed(2);
     const norm = (db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
     const y = (H * (1 - norm)).toFixed(2);
     points.push(`${x},${y}`);
-    // Peak hold — 60 dB/sec decay, small dot at the peak.
+  }
+  points.push(`${W},${H.toFixed(1)}`);
+  // Peak-hold dots — sample the spectrum AT the ISO band centers
+  // (find nearest spectrum point to each EQ band fc).
+  const peakDots = [];
+  for (const fc of GRAPH_EQ_BANDS) {
+    // Find nearest spectrum point to this band center.
+    let nearestIdx = 0;
+    let nearestDist = Infinity;
+    for (let i = 0; i < freqs.length; i++) {
+      const d = Math.abs(Math.log2(freqs[i]) - Math.log2(fc));
+      if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+    }
+    const db = Math.max(EQ_SPECTRUM_FLOOR_DB, bandDbs[nearestIdx]);
     let peak = eqSpectrumState.peakHold.get(fc) || { db, ts: now };
     if (db >= peak.db) {
       peak = { db, ts: now };
@@ -3343,13 +3372,11 @@ function eqRenderSpectrumBars(bandDbs) {
     eqSpectrumState.peakHold.set(fc, peak);
     if (peak.db > db + 1) {
       const peakNorm = (peak.db - EQ_SPECTRUM_FLOOR_DB) / (EQ_SPECTRUM_CEIL_DB - EQ_SPECTRUM_FLOOR_DB);
+      const peakX = (eqLogX(fc) * W).toFixed(2);
       const peakY = (H * (1 - peakNorm)).toFixed(2);
-      peakDots.push(`<circle cx="${x}" cy="${peakY}" r="2" fill="rgba(248,113,113,0.95)"/>`);
+      peakDots.push(`<circle cx="${peakX}" cy="${peakY}" r="2" fill="rgba(40,60,30,0.85)"/>`);
     }
   }
-  points.push(`${W},${H.toFixed(1)}`);
-  // The gradient is defined once in the static grid; here we just
-  // reference it via fill="url(#eq-spec-grad)".
   g.innerHTML = `<polygon points="${points.join(' ')}" fill="url(#eq-spec-grad)" />`
               + peakDots.join('');
 }

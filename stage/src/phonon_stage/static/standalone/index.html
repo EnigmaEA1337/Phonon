@@ -2937,6 +2937,86 @@ const PLUGIN_LAYOUTS = {
     useCalfSkin: true,
   },
 
+  // LSP Multiband Compressor Stereo x8 — 8-band master glue / control.
+  // 244 input controls; we expose Band 1-8 with the operator-relevant
+  // compression knobs (per band) plus the 7 split crossover
+  // frequencies in their own group. Sidechain + visibility / hue /
+  // boost (the ratio<1 expansion path) toggles per band are hidden
+  // to keep the panel readable — defaults track LSP's recommended
+  // settings.
+  //
+  // The "Band selection" int control highlights which band's UI is
+  // active in LSP's native plugin window. We use that field as the
+  // `activeWhen` trigger so each band's group lights up when the
+  // operator dials Band selection to that index — same visual cue
+  // as on the comp_delay_stereo Mode-bound groups.
+  "http://lsp-plug.in/plugins/ladspa/mb_compressor_stereo": {
+    useCalfSkin: true,
+    groups: [
+      {
+        name: "Crossover",
+        controls: [
+          "Split frequency 1 (Hz)", "Split frequency 2 (Hz)",
+          "Split frequency 3 (Hz)", "Split frequency 4 (Hz)",
+          "Split frequency 5 (Hz)", "Split frequency 6 (Hz)",
+          "Split frequency 7 (Hz)",
+        ],
+      },
+      // 8 band sections — each gets the same 7 essential controls.
+      ...Array.from({ length: 8 }, (_, idx) => ({
+        name: `Band ${idx + 1}`,
+        controls: [
+          `Compressor enable ${idx}`,
+          `Compression mode ${idx}`,
+          `Attack threshold ${idx} (G)`,
+          `Ratio ${idx}`,
+          `Knee ${idx} (G)`,
+          `Attack time ${idx} (ms)`,
+          `Release time ${idx} (ms)`,
+          `Makeup gain ${idx} (G)`,
+          `Solo band ${idx}`,
+          `Mute band ${idx}`,
+        ],
+        activeWhen: { control: "Band selection", value: idx },
+      })),
+      {
+        name: "Mix",
+        controls: ["Dry gain (G)", "Wet gain (G)", "Dry/Wet balance (%)"],
+      },
+      { name: "Mode",   controls: ["Compressor mode", "Stereo split"] },
+      { name: "Input",  controls: ["Input gain (G)"] },
+      { name: "Output", controls: ["Output gain (G)"] },
+    ],
+    // Per-band gain reduction — 8 meters total. Output port names:
+    // "Reduction level meter N Left (G)" / "Reduction level meter N
+    // Right (G)" (need to verify the exact name — using the same
+    // pattern as the single-band Compressor). Converted to dB.
+    monitoring: Array.from({ length: 8 }, (_, idx) => ({
+      label: `GR B${idx + 1} (dB)`,
+      port: `B${idx + 1} GR dB`,
+      formula: `b${idx}_gr_db`,
+      digits: 1,
+    })),
+    computeMonitoring(values) {
+      const toDb = (g) => (g === undefined || g <= 0)
+        ? 0 : 20 * Math.log10(Math.max(g, 1e-6));
+      const out = {};
+      for (let idx = 0; idx < 8; idx++) {
+        // LSP MB compressor names the per-band reduction meters with
+        // the band index suffix. Average L+R since the panel only
+        // shows one value per band — operator wants "is this band
+        // compressing right now" at a glance.
+        const grL = values[`Reduction level meter ${idx} Left (G)`];
+        const grR = values[`Reduction level meter ${idx} Right (G)`];
+        const dbs = [];
+        if (grL !== undefined) dbs.push(toDb(grL));
+        if (grR !== undefined) dbs.push(toDb(grR));
+        out[`b${idx}_gr_db`] = dbs.length ? dbs.reduce((a, b) => a + b, 0) / dbs.length : 0;
+      }
+      return out;
+    },
+  },
+
   // LSP Compressor Stereo — workhorse stereo compressor.
   // 48 input controls; we expose the ones an operator actually
   // moves during a session and hide the ~25 graph-visibility +

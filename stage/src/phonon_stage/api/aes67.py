@@ -1,19 +1,14 @@
 """AES67 RTP send/recv management.
 
-Each AES67 stream is hosted by its own dedicated `pipewire -c <conf>`
-subprocess — the same pattern PipeWire uses for filter-chain.service.
-The subprocess loads a single module-rtp-sink (send) or module-rtp-source
-(recv) and exposes a node to the main daemon over the PW socket.
+Generates PipeWire config snippets in `~/.config/pipewire/pipewire.conf.d/`
+to load module-rtp-sink (send) and module-rtp-source (recv) instances.
+Each AES67 stream becomes a regular PipeWire node — patchable in the UI
+just like any other source/sink.
 
-Why one process per stream:
-  • `pw-cli load-module` doesn't persist (loads in client process only)
-  • Restarting the whole user session (pipewire+wireplumber+pipewire-pulse)
-    on every create/delete was wiping the SSRC of every other active send,
-    breaking already-subscribed recvs on neighbouring Stages until they
-    were torn down and rebuilt.
-
-With per-stream processes: create = spawn, delete = SIGTERM. Other
-streams keep running undisturbed.
+PipeWire restart is required after each create/delete because the
+runtime `pw-cli load-module` path is fragile. The restart is short
+(~3 s) but disrupts other audio briefly. Acceptable for dev/test;
+worth replacing with native protocol load-module later.
 """
 
 from __future__ import annotations
@@ -22,7 +17,6 @@ import asyncio
 import contextlib
 import os
 import re
-import signal
 import socket
 import struct
 import time
@@ -39,13 +33,7 @@ router = APIRouter(prefix="/aes67", tags=["aes67"])
 logger = structlog.get_logger()
 
 _HOME = Path(os.environ.get("HOME", "/home/phonon"))
-# Legacy location — confs here are auto-loaded by the main PW daemon at
-# startup. We migrate any leftovers OUT of here at boot so they don't
-# double-load on top of our own subprocess.
-_LEGACY_CONF_DIR = _HOME / ".config/pipewire/pipewire.conf.d"
-# New home — outside PW's auto-load paths. Each conf is loaded by its own
-# dedicated `pipewire -c <path>` subprocess instead.
-_CONF_DIR = _HOME / "aes67-streams"
+_CONF_DIR = _HOME / ".config/pipewire/pipewire.conf.d"
 _CONF_PREFIX = "phonon-aes67-"
 
 # Track active streams: id -> { kind, name, group, port, channels, conf_path }
@@ -140,67 +128,6 @@ def _node_name(kind: str, name: str) -> str:
 
 def _conf_path(stream_id: str) -> Path:
     return _CONF_DIR / f"{_CONF_PREFIX}{stream_id}.conf"
-
-
-# ── Per-stream PipeWire subprocess lifecycle ─────────────────────────
-# Each AES67 stream gets its own `pipewire -c <conf>` child process.
-# This isolates SSRC churn: deleting/recreating one stream no longer
-# kills the RTP sessions of all the others (which is what the
-# whole-daemon restart was doing).
-
-
-async def _spawn_stream_process(stream_id: str, conf_path: Path) -> int:
-    """Spawn a dedicated `pipewire -c <conf>` for one AES67 stream.
-
-    Returns the PID. The child connects to the main user-session PW
-    daemon over its socket and exposes the rtp-sink / rtp-source module
-    it hosts as a regular node in the daemon's graph. `start_new_session`
-    detaches the child from phonon-stage's process group so a daemon
-    crash doesn't take audio with it (the child still gets reaped by
-    init eventually, but stays alive long enough for the next
-    phonon-stage to find and reattach to it)."""
-    proc = await asyncio.create_subprocess_exec(
-        "/usr/bin/pipewire",
-        "-c",
-        str(conf_path),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        stdin=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    pid = proc.pid
-    # Don't await proc; we want it running. Cache the Process so we can
-    # wait on it later if needed (otherwise asyncio whines about
-    # unawaited subprocess transports).
-    _stream_procs[stream_id] = proc
-    logger.info("aes67.stream_process_spawned", stream_id=stream_id, pid=pid, conf=str(conf_path))
-    return pid
-
-
-def _kill_stream_process(stream_id: str, pid: int) -> None:
-    """SIGTERM the dedicated pipewire process for one stream.
-
-    Best-effort: missing PID, dead process, and permission errors are
-    all silently swallowed — we still drop the in-memory state."""
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.kill(pid, signal.SIGTERM)
-    _stream_procs.pop(stream_id, None)
-    logger.info("aes67.stream_process_killed", stream_id=stream_id, pid=pid)
-
-
-def _process_alive(pid: int) -> bool:
-    """Check if a PID is alive without raising. signal 0 = probe only."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-
-
-# Active child processes keyed by stream_id. Holds the asyncio Process
-# objects so they don't get garbage-collected mid-life (which would
-# orphan the subprocess transport).
-_stream_procs: dict[str, asyncio.subprocess.Process] = {}
 
 
 def _render_send_conf(req: CreateStreamRequest, node_name: str) -> str:
@@ -577,45 +504,45 @@ async def _replay_audio_state_impl(reason: str) -> dict[str, int]:
     return summary
 
 
-def _migrate_legacy_confs() -> None:
-    """One-shot migration: lift any leftover phonon-aes67-*.conf out of
-    `~/.config/pipewire/pipewire.conf.d/` into `~/aes67-streams/`.
+async def _restart_pipewire() -> None:
+    """Restart user-session PipeWire so config snippets are reloaded.
 
-    Before per-stream subprocess management the conf files lived under
-    pipewire.conf.d/ so the main daemon would auto-load them at startup.
-    Now we spawn our own pipewire children, so confs in the legacy path
-    would double-load on top of our subprocess. Move them on first boot
-    after upgrade; subsequent boots see an empty legacy dir and skip."""
-    if not _LEGACY_CONF_DIR.is_dir():
-        return
-    legacy_confs = list(_LEGACY_CONF_DIR.glob(f"{_CONF_PREFIX}*.conf"))
-    if not legacy_confs:
-        return
-    _CONF_DIR.mkdir(parents=True, exist_ok=True)
-    moved = 0
-    for src in legacy_confs:
-        dst = _CONF_DIR / src.name
-        try:
-            src.rename(dst)
-            moved += 1
-        except OSError as e:
-            logger.warning("aes67.migrate_legacy_failed", src=str(src), error=str(e))
-    if moved:
-        logger.info("aes67.migrated_legacy_confs", count=moved, dest=str(_CONF_DIR))
+    Wipes pactl null-sinks (bluealsa bridges) and any user-created
+    PipeWire links — replay_audio_state() rebuilds both before we
+    return. Called by AES67 ops that need a config reload.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "--user",
+        "restart",
+        "pipewire",
+        "wireplumber",
+        "pipewire-pulse",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("aes67.pipewire_restart_failed", stderr=stderr.decode())
+    else:
+        logger.info("aes67.pipewire_restarted")
+    await asyncio.sleep(2.5)
+    await replay_audio_state(reason="aes67.config_reload")
 
 
 async def restore_existing_aes67() -> None:
-    """Re-populate _active_streams from the conf files on disk and spawn
-    a `pipewire -c <conf>` subprocess for each one.
+    """Re-populate _active_streams from the conf files on disk so the daemon
+    knows about streams created in a previous session. PipeWire has already
+    loaded these snippets at its own startup — we just need to register them
+    in our in-memory map so /aes67/streams reflects reality and SAP announces
+    keep firing for them.
 
-    Called at daemon startup. Migrates legacy confs out of
-    pipewire.conf.d/ first, then re-spawns processes for every surviving
-    snippet so AES67 streams come back transparently after a phonon-stage
-    restart."""
-    _migrate_legacy_confs()
+    Replaces the previous cleanup-then-wipe strategy that erased every
+    AES67 stream on every daemon restart.
+    """
     if not _CONF_DIR.is_dir():
         return
-    for path in sorted(_CONF_DIR.glob(f"{_CONF_PREFIX}*.conf")):
+    for path in _CONF_DIR.glob(f"{_CONF_PREFIX}*.conf"):
         stream_id = path.stem.removeprefix(_CONF_PREFIX)
         try:
             text = path.read_text()
@@ -630,11 +557,6 @@ async def restore_existing_aes67() -> None:
         fmt_match = re.search(r"audio\.format\s*=\s*(\S+)", text)
         name_match = re.search(r'node\.name\s*=\s*"aes67-\w+-([^"]+)"', text)
         loop_match = re.search(r"net\.loop\s*=\s*(true|false)", text)
-        try:
-            pid = await _spawn_stream_process(stream_id, path)
-        except OSError as e:
-            logger.warning("aes67.restore_spawn_failed", stream_id=stream_id, error=str(e))
-            continue
         _active_streams[stream_id] = {
             "kind": kind,
             "name": name_match.group(1) if name_match else stream_id,
@@ -645,7 +567,6 @@ async def restore_existing_aes67() -> None:
             "audio_format": fmt_match.group(1) if fmt_match else "S16BE",
             "loop": loop_match.group(1) == "true" if loop_match else True,
             "conf_path": str(path),
-            "pid": pid,
         }
     if _active_streams:
         logger.info("aes67.streams_restored", count=len(_active_streams))
@@ -658,18 +579,10 @@ async def restore_existing_aes67() -> None:
 
 
 async def cleanup_stale_aes67() -> None:
-    """Wipe ALL phonon-aes67-* config files and kill their PW subprocesses.
-
-    Destructive — only kept for the explicit "reset to factory" flow.
-    NOT called at startup anymore."""
+    """Wipe ALL phonon-aes67-* config files. Destructive — only kept for
+    explicit "reset to factory" flow. NOT called at startup anymore."""
     if not _CONF_DIR.is_dir():
-        _active_streams.clear()
         return
-    # Kill running subprocesses first so they don't keep stale confs alive
-    for sid, info in list(_active_streams.items()):
-        pid = info.get("pid")
-        if isinstance(pid, int):
-            _kill_stream_process(sid, pid)
     removed = 0
     for path in _CONF_DIR.glob(f"{_CONF_PREFIX}*.conf"):
         try:
@@ -680,6 +593,7 @@ async def cleanup_stale_aes67() -> None:
     _active_streams.clear()
     if removed:
         logger.info("aes67.stale_confs_cleaned", count=removed)
+        await _restart_pipewire()
 
 
 @router.post("/send", status_code=201)
@@ -721,11 +635,6 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
         port=req.port,
     )
 
-    # Spawn the dedicated pipewire process BEFORE registering the stream
-    # in _active_streams — if the spawn fails the conf file is left on
-    # disk but we don't bookkeep a stream that has no audio behind it.
-    pid = await _spawn_stream_process(stream_id, path)
-
     _active_streams[stream_id] = {
         "kind": kind,
         "name": req.name,
@@ -736,9 +645,9 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
         "audio_format": req.audio_format,
         "loop": req.loop,
         "conf_path": str(path),
-        "pid": pid,
     }
 
+    await _restart_pipewire()
     await _announce_mode()
 
     return StreamInfo(
@@ -756,21 +665,17 @@ async def _create_stream(req: CreateStreamRequest, kind: str) -> StreamInfo:
 
 @router.delete("/{stream_id}")
 async def delete_stream(stream_id: str) -> dict[str, str]:
-    """Remove an AES67 stream — kill its dedicated PW subprocess and
-    drop its conf. Doesn't touch any other stream's process."""
+    """Remove an AES67 stream and restart PipeWire."""
     info = _active_streams.pop(stream_id, None)
     if info is None:
         raise HTTPException(status_code=404, detail=f"stream {stream_id} not found")
-
-    pid = info.get("pid")
-    if isinstance(pid, int):
-        _kill_stream_process(stream_id, pid)
 
     path = Path(str(info.get("conf_path", "")))
     if path.exists():
         path.unlink()
     logger.info("aes67.stream_deleted", stream_id=stream_id)
 
+    await _restart_pipewire()
     await _announce_mode()
     return {"status": "deleted", "id": stream_id}
 

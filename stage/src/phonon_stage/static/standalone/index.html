@@ -1161,14 +1161,14 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
-/* VCA strip — pure control plane, no audio path. Narrower than the
-   other strips (90 px vs 120 px) because there are no VU bars
-   alongside the fader. The fader still sits in the same vertical
-   slot for cross-console alignment, just with the meter columns
-   removed. Violet per CLAUDE.md strip colours. */
+/* VCA strip — pure control plane, no audio path, but matches the
+   120 px width and full row layout of every other strip so columns
+   line up across the console. The VU columns are present but inert
+   (no segments lit, dimmed) — they're there for grid alignment,
+   not for metering anything. Violet per CLAUDE.md strip colours. */
 .strip.mix-vca {
   border-top: 2px solid #a855f7;
-  width: 90px;
+  width: 120px;
   background: linear-gradient(180deg,
     rgba(168,85,247,0.30) 0%,
     rgba(168,85,247,0.18) 12%,
@@ -1176,11 +1176,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
-/* Centre the fader inside the narrower strip — no VU bars to its
-   left, so without explicit centering it would sit flush-left. */
-.strip.mix-vca .fader-area {
-  justify-content: center;
-}
+.strip.mix-vca .vu-bar { opacity: 0.18; }
 .vca-members {
   display: flex; flex-wrap: wrap; gap: 2px;
   padding: 2px 4px; min-height: 20px; align-content: flex-start;
@@ -5400,6 +5396,8 @@ function renderMixVcas() {
       ${mrlsRow('mix-vca', v.id, { mute: v.mute, mute_left: false, mute_right: false, solo: false })}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
+        <div class="vu-bar" data-ch="L">${MIX_VU_SEGS}</div>
+        <div class="vu-bar" data-ch="R">${MIX_VU_SEGS}</div>
         ${faderCol('mix-vca', v.id, v.gain_db)}
       </div>
       <div class="row-io-out strip-io output" style="color:var(--text-fade)">${memberCount ? '↓ ' + memberCount + ' strip' + (memberCount > 1 ? 's' : '') : 'empty'}</div>

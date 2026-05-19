@@ -65,6 +65,7 @@ MAX_DELAY_MS = 600.0
 # near these — we cap to keep the UI legible and the PW graph sane.
 MAX_SOURCES = 16
 MAX_OUTPUTS = 16
+MAX_VCAS = 8  # control-plane groupings — 8 is plenty for a single show
 
 
 # Plugin backend kinds we support in v1. PW 1.6.2 (Ubuntu Studio 26.04)
@@ -309,6 +310,55 @@ class Source:
         )
 
 
+@dataclass(frozen=True)
+class Vca:
+    """A Variable Channel Adjuster — pure control-plane grouping with
+    no audio path of its own. A VCA's gain and mute fold into the
+    effective gain and mute of every assigned member strip at
+    reconcile time, so one fader can pull several sources or outputs
+    at once.
+
+    Convention: gain is additive in dB (VCA at -3 dB pushes every
+    member 3 dB further down). Mute is OR-ed: muting the VCA mutes
+    every member, but unmuting the VCA does NOT unmute a member that
+    was already muted on its own — each strip keeps its own mute
+    independent of any group it belongs to.
+
+    Members are strip ids drawn from either sources or outputs. A
+    strip can belong to multiple VCAs; the gains add and the mutes
+    OR together. Members that don't resolve to any current strip are
+    silently ignored at reconcile (and pruned by the service when
+    detected).
+    """
+
+    id: str  # short uuid hex
+    label: str  # operator-visible name, e.g. "Backline"
+    gain_db: float = 0.0
+    mute: bool = False
+    # Tuple of strip ids (source.id or output.id). Frozen so the
+    # dataclass stays hashable.
+    members: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "gain_db": self.gain_db,
+            "mute": self.mute,
+            "members": list(self.members),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Vca:
+        return cls(
+            id=str(data["id"]),
+            label=str(data.get("label", "")),
+            gain_db=float(data.get("gain_db", 0.0)),
+            mute=bool(data.get("mute", False)),
+            members=tuple(str(x) for x in (data.get("members") or [])),
+        )
+
+
 @dataclass
 class MixerState:
     """Aggregate state of the mixer. Mutable so service can swap
@@ -318,12 +368,14 @@ class MixerState:
     master: MasterBus = field(default_factory=MasterBus)
     outputs: list[Output] = field(default_factory=list)
     sources: list[Source] = field(default_factory=list)
+    vcas: list[Vca] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "master": self.master.to_dict(),
             "outputs": [o.to_dict() for o in self.outputs],
             "sources": [s.to_dict() for s in self.sources],
+            "vcas": [v.to_dict() for v in self.vcas],
         }
 
     @classmethod
@@ -332,7 +384,18 @@ class MixerState:
             master=MasterBus.from_dict(data.get("master") or {}),
             outputs=[Output.from_dict(o) for o in (data.get("outputs") or [])],
             sources=[Source.from_dict(s) for s in (data.get("sources") or [])],
+            vcas=[Vca.from_dict(v) for v in (data.get("vcas") or [])],
         )
+
+    def vcas_containing(self, strip_id: str) -> list[Vca]:
+        """Return every VCA whose members include this strip id.
+
+        Used by reconcile to fold per-VCA gain/mute into a strip's
+        effective values. Caller is expected to combine via:
+            effective_gain_db = strip.gain_db + sum(v.gain_db for v in ...)
+            effective_mute = strip.mute or any(v.mute for v in ...)
+        """
+        return [v for v in self.vcas if strip_id in v.members]
 
 
 def validate_gain_db(value: float) -> float:
@@ -356,6 +419,7 @@ __all__ = [
     "MAX_GAIN_DB",
     "MAX_OUTPUTS",
     "MAX_SOURCES",
+    "MAX_VCAS",
     "MIN_GAIN_DB",
     "PLUGIN_BACKENDS",
     "MasterBus",
@@ -363,6 +427,7 @@ __all__ = [
     "Output",
     "PluginInsert",
     "Source",
+    "Vca",
     "replace",
     "validate_delay_ms",
     "validate_gain_db",

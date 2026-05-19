@@ -21,7 +21,7 @@ from phonon_stage.mixer.models import (
 from phonon_stage.mixer.service import MixerError, MixerService
 
 if TYPE_CHECKING:
-    from phonon_stage.mixer.models import MasterBus, Output, PluginInsert, Source
+    from phonon_stage.mixer.models import MasterBus, Output, PluginInsert, Source, Vca
 
 
 router = APIRouter(prefix="/mixer", tags=["mixer"])
@@ -88,11 +88,25 @@ class SourceResponse(BaseModel):
     direct_outputs: list[str]
 
 
+class VcaResponse(BaseModel):
+    """Shape returned by every VCA endpoint. Mirrors the Vca dataclass."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    label: str
+    gain_db: float
+    mute: bool
+    members: list[str]
+
+
 class MixerSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
     master: MasterResponse
     outputs: list[OutputResponse]
     sources: list[SourceResponse]
+    # VCAs are returned but may be an empty list — pre-VCA clients
+    # still parse the response (extra fields are ignored on those).
+    vcas: list[VcaResponse] = Field(default_factory=list)
 
 
 # ── Request models ──────────────────────────────────────────────────
@@ -170,6 +184,26 @@ class SourceUpdate(BaseModel):
     direct_outputs: list[str] | None = None
 
 
+class VcaCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=64)
+    gain_db: float = Field(default=0.0, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
+
+
+class VcaUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str | None = Field(default=None, min_length=1, max_length=64)
+    gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
+    mute: bool | None = None
+
+
+class VcaMember(BaseModel):
+    """Body for assign/unassign — single strip id at a time."""
+
+    model_config = ConfigDict(extra="forbid")
+    strip_id: str = Field(min_length=1)
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
@@ -233,6 +267,16 @@ def _to_source_resp(s: Source) -> SourceResponse:
     )
 
 
+def _to_vca_resp(v: Vca) -> VcaResponse:
+    return VcaResponse(
+        id=v.id,
+        label=v.label,
+        gain_db=v.gain_db,
+        mute=v.mute,
+        members=list(v.members),
+    )
+
+
 def _service(request: Request) -> MixerService:
     svc = getattr(request.app.state, "mixer_service", None)
     if svc is None:
@@ -252,6 +296,7 @@ async def get_snapshot(request: Request) -> MixerSnapshot:
         master=_to_master_resp(svc.master),
         outputs=[_to_output_resp(o) for o in svc.outputs],
         sources=[_to_source_resp(s) for s in svc.sources],
+        vcas=[_to_vca_resp(v) for v in svc.vcas],
     )
 
 
@@ -836,6 +881,78 @@ async def delete_source(request: Request, source_id: str) -> None:
         await svc.remove_source(source_id)
     except MixerError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ── VCAs (control-plane groupings) ──────────────────────────────────
+# A VCA has no audio path. Its gain and mute fold into the effective
+# values of every member strip at reconcile time. One fader can pull
+# several sources or outputs at once (and a strip can belong to more
+# than one VCA — gains add, mutes OR).
+
+
+@router.get("/vcas", response_model=list[VcaResponse])
+async def list_vcas(request: Request) -> list[VcaResponse]:
+    svc = _service(request)
+    return [_to_vca_resp(v) for v in svc.vcas]
+
+
+@router.post("/vcas", response_model=VcaResponse, status_code=201)
+async def post_vca(request: Request, body: VcaCreate) -> VcaResponse:
+    svc = _service(request)
+    try:
+        v = await svc.add_vca(label=body.label, gain_db=body.gain_db)
+    except MixerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_vca_resp(v)
+
+
+@router.patch("/vcas/{vca_id}", response_model=VcaResponse)
+async def patch_vca(request: Request, vca_id: str, body: VcaUpdate) -> VcaResponse:
+    svc = _service(request)
+    try:
+        v = await svc.patch_vca(
+            vca_id, label=body.label, gain_db=body.gain_db, mute=body.mute
+        )
+    except MixerError as exc:
+        status = 404 if "unknown vca id" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return _to_vca_resp(v)
+
+
+@router.delete("/vcas/{vca_id}", status_code=204)
+async def delete_vca(request: Request, vca_id: str) -> None:
+    svc = _service(request)
+    try:
+        await svc.remove_vca(vca_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/vcas/{vca_id}/members", response_model=VcaResponse)
+async def assign_vca_member(
+    request: Request, vca_id: str, body: VcaMember
+) -> VcaResponse:
+    """Assign a strip (source or output id) to this VCA. Idempotent —
+    re-posting the same strip is a no-op."""
+    svc = _service(request)
+    try:
+        v = await svc.assign_vca_member(vca_id, body.strip_id)
+    except MixerError as exc:
+        status = 404 if "unknown vca id" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return _to_vca_resp(v)
+
+
+@router.delete("/vcas/{vca_id}/members/{strip_id}", response_model=VcaResponse)
+async def unassign_vca_member(
+    request: Request, vca_id: str, strip_id: str
+) -> VcaResponse:
+    svc = _service(request)
+    try:
+        v = await svc.unassign_vca_member(vca_id, strip_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _to_vca_resp(v)
 
 
 # ── Test tone injection (TEST AUDIO button) ─────────────────────────

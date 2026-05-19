@@ -669,3 +669,124 @@ class TestProductionScenario:
         delays_after = {lat for (_src, _sink, lat) in fake_pw.loopbacks.values()}
         assert delays_after == {115, 80}
         assert dg60_1.id  # quiet pylint
+
+
+# ── VCAs (control-plane groupings) ──────────────────────────────────
+
+
+class TestVca:
+    async def test_add_vca_starts_empty(self, service: MixerService) -> None:
+        v = await service.add_vca(label="Backline", gain_db=-2.0)
+        assert v.label == "Backline"
+        assert v.gain_db == -2.0
+        assert v.mute is False
+        assert v.members == ()
+        assert len(service.vcas) == 1
+
+    async def test_assign_unassign_strip(self, service: MixerService) -> None:
+        src = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AirPlay"
+        )
+        v = await service.add_vca(label="Backline")
+        v2 = await service.assign_vca_member(v.id, src.id)
+        assert v2.members == (src.id,)
+        # Idempotent — re-assigning the same id leaves the membership unchanged.
+        v3 = await service.assign_vca_member(v.id, src.id)
+        assert v3.members == (src.id,)
+        v4 = await service.unassign_vca_member(v.id, src.id)
+        assert v4.members == ()
+
+    async def test_assign_unknown_strip_rejected(self, service: MixerService) -> None:
+        v = await service.add_vca(label="Voices")
+        with pytest.raises(MixerError, match="unknown strip id"):
+            await service.assign_vca_member(v.id, "nope")
+
+    async def test_effective_gain_folds_vca(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        # source.gain_db=-6, vca.gain_db=-3 → effective=-9 dB linear=~0.355
+        src = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AirPlay",
+            gain_db=-6.0,
+        )
+        v = await service.add_vca(label="Group", gain_db=-3.0)
+        await service.assign_vca_member(v.id, src.id)
+        # Read whatever value was last pushed to the fake PW for the source.
+        ch = fake_pw.channel_volumes.get("airplay_in")
+        assert ch is not None
+        expected_lin = 10 ** (-9.0 / 20.0)
+        assert ch[0] == pytest.approx(expected_lin, rel=1e-3)
+        assert ch[1] == pytest.approx(expected_lin, rel=1e-3)
+
+    async def test_vca_mute_silences_member(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        src = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AirPlay"
+        )
+        v = await service.add_vca(label="Group")
+        await service.assign_vca_member(v.id, src.id)
+        await service.patch_vca(v.id, mute=True)
+        ch = fake_pw.channel_volumes.get("airplay_in")
+        assert list(ch or []) == [0.0, 0.0]
+
+    async def test_remove_vca_restores_member_volume(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        src = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AirPlay",
+            gain_db=-6.0,
+        )
+        v = await service.add_vca(label="Group", gain_db=-3.0)
+        await service.assign_vca_member(v.id, src.id)
+        # Under the VCA — gain = -9 dB
+        ch_with = fake_pw.channel_volumes.get("airplay_in")
+        assert ch_with is not None
+        assert ch_with[0] == pytest.approx(10 ** (-9.0 / 20.0), rel=1e-3)
+        # Drop the VCA — the source returns to its own gain (-6 dB).
+        await service.remove_vca(v.id)
+        ch_after = fake_pw.channel_volumes.get("airplay_in")
+        assert ch_after is not None
+        assert ch_after[0] == pytest.approx(10 ** (-6.0 / 20.0), rel=1e-3)
+
+    async def test_removing_source_prunes_vca_members(
+        self, service: MixerService
+    ) -> None:
+        src = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AirPlay"
+        )
+        v = await service.add_vca(label="Group")
+        await service.assign_vca_member(v.id, src.id)
+        await service.remove_source(src.id)
+        v_after = service.vcas[0]
+        assert v_after.members == ()
+
+    async def test_vca_persists_across_reload(
+        self, service: MixerService, store: MixerStore
+    ) -> None:
+        src = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AirPlay"
+        )
+        v = await service.add_vca(label="Backline", gain_db=-2.0)
+        await service.assign_vca_member(v.id, src.id)
+        # Build a fresh service from the persisted JSON — VCA + member
+        # membership must survive a daemon restart.
+        store2 = MixerStore(store._path)
+        svc2 = MixerService(pw_backend=service._pw, store=store2)
+        await svc2.init()
+        assert len(svc2.vcas) == 1
+        assert svc2.vcas[0].label == "Backline"
+        assert svc2.vcas[0].gain_db == -2.0
+        assert svc2.vcas[0].members == (src.id,)
+
+    async def test_vca_cap_enforced(self, service: MixerService) -> None:
+        from phonon_stage.mixer.models import MAX_VCAS
+
+        for i in range(MAX_VCAS):
+            await service.add_vca(label=f"V{i}")
+        with pytest.raises(MixerError, match="limit reached"):
+            await service.add_vca(label="overflow")

@@ -1161,6 +1161,34 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
+/* VCA strip — pure control plane, no audio path. Slimmer than the
+   other strips (no I/O, no FX, no VU) since there's nothing to meter
+   and nothing to wire. Violet per CLAUDE.md strip colours. */
+.strip.mix-vca {
+  border-top: 2px solid #a855f7;
+  width: 120px;
+  background: linear-gradient(180deg,
+    rgba(168,85,247,0.30) 0%,
+    rgba(168,85,247,0.18) 12%,
+    rgba(168,85,247,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
+.vca-members {
+  display: flex; flex-wrap: wrap; gap: 2px;
+  padding: 2px 4px; min-height: 20px; align-content: flex-start;
+}
+.vca-member-chip {
+  background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.4);
+  border-radius: 3px; padding: 1px 4px; font-size: 8px;
+  font-family: var(--font-m); color: var(--text); cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vca-member-chip:hover { background: rgba(168,85,247,0.35); }
+.vca-assign-btn { background: transparent; border: 1px dashed rgba(168,85,247,0.5);
+  color: #a855f7; border-radius: 3px; padding: 1px 4px; font-size: 8px;
+  font-family: var(--font-m); cursor: pointer; }
+.vca-assign-btn:hover { background: rgba(168,85,247,0.15); }
 /* Network strips — sources or outputs whose PW node is an AES67
    stream (name starts with "aes67-"). Override the type tint with
    the network role colour: orange, per CLAUDE.md conventions for
@@ -1636,6 +1664,13 @@ body.mode-live .edit-only select { opacity: 0.4; }
               <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddOutput()">+ Add</button>
             </div>
             <div class="mix-col-body" id="mix-outputs"></div>
+          </div>
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:#a855f7">
+              VCAs
+              <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openVcaAdd()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-vcas"></div>
           </div>
         </div>
       </div>
@@ -2665,6 +2700,7 @@ function renderMixer() {
   renderMixSources();
   renderMixMaster();
   renderMixOutputs();
+  renderMixVcas();
   // Intentionally NOT re-rendering the DSP panel here. The panel
   // updates in place: knob drags repaint their own SVG, toggles
   // flip their button class on the spot, Mode changes call
@@ -2753,6 +2789,19 @@ function mrlsRow(kind, id, state) {
   const mTitle = impliedMute
     ? 'Muted by another solo'
     : 'Mute';
+  // VCA is pure control-plane — no per-channel mute and no solo
+  // (it doesn't carry audio so there's nothing to L/R-split or
+  // exclusively monitor). Render the M button alone, padded with
+  // invisible placeholders so the row keeps its 4-button width and
+  // the column alignment across the console stays grid-perfect.
+  if (kind === 'mix-vca') {
+    return `<div class="row-mrls">
+      <button class="${mClass}" onclick="mixToggleMute('${kind}','${id}')" title="${mTitle}">M</button>
+      <button style="visibility:hidden">·</button>
+      <button style="visibility:hidden">·</button>
+      <button style="visibility:hidden">·</button>
+    </div>`;
+  }
   const buttons = [
     `<button class="${mClass}" onclick="mixToggleMute('${kind}','${id}')" title="${mTitle}">M</button>`,
     `<button class="${mr ? 'active' : ''}" onclick="mixToggleChannelMute('${kind}','${id}','right')" title="Mute right channel">R</button>`,
@@ -5286,6 +5335,125 @@ function renderMixOutputs() {
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No outputs — click + Add</div>';
 }
 
+// ── VCA strips (control-plane groupings) ──────────────────────────
+// A VCA has no audio path — just a fader that folds into the gain of
+// its member strips at reconcile time. UI mirrors the basic strip
+// layout (label + fader + M button) but drops the rows that don't
+// apply (I/O, route, FX, diag LCDs, VU meters).
+function vcaMemberLabel(stripId) {
+  const src = (mixerState.sources || []).find(s => s.id === stripId);
+  if (src) return { label: src.label || src.source_node_name, kind: 'src' };
+  const out = (mixerState.outputs || []).find(o => o.id === stripId);
+  if (out) return { label: out.label || out.sink_node_name, kind: 'out' };
+  return { label: stripId, kind: '?' };
+}
+
+function renderMixVcas() {
+  const el = document.getElementById('mix-vcas');
+  if (!el) return;
+  const vcas = mixerState.vcas || [];
+  if (!vcas.length) {
+    el.innerHTML = '<div style="color:var(--text-fade);font-size:10px;padding:8px">No VCAs — click + Add to group strips under one fader</div>';
+    return;
+  }
+  el.innerHTML = vcas.map(v => {
+    const ledColor = v.mute ? 'var(--red)' : '#a855f7';
+    const memberChips = (v.members || []).map(mid => {
+      const m = vcaMemberLabel(mid);
+      const txt = m.label.slice(0, 10);
+      return `<span class="vca-member-chip edit-only" title="${escapeHtml(m.label)} — click to unassign"
+        onclick="vcaUnassign('${v.id}','${mid}')">${escapeHtml(txt)}</span>`;
+    }).join('');
+    const memberCount = (v.members || []).length;
+    return `<div class="strip mix-vca" data-vca-id="${v.id}">
+      <div class="row-action" style="display:flex;align-items:center;gap:3px">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <span style="flex:1;font-size:8px;color:var(--text-fade)">${memberCount} member${memberCount > 1 ? 's' : ''}</span>
+        <button class="btn-del edit-only" onclick="vcaRemove('${v.id}')" style="width:14px;height:14px;font-size:8px" title="Delete VCA">✕</button>
+      </div>
+      <div class="row-io-in strip-io input" style="background:rgba(168,85,247,0.18);color:#a855f7">▶ VCA</div>
+      <div class="row-route"></div>
+      <div class="row-extra1 vca-members">
+        ${memberChips}
+        <button class="vca-assign-btn edit-only" onclick="openVcaAssignPicker('${v.id}')" title="Assign strips to this VCA">+ assign</button>
+      </div>
+      <div class="row-extra2"></div>
+      <div class="row-fx empty"></div>
+      <div class="row-diag empty">
+        <div class="diag-cell"><div class="diag-label">VCA</div><div class="diag-val">—</div></div>
+        <div class="diag-cell"><div class="diag-label">CTRL</div><div class="diag-val">—</div></div>
+        <div class="diag-cell"><div class="diag-label">ONLY</div><div class="diag-val">—</div></div>
+      </div>
+      ${mrlsRow('mix-vca', v.id, { mute: v.mute, mute_left: false, mute_right: false, solo: false })}
+      <div class="row-fader fader-area">
+        ${MIX_VU_TICKS}
+        <div class="vu-bar" data-ch="L"></div>
+        <div class="vu-bar" data-ch="R"></div>
+        ${faderCol('mix-vca', v.id, v.gain_db)}
+      </div>
+      <div class="row-io-out strip-io output" style="color:var(--text-fade)">${memberCount ? '↓ ' + memberCount + ' strip' + (memberCount > 1 ? 's' : '') : 'empty'}</div>
+      ${scotchLabel('mix-vca', v.id, v.label)}
+    </div>`;
+  }).join('');
+}
+
+// VCA mutations — minimal handlers, all just fire a PATCH/POST/DELETE
+// then refresh the local mirror via fetchMixer.
+async function openVcaAdd() {
+  const label = (prompt('VCA name?', 'Group ' + ((mixerState.vcas || []).length + 1)) || '').trim();
+  if (!label) return;
+  const r = await fetch(API + '/mixer/vcas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+  if (!r.ok) { alert('Add VCA failed: ' + r.status); return; }
+  await fetchMixer();
+}
+
+async function vcaRemove(vcaId) {
+  if (!confirm('Delete this VCA? Member strips return to their own gain.')) return;
+  const r = await fetch(API + '/mixer/vcas/' + vcaId, { method: 'DELETE' });
+  if (!r.ok) { alert('Delete failed: ' + r.status); return; }
+  await fetchMixer();
+}
+
+async function vcaAssign(vcaId, stripId) {
+  const r = await fetch(API + '/mixer/vcas/' + vcaId + '/members', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ strip_id: stripId }),
+  });
+  if (!r.ok) { alert('Assign failed: ' + r.status); return; }
+  await fetchMixer();
+}
+
+async function vcaUnassign(vcaId, stripId) {
+  const r = await fetch(API + '/mixer/vcas/' + vcaId + '/members/' + stripId, { method: 'DELETE' });
+  if (!r.ok) { alert('Unassign failed: ' + r.status); return; }
+  await fetchMixer();
+}
+
+function openVcaAssignPicker(vcaId) {
+  // Small modal-less picker: prompt with a numbered list of every
+  // unassigned source + output. Heavier modal can come later if the
+  // operator complains.
+  const v = (mixerState.vcas || []).find(x => x.id === vcaId);
+  if (!v) return;
+  const taken = new Set(v.members || []);
+  const candidates = [
+    ...(mixerState.sources || []).filter(s => !taken.has(s.id)).map(s => ({ id: s.id, label: 'SRC: ' + (s.label || s.source_node_name) })),
+    ...(mixerState.outputs || []).filter(o => !taken.has(o.id)).map(o => ({ id: o.id, label: 'OUT: ' + (o.label || o.sink_node_name) })),
+  ];
+  if (!candidates.length) { alert('Every source and output is already a member.'); return; }
+  const list = candidates.map((c, i) => `${i + 1}. ${c.label}`).join('\n');
+  const pick = prompt(`Assign which strip to VCA "${v.label}"?\n\n${list}\n\nEnter number:`, '1');
+  if (!pick) return;
+  const idx = parseInt(pick, 10) - 1;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= candidates.length) { alert('Invalid choice'); return; }
+  vcaAssign(vcaId, candidates[idx].id);
+}
+
 function mixHwVolForSink(sinkName, alsaCards) {
   // Output sink names like `alsa_output.usb-...DG60..-00.analog-stereo`
   // contain the ALSA card short name as a substring. We pick the card
@@ -5325,6 +5493,18 @@ async function mixToggleMute(kind, id) {
   if (kind === 'mix-master') return mixMasterToggleMute();
   if (kind === 'mix-src')    return mixSourceToggleMute(id);
   if (kind === 'mix-out')    return mixOutputToggleMute(id);
+  if (kind === 'mix-vca')    return mixVcaToggleMute(id);
+}
+
+async function mixVcaToggleMute(vcaId) {
+  const v = (mixerState.vcas || []).find(x => x.id === vcaId);
+  if (!v) return;
+  await fetch(API + '/mixer/vcas/' + vcaId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mute: !v.mute }),
+  });
+  await fetchMixer();
 }
 
 // Toggle the left or right channel mute on the relevant strip. The
@@ -5570,6 +5750,7 @@ function currentMixGain(kind, id) {
   if (kind === 'mix-master') return mixerState.master?.gain_db || 0;
   if (kind === 'mix-src') return (mixerState.sources.find(s => s.id === id) || {}).gain_db || 0;
   if (kind === 'mix-out') return (mixerState.outputs.find(o => o.id === id) || {}).gain_db || 0;
+  if (kind === 'mix-vca') return ((mixerState.vcas || []).find(v => v.id === id) || {}).gain_db || 0;
   return 0;
 }
 
@@ -5586,6 +5767,8 @@ function applyMixFader(kind, id, dbValue, persist = true) {
     mixerState.sources = mixerState.sources.map(s => s.id === id ? { ...s, gain_db: dbValue } : s);
   } else if (kind === 'mix-out') {
     mixerState.outputs = mixerState.outputs.map(o => o.id === id ? { ...o, gain_db: dbValue } : o);
+  } else if (kind === 'mix-vca') {
+    mixerState.vcas = (mixerState.vcas || []).map(v => v.id === id ? { ...v, gain_db: dbValue } : v);
   }
   // Direct DOM updates during drag — skip a full renderMixer() so
   // the fader handle slides smoothly without re-rendering every
@@ -5612,6 +5795,8 @@ function applyMixFader(kind, id, dbValue, persist = true) {
         await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
       } else if (kind === 'mix-out') {
         await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
+      } else if (kind === 'mix-vca') {
+        await fetch(API + `/mixer/vcas/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
       }
     } catch (e) { /* swallow; next fetchMixer reconciles */ }
   }, 150);

@@ -52,6 +52,7 @@ from phonon_stage.mixer.models import (
     Output,
     PluginInsert,
     Source,
+    Vca,
     replace,
     validate_delay_ms,
     validate_gain_db,
@@ -145,6 +146,10 @@ class MixerService:
     @property
     def sources(self) -> list[Source]:
         return list(self._store.state.sources)
+
+    @property
+    def vcas(self) -> list[Vca]:
+        return list(self._store.state.vcas)
 
     def _output(self, output_id: str) -> Output:
         out = next((o for o in self._store.state.outputs if o.id == output_id), None)
@@ -901,13 +906,15 @@ class MixerService:
         sink_node = next((n for n in nodes if n.name == output.sink_node_name), None)
         if sink_node is None:
             return
-        lin = self._db_to_linear(output.gain_db)
+        eff_gain = self._effective_gain_db(output.id, output.gain_db)
+        eff_mute = self._effective_mute(output.id, output.mute)
+        lin = self._db_to_linear(eff_gain)
         try:
             await self._pw.set_node_channel_volumes(
                 sink_node.name,
                 [
-                    0.0 if output.mute_left else lin,
-                    0.0 if output.mute_right else lin,
+                    0.0 if (output.mute_left or eff_mute) else lin,
+                    0.0 if (output.mute_right or eff_mute) else lin,
                 ],
             )
         except Exception:
@@ -1026,8 +1033,17 @@ class MixerService:
             for s in self._store.state.sources
         ]
         new_outputs = [o for o in self._store.state.outputs if o.id != output_id]
+        # Same prune for VCA memberships referencing this output.
+        new_vcas = [
+            replace(v, members=tuple(m for m in v.members if m != output_id))
+            if output_id in v.members
+            else v
+            for v in self._store.state.vcas
+        ]
         self._store.replace_state(
-            replace(self._store.state, outputs=new_outputs, sources=new_sources)
+            replace(
+                self._store.state, outputs=new_outputs, sources=new_sources, vcas=new_vcas
+            )
         )
         await self._reconcile()
 
@@ -1133,13 +1149,15 @@ class MixerService:
         src_node = next((n for n in nodes if n.name == source.source_node_name), None)
         if src_node is None:
             return
-        lin = self._db_to_linear(source.gain_db)
+        eff_gain = self._effective_gain_db(source.id, source.gain_db)
+        eff_mute = self._effective_mute(source.id, source.mute)
+        lin = self._db_to_linear(eff_gain)
         try:
             await self._pw.set_node_channel_volumes(
                 src_node.name,
                 [
-                    0.0 if source.mute_left else lin,
-                    0.0 if source.mute_right else lin,
+                    0.0 if (source.mute_left or eff_mute) else lin,
+                    0.0 if (source.mute_right or eff_mute) else lin,
                 ],
             )
         except Exception:
@@ -1152,8 +1170,130 @@ class MixerService:
     async def remove_source(self, source_id: str) -> None:
         self._source(source_id)
         new_sources = [s for s in self._store.state.sources if s.id != source_id]
-        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        # Prune the source from every VCA that referenced it so we
+        # don't end up with phantom members pointing at a strip that
+        # no longer exists.
+        new_vcas = [
+            replace(v, members=tuple(m for m in v.members if m != source_id))
+            if source_id in v.members
+            else v
+            for v in self._store.state.vcas
+        ]
+        self._store.replace_state(
+            replace(self._store.state, sources=new_sources, vcas=new_vcas)
+        )
         await self._reconcile()
+
+    # ── VCAs (control-plane groupings) ──────────────────────────
+
+    def _vca(self, vca_id: str) -> Vca:
+        for v in self._store.state.vcas:
+            if v.id == vca_id:
+                return v
+        msg = f"unknown vca id: {vca_id}"
+        raise MixerError(msg)
+
+    def _strip_exists(self, strip_id: str) -> bool:
+        """A VCA member must resolve to a source or output the mixer
+        already knows about. Returns True iff `strip_id` matches one."""
+        return any(s.id == strip_id for s in self._store.state.sources) or any(
+            o.id == strip_id for o in self._store.state.outputs
+        )
+
+    async def add_vca(self, label: str, gain_db: float = 0.0) -> Vca:
+        from phonon_stage.mixer.models import MAX_VCAS
+
+        if len(self._store.state.vcas) >= MAX_VCAS:
+            msg = f"VCA limit reached ({MAX_VCAS})"
+            raise MixerError(msg)
+        validate_gain_db(gain_db)
+        v = Vca(id=uuid.uuid4().hex[:8], label=label, gain_db=gain_db)
+        new_vcas = [*self._store.state.vcas, v]
+        self._store.replace_state(replace(self._store.state, vcas=new_vcas))
+        # No audio impact when the VCA is empty — skip reconcile.
+        return v
+
+    async def patch_vca(
+        self,
+        vca_id: str,
+        *,
+        label: str | None = None,
+        gain_db: float | None = None,
+        mute: bool | None = None,
+    ) -> Vca:
+        """Update label / gain / mute. Audio-impacting fields (gain,
+        mute) drop into the fast volume path for every member strip —
+        no reconcile, no graph tear-down."""
+        cur = self._vca(vca_id)
+        new = cur
+        if label is not None:
+            new = replace(new, label=label)
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+            new = replace(new, gain_db=gain_db)
+        if mute is not None:
+            new = replace(new, mute=mute)
+        new_vcas = [new if v.id == vca_id else v for v in self._store.state.vcas]
+        self._store.replace_state(replace(self._store.state, vcas=new_vcas))
+        # Push the new effective gain/mute to every member strip — fast
+        # path, no reconcile (matches how Source/Output gain moves work).
+        if gain_db is not None or mute is not None:
+            await self._apply_members_volume(new)
+        return new
+
+    async def remove_vca(self, vca_id: str) -> None:
+        self._vca(vca_id)
+        # Snapshot members BEFORE removing so we can restore their volumes
+        # (they get their effective gain back without the VCA contribution).
+        members_before = list(self._vca(vca_id).members)
+        new_vcas = [v for v in self._store.state.vcas if v.id != vca_id]
+        self._store.replace_state(replace(self._store.state, vcas=new_vcas))
+        # Re-apply volumes on the strips that just lost a parent VCA.
+        for sid in members_before:
+            await self._apply_strip_volume_by_id(sid)
+
+    async def assign_vca_member(self, vca_id: str, strip_id: str) -> Vca:
+        cur = self._vca(vca_id)
+        if not self._strip_exists(strip_id):
+            msg = f"unknown strip id (not a source or output): {strip_id}"
+            raise MixerError(msg)
+        if strip_id in cur.members:
+            return cur  # idempotent
+        new = replace(cur, members=(*cur.members, strip_id))
+        new_vcas = [new if v.id == vca_id else v for v in self._store.state.vcas]
+        self._store.replace_state(replace(self._store.state, vcas=new_vcas))
+        await self._apply_strip_volume_by_id(strip_id)
+        return new
+
+    async def unassign_vca_member(self, vca_id: str, strip_id: str) -> Vca:
+        cur = self._vca(vca_id)
+        if strip_id not in cur.members:
+            return cur  # idempotent
+        new = replace(cur, members=tuple(m for m in cur.members if m != strip_id))
+        new_vcas = [new if v.id == vca_id else v for v in self._store.state.vcas]
+        self._store.replace_state(replace(self._store.state, vcas=new_vcas))
+        await self._apply_strip_volume_by_id(strip_id)
+        return new
+
+    async def _apply_strip_volume_by_id(self, strip_id: str) -> None:
+        """Resolve a strip id to the right (source or output) and push
+        its effective volume + mute. Used after VCA mutations so the
+        affected strips track the new gain immediately."""
+        for s in self._store.state.sources:
+            if s.id == strip_id:
+                await self._apply_strip_volume_source(s)
+                return
+        for o in self._store.state.outputs:
+            if o.id == strip_id:
+                await self._apply_strip_volume_output(o)
+                return
+
+    async def _apply_members_volume(self, vca: Vca) -> None:
+        """Apply effective volume + mute to every member of a VCA.
+        Called after the VCA itself moved (gain or mute) so the
+        downstream strips reflect the change without a reconcile."""
+        for sid in vca.members:
+            await self._apply_strip_volume_by_id(sid)
 
     # ── Sessions (snapshot / restore) ───────────────────────────
 
@@ -1414,8 +1554,9 @@ class MixerService:
             # output mute / solo'd-out. Used to pick the path AND to
             # drive the silencing strategy (channel volume = 0).
             output_silenced = out_solo_active and not o.solo
-            silenced = o.mute or self.master.mute or output_silenced
-            o_lin = self._db_to_linear(o.gain_db)
+            eff_mute = self._effective_mute(o.id, o.mute)
+            silenced = eff_mute or self.master.mute or output_silenced
+            o_lin = self._db_to_linear(self._effective_gain_db(o.id, o.gain_db))
             # Channel volume = 0 is the definitive mute on this Stage:
             # `wpctl set-mute` on hardware ALSA sinks returns rc=0 but
             # doesn't actually silence audio reaching the speaker.
@@ -1466,13 +1607,14 @@ class MixerService:
                     source_node_name=s.source_node_name,
                 )
                 continue
-            s_lin = self._db_to_linear(s.gain_db)
+            s_eff_mute = self._effective_mute(s.id, s.mute)
+            s_lin = self._db_to_linear(self._effective_gain_db(s.id, s.gain_db))
             try:
                 await self._pw.set_node_channel_volumes(
                     src_node.name,
                     [
-                        0.0 if s.mute_left else s_lin,
-                        0.0 if s.mute_right else s_lin,
+                        0.0 if (s.mute_left or s_eff_mute) else s_lin,
+                        0.0 if (s.mute_right or s_eff_mute) else s_lin,
                     ],
                 )
             except Exception:
@@ -1480,7 +1622,7 @@ class MixerService:
             # Mute or solo gating: skip link creation entirely so
             # the audio doesn't even reach the destination.
             source_silenced = src_solo_active and not s.solo
-            if s.mute or source_silenced:
+            if s_eff_mute or source_silenced:
                 continue
             # Output ports of the source — for a null-sink that's its
             # monitor_FL/FR (direction=output); for a real Audio/Source
@@ -1635,6 +1777,19 @@ class MixerService:
         if db <= -60.0:
             return 0.0
         return float(10 ** (db / 20.0))
+
+    def _effective_gain_db(self, strip_id: str, base_gain_db: float) -> float:
+        """Fold every VCA the strip belongs to into the base gain.
+        Result is clamped to the same range as a normal strip so a
+        loaded VCA can't push the audio into a numerically wild value."""
+        delta = sum(v.gain_db for v in self._store.state.vcas_containing(strip_id))
+        from phonon_stage.mixer.models import MAX_GAIN_DB, MIN_GAIN_DB
+
+        return max(MIN_GAIN_DB, min(MAX_GAIN_DB, base_gain_db + delta))
+
+    def _effective_mute(self, strip_id: str, base_mute: bool) -> bool:
+        """OR-fold every VCA mute the strip belongs to."""
+        return base_mute or any(v.mute for v in self._store.state.vcas_containing(strip_id))
 
 
 def looks_like_sink_source(node_name: str) -> bool:

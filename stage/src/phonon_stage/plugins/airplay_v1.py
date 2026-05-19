@@ -205,37 +205,44 @@ class AirplayV1Settings(PluginSettings):
     audio_backend_buffer_desired_length_in_seconds: float = Field(
         default=0.20,
         ge=0.05,
-        le=2.0,
+        le=5.0,
         description=(
             "Buffer between shairport and the PA sink. Higher = more "
-            "tolerant of system jitter, more added latency."
+            "tolerant of system jitter (and downstream firmware buffers "
+            "like the DG60 BT module), more added latency. Up to 5 s for "
+            "very-buffered downstream gear."
         ),
     )
     audio_backend_latency_offset_in_seconds: float = Field(
         default=0.0,
-        ge=-0.5,
-        le=0.5,
+        ge=-2.0,
+        le=2.0,
         description=(
             "Manual offset added to the calculated latency. Use for "
-            "fine alignment with other AirPlay or non-AirPlay sources."
+            "fine alignment with other AirPlay or non-AirPlay sources, "
+            "or to compensate for a known-fixed downstream buffer."
         ),
     )
     drift_tolerance_in_seconds: float = Field(
         default=0.002,
         ge=0.0,
-        le=0.1,
+        le=1.0,
         description=(
             "Max drift between source and backend clocks before "
-            "shairport applies micro-corrections. Lower = tighter sync."
+            "shairport applies micro-corrections. Lower = tighter sync. "
+            "Raise to 0.3-0.5 when the downstream backend has its own "
+            "buffer that PW can't model (BT dongles, USB DACs with FIFOs)."
         ),
     )
     resync_threshold_in_seconds: float = Field(
         default=0.050,
         ge=0.0,
-        le=1.0,
+        le=5.0,
         description=(
             "Drift above this threshold triggers a full resync (audible "
-            "glitch). Should be well above drift_tolerance."
+            "glitch + drop). Should be well above drift_tolerance. Set "
+            "to 0 to disable the resync entirely — shairport will keep "
+            "trying to drift-correct forever instead of giving up."
         ),
     )
 

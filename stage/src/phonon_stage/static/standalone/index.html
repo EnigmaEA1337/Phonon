@@ -1241,16 +1241,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-1) 100%);
 }
 .strip.mix-vca .fader-area { justify-content: center; }
+/* VCA assigns area — mirrors .row-fx exactly: column stack, items
+   stretch to the strip width, 2 px gap, no horizontal padding. Member
+   chips and "+ assign" then look like fx-btn slots stacked vertically. */
 .vca-members {
-  display: flex; flex-wrap: wrap; gap: 2px;
-  padding: 2px 4px; min-height: 20px; align-content: flex-start;
+  display: flex; flex-direction: column; align-items: stretch;
+  min-width: 0; gap: 2px; min-height: 22px;
 }
 /* VCA member chip — fx-btn-styled "slot": dark brushed gradient with
    a small violet LED that identifies the owning VCA's colour. Reads
    as a populated slot (like an active fx-btn) so the chip stack
    looks like the FX chain of an strip. Click still unassigns. */
 .vca-member-chip {
-  display: inline-flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 4px;
+  height: 22px; flex: 0 0 22px;
   font-family: var(--font-m); font-size: 8px; font-weight: 600;
   letter-spacing: 0.3px; color: #ead8fb;
   background: linear-gradient(180deg,
@@ -1259,28 +1263,31 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border: 1px solid rgba(168,85,247,0.5);
   border-radius: 3px;
   padding: 0 5px;
-  height: 16px; line-height: 14px;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
     inset 0 -1px 0 rgba(0,0,0,0.6),
-    inset 0 0 5px rgba(168,85,247,0.20),
-    0 0 3px rgba(168,85,247,0.30),
+    inset 0 0 6px rgba(168,85,247,0.20),
+    0 0 4px rgba(168,85,247,0.30),
     0 1px 1px rgba(0,0,0,0.45);
   text-shadow: 0 1px 0 rgba(0,0,0,0.7);
-  cursor: pointer; flex: 0 0 auto;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
+  min-width: 0; overflow: hidden;
   transition: background 80ms linear, color 80ms linear, box-shadow 80ms linear;
+}
+.vca-member-chip > * {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .vca-member-chip::before {
   content: '';
-  width: 5px; height: 5px; border-radius: 50%;
-  flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%;
+  flex-shrink: 0; flex-grow: 0;
   background: radial-gradient(circle at 30% 30%,
     #d8b4fe 0%, #a855f7 55%, #6b21a8 100%);
   border: 1px solid rgba(0,0,0,0.55);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.35),
-    0 0 3px rgba(168,85,247,0.85);
+    0 0 4px rgba(168,85,247,0.85);
 }
 .vca-member-chip:hover {
   background: linear-gradient(180deg,
@@ -1292,7 +1299,8 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    member behind this slot yet). Mirrors the "+ FX" placeholder on
    the FX row. */
 .vca-assign-btn {
-  display: inline-flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 4px;
+  height: 22px; flex: 0 0 22px;
   font-family: var(--font-m); font-size: 8px; font-weight: 600;
   letter-spacing: 0.3px; color: rgba(199,204,210,0.65);
   background: linear-gradient(180deg,
@@ -1302,19 +1310,18 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   border-top-color: #4f5258;
   border-radius: 3px;
   padding: 0 5px;
-  height: 16px; line-height: 14px;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
     inset 0 -1px 0 rgba(0,0,0,0.6),
     0 1px 1px rgba(0,0,0,0.45);
   text-shadow: 0 1px 0 rgba(0,0,0,0.7);
-  cursor: pointer; flex: 0 0 auto;
+  cursor: pointer; min-width: 0;
   transition: background 80ms linear, color 80ms linear;
 }
 .vca-assign-btn::before {
   content: '';
-  width: 5px; height: 5px; border-radius: 50%;
-  flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%;
+  flex-shrink: 0; flex-grow: 0;
   background: #1a1d22;
   border: 1px solid rgba(0,0,0,0.55);
   box-shadow: inset 0 1px 1px rgba(0,0,0,0.6);

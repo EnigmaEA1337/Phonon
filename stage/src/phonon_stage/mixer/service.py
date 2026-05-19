@@ -32,9 +32,12 @@ import asyncio
 import contextlib
 import re
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 from phonon_stage.mixer.filter_chain import (
     MASTER_CHAIN_NAME,
@@ -107,6 +110,14 @@ class MixerService:
         self._store = store
         self._introspector = introspector
         self._sessions = session_store
+        # Optional callback fired after a chain-diff cascade has wiped
+        # PA modules. The pipewire-pulse re-init that filter-chain.service
+        # restart triggers takes the source plugin null-sinks down with
+        # phonon_master — main.py wires this to
+        # PluginRegistry.heal_null_sinks so spotify_in / airplay_in
+        # come back before the reconcile re-creates loopbacks. None on
+        # test/headless setups where there's no plugin registry.
+        self.on_chain_cascade: Callable[[], Awaitable[Any]] | None = None
         # PW objects we own. Tracked so reconcile() can tear them down.
         self._owned_loopbacks: list[int] = []
         self._owned_links: list[int] = []
@@ -1298,6 +1309,18 @@ class MixerService:
             # doesn't cascade.
             if self.POST_CHAIN_DIFF_SLEEP_S > 0:
                 await asyncio.sleep(self.POST_CHAIN_DIFF_SLEEP_S)
+            # The cascade also wiped the source-plugin null-sinks
+            # (spotify_in, airplay_in, …). The plugin registry's heal
+            # routine knows how to re-create them — call it via the
+            # injected callback so this module doesn't have to import
+            # the registry (cycle). On the next reconcile pass it's
+            # only meaningful when there ARE plugin null-sinks to
+            # heal; otherwise the call is cheap and idempotent.
+            if self.on_chain_cascade is not None:
+                try:
+                    await self.on_chain_cascade()
+                except Exception:
+                    logger.warning("mixer.chain_cascade_callback_failed", exc_info=True)
 
         # 4. Now the world is settled: ensure phonon_master exists
         #    (cascade may have killed it) and grab fresh node/port

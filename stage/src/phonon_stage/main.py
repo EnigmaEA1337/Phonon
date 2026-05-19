@@ -133,6 +133,13 @@ def create_app(
         pw_backend=pw, store=mixer_store, introspector=intr,
         session_store=session_store,
     )
+    # When the mixer's chain-diff fires, filter-chain.service is
+    # restarted; that cascades into a pipewire-pulse re-init which
+    # wipes the source-plugin null-sinks (spotify_in, airplay_in...).
+    # Hook the plugin registry's heal routine so they come back
+    # automatically — without this, every FX add/remove kills the
+    # source feed until the operator manually re-enables the plugins.
+    mixer_service.on_chain_cascade = plugin_registry.heal_null_sinks
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

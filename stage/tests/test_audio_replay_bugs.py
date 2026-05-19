@@ -191,6 +191,58 @@ class TestFullResyncClearsTracking:
 # ── Fix 4 — replay_audio_state lock ───────────────────────────────
 
 
+# ── Fix 5 — post-cascade re-heal callback ─────────────────────────
+
+
+class TestPostCascadeHeal:
+    """When _apply_filter_chain_diff fires its reload (which on the
+    real stage cascades into a pipewire-pulse re-init wiping every
+    pactl module), the mixer must fire its on_chain_cascade callback
+    so the plugin registry can re-create spotify_in / airplay_in.
+    Without this every FX add/remove silenced the source feeds."""
+
+    async def test_callback_runs_after_cascade(
+        self, mixer: tuple[FakePipeWireBackend, MixerService]
+    ) -> None:
+        pw, svc = mixer
+        await svc.init()
+        out_b = await svc.add_output(sink_node_name="dg60_b", label="B")
+        # Attach a chain on B so the next reconcile triggers the diff.
+        new_b = replace(
+            out_b,
+            inserts=(
+                PluginInsert(
+                    backend="ladspa", library="lsp/x.so", label="limiter_stereo",
+                    controls={}, enabled=True,
+                ),
+            ),
+        )
+        new_outputs = [new_b if o.id == out_b.id else o for o in svc.state.outputs]
+        svc._store.replace_state(replace(svc.state, outputs=new_outputs))
+
+        calls = {"n": 0}
+        async def callback() -> None:
+            calls["n"] += 1
+        svc.on_chain_cascade = callback
+
+        await svc._reconcile()
+        assert calls["n"] == 1, "on_chain_cascade should run when chain diff fires"
+
+    async def test_callback_skipped_when_no_diff(
+        self, mixer: tuple[FakePipeWireBackend, MixerService]
+    ) -> None:
+        pw, svc = mixer
+        await svc.init()
+        await svc.add_output(sink_node_name="dg60_b", label="B")
+        calls = {"n": 0}
+        async def callback() -> None:
+            calls["n"] += 1
+        svc.on_chain_cascade = callback
+        # Fader move (no chain change) → no diff, no cascade, no callback.
+        await svc.update_output(svc.outputs[0].id, gain_db=-3.0)
+        assert calls["n"] == 0
+
+
 class TestReplayLock:
     async def test_lock_object_exists(self) -> None:
         """The replay lock is a module-level asyncio.Lock so that

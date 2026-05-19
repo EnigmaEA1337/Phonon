@@ -203,8 +203,31 @@ def _process_alive(pid: int) -> bool:
 _stream_procs: dict[str, asyncio.subprocess.Process] = {}
 
 
+# Minimal boilerplate every standalone `pipewire -c <conf>` child needs:
+# protocol-native + client-node + adapter so it can connect to the main
+# daemon's socket and register nodes there. Without these, pipewire dies
+# at startup with "can't find protocol 'PipeWire:Protocol:Native'".
+# Same set filter-chain.conf uses.
+_STANDALONE_BOILERPLATE = """context.properties = {
+    log.level = 0
+}
+
+context.spa-libs = {
+    audio.convert.* = audioconvert/libspa-audioconvert
+    support.*       = support/libspa-support
+}
+
+"""
+
+
 def _render_send_conf(req: CreateStreamRequest, node_name: str) -> str:
-    return f"""context.modules = [
+    return _STANDALONE_BOILERPLATE + f"""context.modules = [
+  {{ name = libpipewire-module-rt
+    flags = [ ifexists nofail ]
+  }}
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
   {{ name = libpipewire-module-rtp-sink
     args = {{
       destination.ip = {req.multicast_group}
@@ -246,7 +269,13 @@ def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
     # packets arrive. With ts-direct=false the RTP-source module uses
     # `sess.latency.msec` as a jitter buffer and resamples around clock
     # skew — works on any unsynchronised pair of machines.
-    return f"""context.modules = [
+    return _STANDALONE_BOILERPLATE + f"""context.modules = [
+  {{ name = libpipewire-module-rt
+    flags = [ ifexists nofail ]
+  }}
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
   {{ name = libpipewire-module-rtp-source
     args = {{
       source.ip = {req.multicast_group}
@@ -622,7 +651,7 @@ async def restore_existing_aes67() -> None:
         except OSError:
             continue
         # Heuristic parse — kind from module name, fields from regex
-        kind: str = "send" if "module-rtp-sink" in text else "recv"
+        kind = "send" if "module-rtp-sink" in text else "recv"
         ip_match = re.search(r"(?:destination|source)\.ip\s*=\s*([\d.]+)", text)
         port_match = re.search(r"(?:destination|source)\.port\s*=\s*(\d+)", text)
         ch_match = re.search(r"audio\.channels\s*=\s*(\d+)", text)
@@ -630,6 +659,34 @@ async def restore_existing_aes67() -> None:
         fmt_match = re.search(r"audio\.format\s*=\s*(\S+)", text)
         name_match = re.search(r'node\.name\s*=\s*"aes67-\w+-([^"]+)"', text)
         loop_match = re.search(r"net\.loop\s*=\s*(true|false)", text)
+        # Old confs (pre-subprocess refactor) lacked the standalone-pipewire
+        # boilerplate (protocol-native, client-node, adapter). Detect that
+        # case and rewrite the conf with the current template before we
+        # spawn — otherwise `pipewire -c` dies with "can't find protocol".
+        if "libpipewire-module-protocol-native" not in text:
+            try:
+                from phonon_stage.api import settings as _settings_mod
+
+                req = CreateStreamRequest(
+                    name=name_match.group(1) if name_match else stream_id,
+                    multicast_group=ip_match.group(1) if ip_match else "239.69.10.10",
+                    port=int(port_match.group(1)) if port_match else 5004,
+                    channels=int(ch_match.group(1)) if ch_match else 2,
+                    sample_rate=int(rate_match.group(1)) if rate_match else 48000,
+                    audio_format=fmt_match.group(1) if fmt_match else "S16BE",
+                    loop=loop_match.group(1) == "true" if loop_match else True,
+                    recv_buffer_ms=_settings_mod.get().aes67.recv_buffer_ms,
+                )
+                node_name = _node_name(kind, req.name)
+                conf = (
+                    _render_send_conf(req, node_name)
+                    if kind == "send"
+                    else _render_recv_conf(req, node_name)
+                )
+                path.write_text(conf)
+                logger.info("aes67.restore_rewrote_conf", stream_id=stream_id, kind=kind)
+            except Exception as e:
+                logger.warning("aes67.restore_rewrite_failed", stream_id=stream_id, error=str(e))
         try:
             pid = await _spawn_stream_process(stream_id, path)
         except OSError as e:

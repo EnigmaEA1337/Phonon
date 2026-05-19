@@ -38,14 +38,31 @@ SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:04", SYMLINK+="phonon-bt-out-pu
 SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:05", SYMLINK+="phonon-bt-out-xtreme-1"
 SUBSYSTEM=="hci", ATTR{address}=="aa:bb:cc:dd:ee:06", SYMLINK+="phonon-bt-out-xtreme-2"
 
-# ── Avantree DG60 (BT-as-USB-audio, used as inbound) ───────────────────────
-# DG60 receivers expose themselves to the host as a USB audio class device,
-# not as a BT HCI. Bind by USB serial — every DG60 has a unique one. Replace
-# the placeholder serial below with the real value from `lsusb -v`.
+# ── Avantree DG60 (BT-as-USB-audio) ────────────────────────────────────────
+# Confirmed live on 2026-05-19: the DG60 firmware hardcodes the USB serial
+# to ABCDEF0123456789 on every unit (Avantree shipped a single fake serial
+# across the entire batch). So binding by serial is useless — every DG60
+# you plug in will match the same rule.
+#
+# The reliable handle is the USB port the cable goes into. We rename the
+# ALSA card id via ATTR{id} so the PW node names become unambiguous (the
+# old "alsa_output.usb-..._ABCDEF0123456789-00.2.analog-stereo" pattern,
+# where one DG60 silently shadows another at reroute time, goes away).
+#
+# Real IDs:
+#   idVendor=0a12 (Cambridge Silicon Radio) idProduct=1004
+#
+# To wire your machine: plug each DG60 into a FIXED USB port, then run
+# `udevadm info --attribute-walk /sys/class/sound/card<N>` to read the
+# KERNELS attribute of the USB device (e.g. "1-3", "1-6"). Replace the
+# port strings below with your actual values, and label the ATTR{id}
+# accordingly (e.g. `dg60_front_left`, `dg60_back_right`, ...).
 
-SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_1", SYMLINK+="phonon-bt-in-invite-1"
-SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_2", SYMLINK+="phonon-bt-in-invite-2"
-SUBSYSTEM=="sound", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2b40", ATTRS{serial}=="DG60_SERIAL_3", SYMLINK+="phonon-bt-in-invite-3"
+SUBSYSTEM=="sound", KERNEL=="card?", ATTRS{idVendor}=="0a12", ATTRS{idProduct}=="1004", KERNELS=="1-3", ATTR{id}="dg60a"
+SUBSYSTEM=="sound", KERNEL=="card?", ATTRS{idVendor}=="0a12", ATTRS{idProduct}=="1004", KERNELS=="1-6", ATTR{id}="dg60b"
+# Add more rules above for additional DG60s on other ports — `lsusb -t`
+# walks the topology; `udevadm info --attribute-walk` confirms the
+# KERNELS string for each card.
 
 # ── Other audio devices ────────────────────────────────────────────────────
 # Creative X-Fi HD (Optiplex 3070, primary SPDIF output).

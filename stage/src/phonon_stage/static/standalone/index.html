@@ -1372,6 +1372,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .mix-direct-chips { display: flex; flex-wrap: wrap; gap: 2px; font-size: 8px; justify-content: center; }
 .mix-direct-chip { background: var(--bg-2); color: var(--text-mid); padding: 1px 4px;
   border-radius: 2px; border: 1px solid var(--border); font-family: var(--font-m); }
+/* Bus-send chips — same shape as direct chips, cyan tint to match
+   the bus column accent. Shown under the route bar in the source
+   strip's row-extra2. */
+.mix-bus-chips { display: flex; flex-wrap: wrap; gap: 2px; font-size: 8px; justify-content: center; }
+.mix-bus-chip { background: rgba(6,182,212,0.18); color: #67e8f9; padding: 1px 4px;
+  border-radius: 2px; border: 1px solid rgba(6,182,212,0.4); font-family: var(--font-m); }
 /* Picker modal for + Add Source / Output */
 .mix-picker-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px;
   background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px;
@@ -5395,6 +5401,23 @@ function renderMixSources() {
           return `<span class="mix-direct-chip" title="${escapeHtml(o?.label || id)}">${escapeHtml(o?.label || id).slice(0, 8)}</span>`;
         }).join('')}</div>`
       : '<div class="row-extra1"></div>';
+    // Bus-send chips — enabled sends become small cyan pills under
+    // the route bar. Disabled sends keep their entry in `s.bus_sends`
+    // but render as greyed out, so the operator sees them in the
+    // picker without taking up bar space here.
+    const busesById = Object.fromEntries((mixerState.buses || []).map(b => [b.id, b]));
+    const enabledSends = (s.bus_sends || []).filter(snd => snd.enabled);
+    const busChips = enabledSends.length
+      ? `<div class="row-extra2 mix-bus-chips">${enabledSends.map(snd => {
+          const b = busesById[snd.bus_id];
+          if (!b) return '';
+          const lbl = (b.label || snd.bus_id).slice(0, 8);
+          const gainStr = snd.gain_db !== 0
+            ? ` ${snd.gain_db > 0 ? '+' : ''}${snd.gain_db.toFixed(1)}`
+            : '';
+          return `<span class="mix-bus-chip" title="${escapeHtml(b.label || snd.bus_id)}${gainStr ? ' (' + gainStr.trim() + ' dB)' : ''}">${escapeHtml(lbl)}${gainStr}</span>`;
+        }).join('')}</div>`
+      : '<div class="row-extra2"></div>';
     const ledColor = s.mute ? 'var(--red)' : 'var(--green)';
     const inputName = prettyPwName(s.source_node_name);
     const outputName = sourceDestinationSummary(s, outputsById);
@@ -5409,9 +5432,10 @@ function renderMixSources() {
       <div class="row-route mix-route-bar">
         <button class="mix-route-btn${s.to_master ? ' active' : ''}" onclick="mixSourceToggleMaster('${s.id}')" title="Send to master bus">M</button>
         <button class="mix-route-btn${s.direct_outputs.length ? ' active' : ''}" onclick="openMixDirectPicker('${s.id}')" title="Direct sends — bypass master to specific outputs">D ${s.direct_outputs.length || ''}</button>
+        <button class="mix-route-btn${enabledSends.length ? ' active' : ''}" onclick="openMixBusSendPicker('${s.id}')" title="Bus sends — send into sub-mix buses (post-fader)">B ${enabledSends.length || ''}</button>
       </div>
       ${directChips}
-      <div class="row-extra2"></div>
+      ${busChips}
       <div class="row-fx empty"></div>
       ${diagRow(s.source_node_name)}
       ${mrlsRow('mix-src', s.id, s)}
@@ -6568,6 +6592,95 @@ async function mixSaveDirectOutputs(sourceId) {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ direct_outputs: ids }),
   });
+  document.getElementById('mix-picker-overlay').remove();
+  await fetchMixer();
+}
+
+// ── Bus-sends picker (per-source) ─────────────────────────────────
+// One row per Bus on the Stage. Each row toggles the send on/off
+// and holds a per-send gain (-90 to +12 dB). Save iterates the rows:
+//   * checked + bus had no prior send  → PUT { gain_db, enabled: true }
+//   * checked + prior gain differs      → PUT { gain_db, enabled: true }
+//   * unchecked + prior send existed    → DELETE
+//   * untouched (nothing changed)       → skipped
+// All requests fire in parallel; the picker closes once everything
+// resolves and a fresh fetchMixer reconciles the local mirror.
+async function openMixBusSendPicker(sourceId) {
+  const s = (mixerState.sources || []).find(x => x.id === sourceId);
+  if (!s) return;
+  let overlay = document.getElementById('mix-picker-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'mix-picker-overlay';
+  overlay.className = 'modal-overlay open';
+  const buses = mixerState.buses || [];
+  const rows = buses.length
+    ? buses.map(b => {
+        const existing = (s.bus_sends || []).find(snd => snd.bus_id === b.id);
+        const checked = !!(existing && existing.enabled);
+        const gain = existing ? existing.gain_db : 0.0;
+        return `<div class="mix-picker-row" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" class="mix-send-cb"
+                 data-bus-id="${b.id}"
+                 ${checked ? 'checked' : ''}
+                 style="margin-right:4px">
+          <span class="picker-name" style="flex:1">${escapeHtml(b.label)}</span>
+          <label style="font-size:10px;color:var(--text-fade)">gain
+            <input type="number" class="mix-send-gain"
+                   data-bus-id="${b.id}"
+                   min="-90" max="12" step="0.5"
+                   value="${gain.toFixed(1)}"
+                   style="width:60px;margin-left:4px">
+            dB
+          </label>
+        </div>`;
+      }).join('')
+    : '<div style="color:var(--text-fade);font-size:11px;padding:12px">No buses yet — create one in the Buses column first.</div>';
+  overlay.innerHTML = `<div class="modal" style="max-width:560px">
+    <div class="modal-head"><h2>Bus sends — ${escapeHtml(s.label)}</h2></div>
+    <div class="modal-body">
+      <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Post-fader sends into sub-mix buses. Additive on top of the master / direct routing. v1 ignores per-send gain at the audio layer (the bus's own fader controls bus-side level) — the value is persisted so it can take effect once per-send gain ships.</p>
+      ${rows}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" onclick="document.getElementById('mix-picker-overlay').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="mixSaveBusSends('${sourceId}')">Save</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function mixSaveBusSends(sourceId) {
+  const s = (mixerState.sources || []).find(x => x.id === sourceId);
+  if (!s) return;
+  const priorById = {};
+  for (const snd of (s.bus_sends || [])) priorById[snd.bus_id] = snd;
+  const checkboxes = Array.from(document.querySelectorAll('.mix-send-cb'));
+  const calls = [];
+  for (const cb of checkboxes) {
+    const busId = cb.dataset.busId;
+    const checked = cb.checked;
+    const gainInput = document.querySelector(`.mix-send-gain[data-bus-id="${busId}"]`);
+    const gainVal = gainInput ? parseFloat(gainInput.value) : 0.0;
+    const prior = priorById[busId];
+    if (checked) {
+      // Upsert if state or value changed.
+      const changed = !prior || !prior.enabled || prior.gain_db !== gainVal;
+      if (changed) {
+        calls.push(fetch(API + `/mixer/sources/${sourceId}/bus-sends/${busId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gain_db: gainVal, enabled: true }),
+        }));
+      }
+    } else if (prior) {
+      // Was a send, now off → delete.
+      calls.push(fetch(API + `/mixer/sources/${sourceId}/bus-sends/${busId}`, {
+        method: 'DELETE',
+      }));
+    }
+  }
+  try { await Promise.all(calls); } catch { /* fetchMixer will reconcile */ }
   document.getElementById('mix-picker-overlay').remove();
   await fetchMixer();
 }

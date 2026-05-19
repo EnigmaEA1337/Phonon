@@ -2834,10 +2834,15 @@ function renderMixer() {
     return o.insert ? 1 : 0;
   });
   const maxChain = chainLengths.length ? Math.max(0, ...chainLengths) : 0;
-  // +1 reserves a row for the trailing + / ⌫ buttons. Clamp to ≥ 2
-  // so empty-chain outputs still have room for "+ FX" plus the
-  // affordance row underneath.
-  const fxRows = Math.max(2, maxChain + 1);
+  // VCA assigns share the fx grid row so the chip stack aligns
+  // horizontally with the FX chains on the other strips. Each VCA
+  // contributes members.length + 1 (the trailing "+ assign" tile).
+  const vcaSlots = (mixerState.vcas || []).map(v => (v.members || []).length + 1);
+  const maxVca = vcaSlots.length ? Math.max(0, ...vcaSlots) : 0;
+  // +1 reserves a row for the trailing + / ⌫ buttons on FX chains.
+  // Clamp to ≥ 2 so empty-chain outputs still have room for "+ FX"
+  // plus the affordance row underneath.
+  const fxRows = Math.max(2, maxChain + 1, maxVca);
   const console_ = document.querySelector('.mix-console');
   if (console_) console_.style.setProperty('--fx-rows', String(fxRows));
   renderMixSources();
@@ -5539,12 +5544,12 @@ function renderMixVcas() {
       </div>
       <div class="row-io-in strip-io input" style="background:rgba(168,85,247,0.18);color:#a855f7">▶ VCA</div>
       <div class="row-route"></div>
-      <div class="row-extra1 vca-members">
+      <div class="row-extra1"></div>
+      <div class="row-extra2"></div>
+      <div class="row-fx vca-members">
         ${memberChips}
         <button class="vca-assign-btn edit-only" onclick="openVcaAssignPicker('${v.id}')" title="Assign strips to this VCA">+ assign</button>
       </div>
-      <div class="row-extra2"></div>
-      <div class="row-fx empty"></div>
       <div class="row-diag">
         <div class="diag-cell"><div class="diag-label">GAIN</div><div class="diag-val">${gainStr}</div></div>
         <div class="diag-cell"><div class="diag-label">MEMB</div><div class="diag-val">${memberCount}</div></div>

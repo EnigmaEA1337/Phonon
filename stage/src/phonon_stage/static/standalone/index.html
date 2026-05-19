@@ -7251,13 +7251,6 @@ function renderAes67Discovered(streams) {
   const subscribed = new Set((state.aes67 || [])
     .filter(s => s.kind === 'recv')
     .map(s => `${s.multicast_group}:${s.port}`));
-  // Streams we ourselves are publishing (one of our send streams emits on
-  // the same group:port). We KEEP these in the list but flag them with
-  // a "MY CHANNEL" badge — confirms the network sees us, but you can't
-  // subscribe to your own outgoing stream.
-  const own = new Set((state.aes67 || [])
-    .filter(s => s.kind === 'send')
-    .map(s => `${s.multicast_group}:${s.port}`));
 
   const filtered = (streams || []).filter(s => !subscribed.has(`${s.multicast_group}:${s.port}`));
   if (!filtered.length) {
@@ -7268,12 +7261,18 @@ function renderAes67Discovered(streams) {
   }
   el.innerHTML = filtered.map(s => {
     const fresh = s.last_seen_age_s < 15 ? 'var(--green)' : 'var(--text-dim)';
-    const isOwn = own.has(`${s.multicast_group}:${s.port}`);
-    const action = isOwn
-      ? `<span class="badge badge-mesh" style="font-size:8px;padding:2px 6px;letter-spacing:0.5px" title="Published by this Stage — visible on the network but not subscribable from yourself">MY CHANNEL</span>`
+    // `is_local` comes from the backend: source_ip matches our LAN IP, so
+    // this is our own SAP announcement returning via multicast loopback.
+    // Show a SELF badge instead of a subscribe button — you can't subscribe
+    // to your own send, and the entry is informational (confirms the
+    // network sees the announcement going out).
+    const isLocal = s.is_local === true;
+    const action = isLocal
+      ? `<span class="badge badge-mesh" style="font-size:8px;padding:2px 6px;letter-spacing:0.5px" title="This Stage is the source of this stream — visible on the network via multicast loopback. Subscribe from another Stage to actually consume it.">SELF</span>`
       : `<button class="btn btn-primary" style="padding:2px 8px;font-size:9px" onclick="aes67Subscribe('${s.key}', '${(s.name||'sub').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,28)}')">SUBSCRIBE</button>`;
-    const border = isOwn ? '1px solid #fb923c40' : '1px dashed var(--border)';
-    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:${border};border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px">
+    const border = isLocal ? '1px solid #fb923c40' : '1px dashed var(--border)';
+    const opacity = isLocal ? 'opacity:0.65' : '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border:${border};border-radius:4px;margin-bottom:4px;font-family:var(--font-m);font-size:10px;${opacity}">
       <span style="color:${fresh};font-size:8px">●</span>
       <span style="color:var(--text);font-weight:600">${s.name || '(unnamed)'}</span>
       <span style="color:var(--text-dim)">from ${s.source_ip}</span>

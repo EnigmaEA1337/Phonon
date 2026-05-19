@@ -706,6 +706,9 @@ class DiscoveredStream(BaseModel):
     sample_rate: int
     audio_format: str
     last_seen_age_s: float
+    is_local: bool = False  # True when source_ip == our own LAN IP — multicast
+    # loopback makes us see our own SAP announcements; the UI hides these from
+    # the subscribe list since you cannot subscribe to your own send.
 
 
 def _parse_sap_packet(data: bytes, sender_ip: str) -> dict[str, object] | None:
@@ -841,8 +844,16 @@ async def _sap_expiry_loop() -> None:
 
 @router.get("/discovered")
 async def list_discovered() -> list[DiscoveredStream]:
-    """List AES67 streams currently being announced via SAP."""
+    """List AES67 streams currently being announced via SAP.
+
+    Streams whose source IP matches our own LAN IP are tagged
+    `is_local=true` — the SAP listener sees our own announcements
+    via multicast loopback. They're returned so callers can show
+    them as "my own send" if useful, but the standalone UI filters
+    them out of the subscribe list.
+    """
     now = time.monotonic()
+    own_ip = _own_lan_ip(_SAP_GROUP)
     return [
         DiscoveredStream(
             key=k,
@@ -854,6 +865,7 @@ async def list_discovered() -> list[DiscoveredStream]:
             sample_rate=int(v.get("sample_rate", 48000)),  # type: ignore[call-overload]
             audio_format=str(v.get("audio_format", "S16BE")),
             last_seen_age_s=round(now - float(v.get("last_seen", now)), 1),  # type: ignore[call-overload]
+            is_local=str(v.get("source_ip", "")) == own_ip,
         )
         for k, v in _discovered_streams.items()
     ]

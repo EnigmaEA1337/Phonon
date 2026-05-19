@@ -8143,6 +8143,14 @@ setInterval(animateVU, 100);
 // pw-top runs `-n 2` (~2s) so polling faster than that is wasted.
 // Refresh every 2s and update only the cells whose values actually
 // changed — no DOM churn during normal idle.
+//
+// Source-strip plugins expose a null-sink (e.g. airplay_in, spotify_in)
+// at the master rate, but the *real* input rate lives on the upstream
+// producer client (Shairport Sync for AirPlay — 44.1k native). We show
+// the producer's stats when known so the LCD reflects the actual input.
+const DIAG_PRODUCER_MAP = {
+  'airplay_in': 'Shairport Sync',
+};
 async function pollDiagCells() {
   let stats;
   try {
@@ -8155,10 +8163,15 @@ async function pollDiagCells() {
   const formatErr = (n) => n > 999 ? Math.round(n / 1000) + 'k' : String(n || 0);
   document.querySelectorAll('.row-diag[data-diag-node]').forEach(row => {
     const node = row.dataset.diagNode;
+    const producerName = DIAG_PRODUCER_MAP[node];
+    const producer = producerName ? stats[producerName] : null;
     const s = stats[node];
-    const err = s ? (s.err || 0) : 0;
-    const q   = s ? (s.quantum || 0) : 0;
-    const rate = s ? (s.rate || 0) : 0;
+    // Prefer the upstream producer's stats when it's running (rate>0);
+    // fall back to the strip's own node otherwise.
+    const live = (producer && producer.rate) ? producer : s;
+    const err = live ? (live.err || 0) : 0;
+    const q   = live ? (live.quantum || 0) : 0;
+    const rate = live ? (live.rate || 0) : 0;
     const errCell = row.querySelector('[data-diag-field="err"]');
     const qCell = row.querySelector('[data-diag-field="quantum"]');
     const rCell = row.querySelector('[data-diag-field="rate"]');

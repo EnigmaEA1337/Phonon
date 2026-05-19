@@ -270,7 +270,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
    so every row sits at the same Y across columns. Missing content
    in some strip kinds just leaves the row empty rather than
    compressing the layout. */
-.strip.mix-src, .strip.mix-master, .strip.mix-out, .strip.mix-vca {
+.strip.mix-src, .strip.mix-master, .strip.mix-out, .strip.mix-vca, .strip.mix-bus {
   display: grid;
   /* fx row's height tracks the deepest chain in the console so all
      strips stay vertically aligned. --fx-rows is set on the
@@ -1224,6 +1224,20 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
+/* Bus strip — sub-mix between sources and master. Cyan accent per
+   CLAUDE.md. Same 120 px width and row grid as the other strips;
+   bus has its own DSP chain, fader, VU meter, M/R/L/S, and a
+   "→ Master" IO label (v1 always routes to master). */
+.strip.mix-bus {
+  border-top: 2px solid var(--cyan);
+  width: 120px;
+  background: linear-gradient(180deg,
+    rgba(6,182,212,0.30) 0%,
+    rgba(6,182,212,0.18) 12%,
+    rgba(6,182,212,0.06) 20%,
+    var(--bg-2) 30%,
+    var(--bg-1) 100%);
+}
 /* VCA strip — pure control plane, no audio path. Same 120 px width
    and same row grid as the other strips so columns line up across
    the console, but the fader-area is fader-only (no VU bars, no
@@ -1796,6 +1810,13 @@ body.mode-live .edit-only select { opacity: 0.4; }
               <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddSource()">+ Add</button>
             </div>
             <div class="mix-col-body" id="mix-sources"></div>
+          </div>
+          <div class="mix-col">
+            <div class="mix-col-head" style="color:var(--cyan)">
+              BUSES
+              <button class="btn edit-only" style="font-size:9px;padding:2px 8px;margin-left:6px" onclick="openMixAddBus()">+ Add</button>
+            </div>
+            <div class="mix-col-body" id="mix-buses"></div>
           </div>
           <div class="mix-col mix-col-master">
             <div class="mix-col-head" style="color:var(--red)">MASTER</div>
@@ -2798,7 +2819,7 @@ function escapeHtml(s) {
 // individual PATCH/POST/DELETE that the server applies and we re-
 // render from a fresh fetch (server is source of truth).
 
-let mixerState = { master: { gain_db: 0, mute: false }, outputs: [], sources: [] };
+let mixerState = { master: { gain_db: 0, mute: false }, outputs: [], sources: [], buses: [], vcas: [] };
 // VU bars stamp 60 thin segs — fine-grained, digital look (vs the
 // old 20-cell chunky-LED-from-the-80s feel) — plus a vu-readout span
 // at the end. Only the L bar shows the readout (R is hidden via CSS).
@@ -2846,6 +2867,7 @@ function renderMixer() {
   const console_ = document.querySelector('.mix-console');
   if (console_) console_.style.setProperty('--fx-rows', String(fxRows));
   renderMixSources();
+  renderMixBuses();
   renderMixMaster();
   renderMixOutputs();
   renderMixVcas();
@@ -2932,6 +2954,8 @@ function mrlsRow(kind, id, state) {
     impliedMute = !solo && (mixerState.sources || []).some(s => s.solo && s.id !== id);
   } else if (kind === 'mix-out') {
     impliedMute = !solo && (mixerState.outputs || []).some(o => o.solo && o.id !== id);
+  } else if (kind === 'mix-bus') {
+    impliedMute = !solo && (mixerState.buses || []).some(b => b.solo && b.id !== id);
   }
   // VCA-mute inheritance: any VCA whose members include this strip,
   // and whose own M is on, silences it at the audio level. Surfaced
@@ -2974,7 +2998,8 @@ function mrlsRow(kind, id, state) {
   ];
   // Master has no solo (spec).
   if (kind !== 'mix-master') {
-    buttons.push(`<button class="solo ${solo ? 'active' : ''}" onclick="mixToggleSolo('${kind}','${id}')" title="Solo — silence every other ${kind === 'mix-src' ? 'source' : 'output'}">S</button>`);
+    const soloKindLabel = kind === 'mix-src' ? 'source' : kind === 'mix-bus' ? 'bus' : 'output';
+    buttons.push(`<button class="solo ${solo ? 'active' : ''}" onclick="mixToggleSolo('${kind}','${id}')" title="Solo — silence every other ${soloKindLabel}">S</button>`);
   }
   return `<div class="row-mrls">${buttons.join('')}</div>`;
 }
@@ -5500,6 +5525,84 @@ function renderMixOutputs() {
   }).join('') || '<div style="color:var(--text-fade);font-size:10px;padding:8px">No outputs — click + Add</div>';
 }
 
+// ── Bus strips (sub-mixes between Sources and Master) ─────────────
+// A Bus has its own gain / mute / solo / VU + a DSP chain (handled by
+// the same fxRow renderer the outputs use once the bus FX endpoints
+// ship). v1 always routes the bus into the master; the "→ Master"
+// label in the row-io-out is informational, not a togglable route.
+function renderMixBuses() {
+  const el = document.getElementById('mix-buses');
+  if (!el) return;
+  const buses = mixerState.buses || [];
+  if (!buses.length) {
+    el.innerHTML = '<div style="color:var(--text-fade);font-size:10px;padding:8px">No buses — click + Add to create a sub-mix</div>';
+    return;
+  }
+  el.innerHTML = buses.map(b => {
+    const ledColor = b.mute ? 'var(--red)' : 'var(--cyan)';
+    const sendCount = (mixerState.sources || []).filter(
+      s => (s.bus_sends || []).some(snd => snd.bus_id === b.id && snd.enabled)
+    ).length;
+    const inLabel = sendCount
+      ? `← ${sendCount} send${sendCount > 1 ? 's' : ''}`
+      : '← (no sends)';
+    const sinkName = b.sink_node_name || `phonon_bus_${b.id}`;
+    return `<div class="strip mix-bus" data-mix-bus-id="${b.id}">
+      <div class="row-action" style="display:flex;align-items:center;gap:3px">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
+        <span style="flex:1"></span>
+        <button class="btn-del edit-only" onclick="mixBusRemove('${b.id}')" style="width:14px;height:14px;font-size:8px" title="Delete bus">✕</button>
+      </div>
+      <div class="row-io-in strip-io input" title="${escapeHtml(inLabel)}">${escapeHtml(inLabel)}</div>
+      <div class="row-route"></div>
+      <div class="row-extra1"></div>
+      <div class="row-extra2"></div>
+      <div class="row-fx empty"></div>
+      ${diagRow(sinkName)}
+      ${mrlsRow('mix-bus', b.id, b)}
+      <div class="row-fader fader-area">
+        ${MIX_VU_TICKS}
+        <div class="vu-bar" data-ch="L" data-vu-source="${escapeHtml(sinkName)}">${MIX_VU_SEGS}</div>
+        <div class="vu-bar" data-ch="R" data-vu-source="${escapeHtml(sinkName)}">${MIX_VU_SEGS}</div>
+        ${faderCol('mix-bus', b.id, b.gain_db)}
+      </div>
+      <div class="row-io-out strip-io output" title="Routes to master" style="color:var(--text-fade)">▶ Master</div>
+      ${scotchLabel('mix-bus', b.id, b.label)}
+    </div>`;
+  }).join('');
+}
+
+async function openMixAddBus() {
+  const label = (prompt('Bus name?', 'Bus ' + ((mixerState.buses || []).length + 1)) || '').trim();
+  if (!label) return;
+  try {
+    const r = await fetch(API + '/mixer/buses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      alert('Failed to add bus: ' + detail);
+      return;
+    }
+  } catch (e) {
+    alert('Failed to add bus: ' + e);
+    return;
+  }
+  await fetchMixer();
+}
+
+async function mixBusRemove(busId) {
+  const b = (mixerState.buses || []).find(x => x.id === busId);
+  const label = (b && b.label) || busId;
+  if (!confirm(`Delete bus "${label}" ?\nAll sends pointing at it will be removed.`)) return;
+  try {
+    await fetch(API + '/mixer/buses/' + busId, { method: 'DELETE' });
+  } catch (e) { /* ignored — fetchMixer reconciles */ }
+  await fetchMixer();
+}
+
 // ── VCA strips (control-plane groupings) ──────────────────────────
 // A VCA has no audio path — just a fader that folds into the gain of
 // its member strips at reconcile time. UI mirrors the basic strip
@@ -5661,7 +5764,19 @@ async function mixToggleMute(kind, id) {
   if (kind === 'mix-master') return mixMasterToggleMute();
   if (kind === 'mix-src')    return mixSourceToggleMute(id);
   if (kind === 'mix-out')    return mixOutputToggleMute(id);
+  if (kind === 'mix-bus')    return mixBusToggleMute(id);
   if (kind === 'mix-vca')    return mixVcaToggleMute(id);
+}
+
+async function mixBusToggleMute(busId) {
+  const b = (mixerState.buses || []).find(x => x.id === busId);
+  if (!b) return;
+  await fetch(API + '/mixer/buses/' + busId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mute: !b.mute }),
+  });
+  await fetchMixer();
 }
 
 async function mixVcaToggleMute(vcaId) {
@@ -5692,7 +5807,9 @@ async function mixToggleChannelMute(kind, id, channel) {
     ? `/mixer/master`
     : kind === 'mix-src'
       ? `/mixer/sources/${id}`
-      : `/mixer/outputs/${id}`;
+      : kind === 'mix-bus'
+        ? `/mixer/buses/${id}`
+        : `/mixer/outputs/${id}`;
   await fetch(API + url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -5701,10 +5818,11 @@ async function mixToggleChannelMute(kind, id, channel) {
   await fetchMixer();
 }
 
-// Toggle solo on a source or output. Master has no solo (UI never
-// shows the button there). The server's _reconcile resolves the
+// Toggle solo on a source or output or bus. Master has no solo (UI
+// never shows the button there). The server's _reconcile resolves the
 // silencing: any source with solo=True suppresses other sources;
-// any output with solo=True suppresses other outputs.
+// any output with solo=True suppresses other outputs; any bus with
+// solo=True suppresses other buses.
 // M and S on the SAME strip are mutually exclusive — turning S on
 // releases M (you can't solo a muted strip; the operator's intent
 // is clearly "I want only this one to play").
@@ -5714,7 +5832,11 @@ async function mixToggleSolo(kind, id) {
   const nextSolo = !cur.solo;
   const body = { solo: nextSolo };
   if (nextSolo && cur.mute) body.mute = false;
-  const url = kind === 'mix-src' ? `/mixer/sources/${id}` : `/mixer/outputs/${id}`;
+  const url = kind === 'mix-src'
+    ? `/mixer/sources/${id}`
+    : kind === 'mix-bus'
+      ? `/mixer/buses/${id}`
+      : `/mixer/outputs/${id}`;
   await fetch(API + url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -5730,6 +5852,7 @@ function _mixCurrentStrip(kind, id) {
   if (kind === 'mix-master') return mixerState.master || {};
   if (kind === 'mix-src') return mixerState.sources.find(s => s.id === id) || {};
   if (kind === 'mix-out') return mixerState.outputs.find(o => o.id === id) || {};
+  if (kind === 'mix-bus') return (mixerState.buses || []).find(b => b.id === id) || {};
   return {};
 }
 
@@ -5746,7 +5869,13 @@ function mixScotchEdit(el, kind, id) {
     saved = true;
     const next = input.value.trim();
     if (next !== original) {
-      const path = kind === 'mix-src' ? `/mixer/sources/${id}` : `/mixer/outputs/${id}`;
+      const path = kind === 'mix-src'
+        ? `/mixer/sources/${id}`
+        : kind === 'mix-bus'
+          ? `/mixer/buses/${id}`
+          : kind === 'mix-vca'
+            ? `/mixer/vcas/${id}`
+            : `/mixer/outputs/${id}`;
       try {
         await fetch(API + path, {
           method: 'PATCH',
@@ -5918,6 +6047,7 @@ function currentMixGain(kind, id) {
   if (kind === 'mix-master') return mixerState.master?.gain_db || 0;
   if (kind === 'mix-src') return (mixerState.sources.find(s => s.id === id) || {}).gain_db || 0;
   if (kind === 'mix-out') return (mixerState.outputs.find(o => o.id === id) || {}).gain_db || 0;
+  if (kind === 'mix-bus') return ((mixerState.buses || []).find(b => b.id === id) || {}).gain_db || 0;
   if (kind === 'mix-vca') return ((mixerState.vcas || []).find(v => v.id === id) || {}).gain_db || 0;
   return 0;
 }
@@ -5935,6 +6065,8 @@ function applyMixFader(kind, id, dbValue, persist = true) {
     mixerState.sources = mixerState.sources.map(s => s.id === id ? { ...s, gain_db: dbValue } : s);
   } else if (kind === 'mix-out') {
     mixerState.outputs = mixerState.outputs.map(o => o.id === id ? { ...o, gain_db: dbValue } : o);
+  } else if (kind === 'mix-bus') {
+    mixerState.buses = (mixerState.buses || []).map(b => b.id === id ? { ...b, gain_db: dbValue } : b);
   } else if (kind === 'mix-vca') {
     mixerState.vcas = (mixerState.vcas || []).map(v => v.id === id ? { ...v, gain_db: dbValue } : v);
   }
@@ -5963,6 +6095,8 @@ function applyMixFader(kind, id, dbValue, persist = true) {
         await fetch(API + `/mixer/sources/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
       } else if (kind === 'mix-out') {
         await fetch(API + `/mixer/outputs/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
+      } else if (kind === 'mix-bus') {
+        await fetch(API + `/mixer/buses/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
       } else if (kind === 'mix-vca') {
         await fetch(API + `/mixer/vcas/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ gain_db: dbValue }) });
       }

@@ -226,8 +226,19 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
         end = positions[i + 1] if i + 1 < len(positions) else len(text)
         block = text[pos:end].splitlines()
         snapshots.append(block)
-    # Pick the most populated block (filters out a truncated trailing one)
-    snapshot = max(snapshots, key=len)
+    # Pick the snapshot with the most rows in state "R" (Running) —
+    # pw-top -n 2 emits a first snapshot where most nodes are still
+    # in state "C" (Creating) with quantum/rate=0, then a stable
+    # second snapshot with the real running values. Both have the
+    # same line count, so max(snapshots, key=len) used to return the
+    # first one (the unhelpful one). Pick by R-count instead, with a
+    # tiebreak preferring the LAST snapshot (newest data).
+    def _running_rows(block: list[str]) -> int:
+        return sum(1 for ln in block if ln.startswith("R "))
+    snapshot = max(
+        enumerate(snapshots),
+        key=lambda iv: (_running_rows(iv[1]), iv[0]),
+    )[1]
     if len(snapshot) < 2:
         return {}
     header_line = snapshot[0]

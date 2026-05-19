@@ -40,10 +40,6 @@ class FakePipeWireBackend:
         # backend's conf filename). Each entry is the raw conf body
         # the service generated so tests can assert on its content.
         self.filter_chain_confs: dict[str, str] = {}
-        # New (post-2026-05-19): filter-chain modules loaded individually
-        # via pactl load-module. Map module_id → chain_name. Tests can
-        # assert on this to verify the no-cascade path is exercised.
-        self.filter_chain_modules: dict[int, str] = {}
         # Live control values per chain node, keyed by (node_name,
         # control_name). Mirrors what `pw-cli set-param Props` would
         # leave inside the running filter-chain.
@@ -187,12 +183,6 @@ class FakePipeWireBackend:
             removed_node_ids = {n.id for n in self.nodes if n.name == name}
             self.nodes = [n for n in self.nodes if n.name != name]
             self.ports = [p for p in self.ports if p.node_id not in removed_node_ids]
-        if module_id in self.filter_chain_modules:
-            chain_name = self.filter_chain_modules.pop(module_id)
-            # Drop the synthesised node + the conf entry so the graph
-            # mirrors a real pactl unload-module of a filter-chain.
-            self.nodes = [n for n in self.nodes if n.name != chain_name]
-            self.filter_chain_confs.pop(chain_name, None)
         self.unloaded_modules.append(module_id)
 
     # ── Filter-chain (DSP plugin insert) ──────────────────────────
@@ -238,45 +228,6 @@ class FakePipeWireBackend:
             for n in self.nodes
             if not (n.name.startswith("phonon_fx_") and n.name not in chain_names)
         ]
-
-    # ── pactl-based filter-chain (new path, no service restart) ────
-
-    async def load_filter_chain(self, args: list[str]) -> int | None:
-        """Mirror of RealPipeWireBackend.load_filter_chain. Parses the
-        node.name + media.name out of the args list to keep track of
-        which chains are loaded by id."""
-        # Extract node.name (used as the synthesized PwNode name).
-        chain_name = ""
-        for a in args:
-            if a.startswith("node.name="):
-                chain_name = a.split("=", 1)[1]
-                break
-        if not chain_name:
-            return None
-        mid = self._next_module_id
-        self._next_module_id += 1
-        # Record under the existing filter_chain_confs map (re-uses the
-        # tests' inspection surface — they assert on the chain being
-        # present) but stash the args list too for richer assertions.
-        self.filter_chain_confs[chain_name] = " ".join(args)
-        self.filter_chain_modules[mid] = chain_name
-        # Synthesize a node so list_nodes() shows the chain — same as
-        # the conf+reload path does after reload_filter_chain.
-        if not any(n.name == chain_name for n in self.nodes):
-            node_id = max((n.id for n in self.nodes), default=0) + 1
-            self.nodes.append(
-                PwNode(
-                    id=node_id,
-                    name=chain_name,
-                    media_class="Audio/Sink",
-                    nick=chain_name,
-                    state="running",
-                )
-            )
-        return mid
-
-    async def list_filter_chain_modules(self) -> dict[int, str]:
-        return dict(self.filter_chain_modules)
 
     async def set_filter_node_control(
         self, node_name: str, control_name: str, value: float

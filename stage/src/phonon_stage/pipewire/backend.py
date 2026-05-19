@@ -136,23 +136,6 @@ class PipeWireBackend(Protocol):
 
     async def reload_filter_chain(self) -> None: ...
 
-    # New runtime-mode filter-chain operations (since 2026-05-19):
-    # load each chain as a stand-alone pactl module instead of writing
-    # a conf and restarting filter-chain.service. Same trackability as
-    # a module-loopback. The conf-based methods above are kept for
-    # back-compat + orphan cleanup at startup but the active mixer
-    # path goes through these now.
-    async def load_filter_chain(self, args: list[str]) -> int | None:
-        """`pactl load-module module-filter-chain *args`. Returns the
-        loaded module id, None on failure. Caller tracks the id and
-        passes it back to `unload_module` when the chain goes away."""
-        ...
-
-    # Map module_id → media.name (which we set to the chain name) for
-    # every currently-loaded module-filter-chain. Lets the mixer match
-    # live modules against the persisted state at init / resync time.
-    async def list_filter_chain_modules(self) -> dict[int, str]: ...
-
     async def set_filter_node_control(
         self, node_name: str, control_name: str, value: float
     ) -> None: ...

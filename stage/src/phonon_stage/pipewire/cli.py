@@ -265,6 +265,15 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
                 return 0
         quantum = _to_int(parts[2])
         rate = _to_int(parts[3])
+        # Driver rows (sinks/sources backed by hardware or a session
+        # driver) report QUANT + RATE directly. Client streams (the
+        # "+ name" rows: filter-chain endpoints, source plugins,
+        # phonon_master, loopbacks…) leave QUANT/RATE at 0 and put
+        # their negotiated format in the FORMAT column (parts[9..11]
+        # = "<fmt> <channels> <rate>"). Use that as a fallback so the
+        # UI can still show a meaningful rate for client nodes.
+        if rate == 0 and len(parts) >= 12:
+            rate = _to_int(parts[11])
         if not name_part:
             continue
         result[node_id] = {

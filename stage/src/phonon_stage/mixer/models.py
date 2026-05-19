@@ -66,6 +66,7 @@ MAX_DELAY_MS = 600.0
 MAX_SOURCES = 16
 MAX_OUTPUTS = 16
 MAX_VCAS = 8  # control-plane groupings — 8 is plenty for a single show
+MAX_BUSES = 8  # sub-mix buses — same ceiling as VCAs by design
 
 
 # Plugin backend kinds we support in v1. PW 1.6.2 (Ubuntu Studio 26.04)
@@ -257,6 +258,39 @@ class Output:
 
 
 @dataclass(frozen=True)
+class BusSend:
+    """A post-fader send from a Source into a sub-mix Bus.
+
+    The Source's audio reaches the named bus with a per-send gain
+    delta (independent of the source's own fader and of the bus's
+    own fader). `enabled` is the structural on/off — when False the
+    reconcile skips creating the source→bus link entirely. Sends
+    are additive on top of the source's master / direct_outputs
+    routing: a source can simultaneously feed master, an output
+    direct, and any number of buses.
+    """
+
+    bus_id: str
+    gain_db: float = 0.0
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bus_id": self.bus_id,
+            "gain_db": self.gain_db,
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BusSend:
+        return cls(
+            bus_id=str(data["bus_id"]),
+            gain_db=float(data.get("gain_db", 0.0)),
+            enabled=bool(data.get("enabled", True)),
+        )
+
+
+@dataclass(frozen=True)
 class Source:
     id: str
     source_node_name: str  # PW name of the source-side node
@@ -276,6 +310,12 @@ class Source:
     solo: bool = False
     to_master: bool = True
     direct_outputs: tuple[str, ...] = ()
+    # Post-fader sends into one or more buses. Each entry names a bus
+    # by id and carries its own gain. Order is meaningful only for the
+    # UI (left-to-right in the picker); reconcile treats sends as a
+    # set. Sends referring to a non-existent bus_id are silently
+    # ignored at reconcile and pruned by remove_bus().
+    bus_sends: tuple[BusSend, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -290,11 +330,13 @@ class Source:
             "solo": self.solo,
             "to_master": self.to_master,
             "direct_outputs": list(self.direct_outputs),
+            "bus_sends": [s.to_dict() for s in self.bus_sends],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Source:
         direct_raw = data.get("direct_outputs") or []
+        sends_raw = data.get("bus_sends") or []
         return cls(
             id=str(data["id"]),
             source_node_name=str(data["source_node_name"]),
@@ -307,6 +349,73 @@ class Source:
             solo=bool(data.get("solo", False)),
             to_master=bool(data.get("to_master", True)),
             direct_outputs=tuple(str(x) for x in direct_raw),
+            bus_sends=tuple(BusSend.from_dict(s) for s in sends_raw if s),
+        )
+
+
+@dataclass(frozen=True)
+class Bus:
+    """A sub-mix bus — a virtual sink that sums one or more Source
+    sends and feeds the master, optionally through its own DSP chain.
+
+    Topology parallels MasterBus / Output:
+      * A null-sink (`phonon_bus_<id>`) is the structural endpoint
+        every source send writes to.
+      * If `inserts` is non-empty + at least one slot is enabled, the
+        reconcile inserts a filter-chain between the bus null-sink's
+        monitor and a `phonon_bus_<id>_post` null-sink, then loopbacks
+        that into the master. Same pattern as MasterBus's post-chain.
+      * Gain / mute / mute_left / mute_right behave like MasterBus.
+      * Solo (when any bus has solo=True) silences every other bus at
+        reconcile so the operator can audition a single sub-mix.
+
+    v1 constraint: every bus feeds the master. No bus→output direct
+    routing in this release — kept for v2 to avoid blowing up the
+    reconcile surface area.
+    """
+
+    id: str  # short uuid hex
+    label: str  # operator-visible name, e.g. "Drums"
+    gain_db: float = 0.0
+    mute: bool = False
+    mute_left: bool = False
+    mute_right: bool = False
+    solo: bool = False
+    # DSP chain on the bus → master path. Same shape as Output.inserts.
+    inserts: tuple[PluginInsert, ...] = ()
+
+    @property
+    def insert(self) -> PluginInsert | None:
+        """Back-compat shim — mirrors Output/MasterBus.insert."""
+        return self.inserts[0] if self.inserts else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "gain_db": self.gain_db,
+            "mute": self.mute,
+            "mute_left": self.mute_left,
+            "mute_right": self.mute_right,
+            "solo": self.solo,
+            "inserts": [i.to_dict() for i in self.inserts],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Bus:
+        raw_inserts = data.get("inserts") or []
+        inserts: tuple[PluginInsert, ...] = tuple(
+            PluginInsert.from_dict(item) for item in raw_inserts if item
+        )
+        return cls(
+            id=str(data["id"]),
+            label=str(data.get("label", "")),
+            gain_db=float(data.get("gain_db", 0.0)),
+            mute=bool(data.get("mute", False)),
+            mute_left=bool(data.get("mute_left", False)),
+            mute_right=bool(data.get("mute_right", False)),
+            solo=bool(data.get("solo", False)),
+            inserts=inserts,
         )
 
 
@@ -368,6 +477,7 @@ class MixerState:
     master: MasterBus = field(default_factory=MasterBus)
     outputs: list[Output] = field(default_factory=list)
     sources: list[Source] = field(default_factory=list)
+    buses: list[Bus] = field(default_factory=list)
     vcas: list[Vca] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -375,6 +485,7 @@ class MixerState:
             "master": self.master.to_dict(),
             "outputs": [o.to_dict() for o in self.outputs],
             "sources": [s.to_dict() for s in self.sources],
+            "buses": [b.to_dict() for b in self.buses],
             "vcas": [v.to_dict() for v in self.vcas],
         }
 
@@ -384,6 +495,7 @@ class MixerState:
             master=MasterBus.from_dict(data.get("master") or {}),
             outputs=[Output.from_dict(o) for o in (data.get("outputs") or [])],
             sources=[Source.from_dict(s) for s in (data.get("sources") or [])],
+            buses=[Bus.from_dict(b) for b in (data.get("buses") or [])],
             vcas=[Vca.from_dict(v) for v in (data.get("vcas") or [])],
         )
 
@@ -415,6 +527,7 @@ def validate_delay_ms(value: float) -> float:
 
 
 __all__ = [
+    "MAX_BUSES",
     "MAX_DELAY_MS",
     "MAX_GAIN_DB",
     "MAX_OUTPUTS",
@@ -422,6 +535,8 @@ __all__ = [
     "MAX_VCAS",
     "MIN_GAIN_DB",
     "PLUGIN_BACKENDS",
+    "Bus",
+    "BusSend",
     "MasterBus",
     "MixerState",
     "Output",

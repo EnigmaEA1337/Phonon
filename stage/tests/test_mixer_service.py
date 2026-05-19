@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from phonon_stage.mixer.models import MasterBus, MixerState, Output
+from phonon_stage.mixer.models import Bus, BusSend, MasterBus, MixerState, Output, Source, Vca
 from phonon_stage.mixer.service import (
     MASTER_SINK_NAME,
     MixerError,
@@ -753,9 +753,7 @@ class TestVca:
         assert ch_after is not None
         assert ch_after[0] == pytest.approx(10 ** (-6.0 / 20.0), rel=1e-3)
 
-    async def test_removing_source_prunes_vca_members(
-        self, service: MixerService
-    ) -> None:
+    async def test_removing_source_prunes_vca_members(self, service: MixerService) -> None:
         src = await service.add_source(
             source_node_name="airplay_in", source_is_sink=True, label="AirPlay"
         )
@@ -790,3 +788,137 @@ class TestVca:
             await service.add_vca(label=f"V{i}")
         with pytest.raises(MixerError, match="limit reached"):
             await service.add_vca(label="overflow")
+
+
+# ── Bus / BusSend dataclass round-trips ───────────────────────────────
+
+
+class TestBusModels:
+    """Pure-model tests for the bus data structures. The service layer
+    consumes these in commit C2; here we lock down the serialization
+    contract so persistence stays stable across releases."""
+
+    def test_bus_send_roundtrip(self) -> None:
+        s = BusSend(bus_id="bus-drums", gain_db=-3.5, enabled=True)
+        assert BusSend.from_dict(s.to_dict()) == s
+
+    def test_bus_send_defaults(self) -> None:
+        s = BusSend(bus_id="bus-x")
+        assert s.gain_db == 0.0
+        assert s.enabled is True
+
+    def test_bus_send_disabled_roundtrip(self) -> None:
+        s = BusSend(bus_id="bus-x", gain_db=-6.0, enabled=False)
+        assert BusSend.from_dict(s.to_dict()) == s
+
+    def test_bus_roundtrip_empty_chain(self) -> None:
+        b = Bus(id="bus-drums", label="Drums")
+        assert Bus.from_dict(b.to_dict()) == b
+
+    def test_bus_roundtrip_full(self) -> None:
+        from phonon_stage.mixer.models import PluginInsert
+
+        b = Bus(
+            id="bus-fx",
+            label="FX Send",
+            gain_db=-2.0,
+            mute=True,
+            mute_left=False,
+            mute_right=True,
+            solo=False,
+            inserts=(
+                PluginInsert(
+                    backend="ladspa",
+                    library="lsp-plugins-ladspa",
+                    label="http://lsp-plug.in/plugins/ladspa/comp",
+                    controls={"Threshold (dB)": -12.0},
+                    enabled=True,
+                ),
+            ),
+        )
+        assert Bus.from_dict(b.to_dict()) == b
+
+    def test_bus_insert_back_compat_property(self) -> None:
+        """Mirrors Output.insert / MasterBus.insert — first slot or None."""
+        from phonon_stage.mixer.models import PluginInsert
+
+        empty = Bus(id="b", label="L")
+        assert empty.insert is None
+        ins = PluginInsert(backend="ladspa", library="x", label="y")
+        with_chain = Bus(id="b", label="L", inserts=(ins,))
+        assert with_chain.insert == ins
+
+    def test_source_bus_sends_roundtrip(self) -> None:
+        src = Source(
+            id="src-airplay",
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AirPlay-In",
+            bus_sends=(
+                BusSend(bus_id="bus-a", gain_db=0.0),
+                BusSend(bus_id="bus-b", gain_db=-6.0, enabled=False),
+            ),
+        )
+        assert Source.from_dict(src.to_dict()) == src
+
+    def test_source_legacy_json_has_no_bus_sends(self) -> None:
+        """A persisted Source from before this commit lacks the
+        bus_sends key; from_dict must accept that and default it to
+        the empty tuple."""
+        legacy = {
+            "id": "src-legacy",
+            "source_node_name": "airplay_in",
+            "source_is_sink": True,
+            "label": "Legacy",
+            "gain_db": 0.0,
+            "mute": False,
+            "mute_left": False,
+            "mute_right": False,
+            "solo": False,
+            "to_master": True,
+            "direct_outputs": [],
+        }
+        src = Source.from_dict(legacy)
+        assert src.bus_sends == ()
+
+    def test_mixer_state_roundtrip_with_buses(self) -> None:
+        state = MixerState(
+            master=MasterBus(gain_db=-1.0),
+            outputs=[],
+            sources=[
+                Source(
+                    id="src-1",
+                    source_node_name="airplay_in",
+                    source_is_sink=True,
+                    label="AP",
+                    bus_sends=(BusSend(bus_id="bus-1", gain_db=-3.0),),
+                ),
+            ],
+            buses=[
+                Bus(id="bus-1", label="Subs", gain_db=-2.0, solo=False),
+                Bus(id="bus-2", label="Drums", mute=True),
+            ],
+            vcas=[Vca(id="vca-1", label="Backline", members=("src-1",))],
+        )
+        restored = MixerState.from_dict(state.to_dict())
+        assert restored.buses == state.buses
+        assert restored.sources[0].bus_sends == state.sources[0].bus_sends
+        assert restored.vcas == state.vcas
+
+    def test_mixer_state_legacy_json_has_no_buses(self) -> None:
+        """State persisted before this commit lacks the `buses` key.
+        from_dict must default to an empty list, not blow up."""
+        legacy = {
+            "master": {
+                "gain_db": 0.0,
+                "mute": False,
+                "mute_left": False,
+                "mute_right": False,
+                "inserts": [],
+            },
+            "outputs": [],
+            "sources": [],
+            "vcas": [],
+        }
+        state = MixerState.from_dict(legacy)
+        assert state.buses == []

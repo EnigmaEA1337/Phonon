@@ -278,7 +278,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     [extra1]  28px  /* delay input (out) / direct chips (src) / empty (master) */
     [extra2]  20px  /* HW vol (out) / empty */
     [fx]      calc(var(--fx-rows, 1) * 22px + (var(--fx-rows, 1) - 1) * 2px)
-    [diag]    18px  /* mini-LCD: live XRUN / quantum / rate for the strip's PW node */
+    [diag]    28px  /* mini-LCD: live XRUN / quantum / rate for the strip's PW node */
     [mrls]    20px  /* M R L S channel-mute / solo buttons */
     [fader]   230px
     [io-out]  16px
@@ -300,10 +300,10 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip > .row-diag    { grid-row: diag; }
 .strip > .row-mrls    { grid-row: mrls; }
 
-/* Live per-strip diagnostic strip — three LCD cells: XRUN count,
-   quantum (buffer size, e.g. 1024), sample rate (e.g. 48k). Same
-   phosphor-on-black aesthetic as the 1U Monitoring rack. Updated
-   every ~2s by a /pipewire/node-stats poll. */
+/* Live per-strip diagnostic mini-LCD — same Calf-style green phosphor
+   look as the EQ monitoring block. Three cells in a row: XRUN count,
+   quantum (buffer size), sample rate. Full uppercase labels above,
+   phosphor numeric values below. Refreshed every 2 s. */
 .row-diag {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -314,41 +314,45 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   padding: 1px 2px;
-  background: #050608;
-  border: 1px solid #000;
+  background: linear-gradient(180deg, #2d3a1a 0%, #1f2a10 100%);
+  border: 1px solid #0a0e08;
   border-radius: 2px;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.9), inset 0 0 0 1px rgba(255,255,255,0.02);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 0 6px rgba(0,0,0,0.55);
   min-width: 0; overflow: hidden;
 }
 .diag-label {
   font-family: var(--font-d);
-  font-size: 6px;
-  letter-spacing: 0.6px;
+  font-size: 6.5px;
+  letter-spacing: 0.8px;
   text-transform: uppercase;
-  color: rgba(160,170,180,0.65);
+  color: #8aa066;
   line-height: 1;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
 }
 .diag-val {
   font-family: var(--font-m);
-  font-size: 8.5px;
+  font-size: 10.5px;
   font-weight: 700;
-  color: #6ce4f5;
-  text-shadow: 0 0 3px rgba(108,228,245,0.5);
-  letter-spacing: -0.3px;
+  color: #d4f078;
+  text-shadow: 0 0 4px rgba(212,240,120,0.55);
+  letter-spacing: 0.5px;
   line-height: 1.05;
   white-space: nowrap;
+  margin-top: 1px;
 }
 .diag-cell.warn .diag-val {
   color: #fbd86b;
-  text-shadow: 0 0 3px rgba(251,216,107,0.55);
+  text-shadow: 0 0 4px rgba(251,216,107,0.65);
 }
+.diag-cell.warn .diag-label { color: #b59a48; }
 .diag-cell.danger .diag-val {
-  color: #ff7878;
-  text-shadow: 0 0 3px rgba(255,120,120,0.6);
+  color: #ff8a8a;
+  text-shadow: 0 0 5px rgba(255,138,138,0.7);
 }
-/* Source strips have no own quantum/rate (their feed is upstream of
-   phonon_master); show a dim placeholder rather than empty cells. */
+.diag-cell.danger .diag-label { color: #b86a6a; }
+/* Source strips that don't have a real PW node (or before the first
+   poll) display dim placeholder cells. */
 .row-diag.empty .diag-cell { opacity: 0.35; }
 .strip > .row-fader   { grid-row: fader; }
 .strip > .row-io-out  { grid-row: io-out; }
@@ -2702,16 +2706,16 @@ const MIX_VU_TICKS = `<div class="vu-ticks">
 function diagRow(node) {
   if (!node) {
     return `<div class="row-diag empty">
-      <div class="diag-cell"><div class="diag-label">XR</div><div class="diag-val">—</div></div>
-      <div class="diag-cell"><div class="diag-label">Q</div><div class="diag-val">—</div></div>
-      <div class="diag-cell"><div class="diag-label">R</div><div class="diag-val">—</div></div>
+      <div class="diag-cell"><div class="diag-label">XRUN</div><div class="diag-val">—</div></div>
+      <div class="diag-cell"><div class="diag-label">QUANTUM</div><div class="diag-val">—</div></div>
+      <div class="diag-cell"><div class="diag-label">RATE</div><div class="diag-val">—</div></div>
     </div>`;
   }
   const enc = escapeHtml(node);
   return `<div class="row-diag" data-diag-node="${enc}">
-    <div class="diag-cell"><div class="diag-label">XR</div><div class="diag-val" data-diag-field="err">0</div></div>
-    <div class="diag-cell"><div class="diag-label">Q</div><div class="diag-val" data-diag-field="quantum">—</div></div>
-    <div class="diag-cell"><div class="diag-label">R</div><div class="diag-val" data-diag-field="rate">—</div></div>
+    <div class="diag-cell"><div class="diag-label">XRUN</div><div class="diag-val" data-diag-field="err">0</div></div>
+    <div class="diag-cell"><div class="diag-label">QUANTUM</div><div class="diag-val" data-diag-field="quantum">—</div></div>
+    <div class="diag-cell"><div class="diag-label">RATE</div><div class="diag-val" data-diag-field="rate">—</div></div>
   </div>`;
 }
 

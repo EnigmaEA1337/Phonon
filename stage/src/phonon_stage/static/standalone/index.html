@@ -3371,14 +3371,15 @@ async function renderDspPanel() {
   // name, maker, then Close/Remove pushed to the right by the spacer.
   // Replaces the old 200 px left column which used to crop wide
   // plugin UIs (EQ x32 in particular).
-  // Remove button on the master panel resets the whole master chain
-  // (PluginInsert.detach isn't a thing on the master — there's no
-  // PATCH /master/insert single-slot path; the chain shape was always
-  // multi-slot. Single-slot chains still go through DELETE-all here
-  // because the master strip's FX badges are the per-slot affordance.)
+  // Remove button targets the FOCUSED slot only — calling the old
+  // detachPluginInsert() here used to PATCH the legacy /insert
+  // singular endpoint which clears the entire chain (all FX wiped
+  // even when the user only wanted to drop the one they were
+  // editing). Use the same per-slot DELETE as the × badges on the
+  // strip's FX row.
   const removeAction = isMasterFocus
     ? `<button class="btn edit-only" onclick="removeMasterChainSlot(${dspState.focusedSlot})" title="Remove this plugin from the master chain">Remove</button>`
-    : `<button class="btn edit-only" onclick="detachPluginInsert('${out.id}')" title="Remove plugin from output">Remove</button>`;
+    : `<button class="btn edit-only" onclick="removeChainSlot('${out.id}',${dspState.focusedSlot})" title="Remove this plugin slot from the chain">Remove</button>`;
   const meta = `<div class="dsp-panel-meta">
     <div class="dsp-output-label">${escapeHtml(out.label || 'OUTPUT')}${escapeHtml(slotLabel)}</div>
     <div class="dsp-plugin-name">${escapeHtml(schema.name || fxPluginFriendlyName(focusedIns.library, focusedIns.label))}</div>

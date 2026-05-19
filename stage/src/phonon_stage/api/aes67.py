@@ -165,6 +165,14 @@ def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
         latency_ms = req.recv_buffer_ms
     else:
         latency_ms = _settings_mod.get().aes67.recv_buffer_ms
+    # sess.ts-direct = true would use the RTP timestamps verbatim, which
+    # only works when sender and receiver share a synchronised PTP clock.
+    # We don't run PTP grandmaster on the lab yet, so the system clocks
+    # drift apart and the receiver sees timestamps "millions of samples
+    # in the past" → permanent underrun, audio stays silent even though
+    # packets arrive. With ts-direct=false the RTP-source module uses
+    # `sess.latency.msec` as a jitter buffer and resamples around clock
+    # skew — works on any unsynchronised pair of machines.
     return f"""context.modules = [
   {{ name = libpipewire-module-rtp-source
     args = {{
@@ -173,7 +181,7 @@ def _render_recv_conf(req: CreateStreamRequest, node_name: str) -> str:
       sess.latency.msec = {latency_ms}
       sess.name = "{node_name}"
       sess.ts-refclk = "clock.system"
-      sess.ts-direct = true
+      sess.ts-direct = false
       audio.format = {req.audio_format}
       audio.rate = {req.sample_rate}
       audio.channels = {req.channels}

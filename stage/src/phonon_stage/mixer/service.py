@@ -37,10 +37,14 @@ from typing import TYPE_CHECKING
 import structlog
 
 from phonon_stage.mixer.filter_chain import (
+    CHAIN_NAME_PREFIX,
     MASTER_CHAIN_NAME,
     MASTER_POST_SINK_NAME,
     chain_name_for,
+    chain_signature,
+    render_filter_chain_args,
     render_filter_chain_conf,
+    render_master_filter_chain_args,
     render_master_filter_chain_conf,
 )
 from phonon_stage.mixer.models import (
@@ -110,12 +114,13 @@ class MixerService:
         # PW objects we own. Tracked so reconcile() can tear them down.
         self._owned_loopbacks: list[int] = []
         self._owned_links: list[int] = []
-        # Filter-chain confs we wrote on the previous reconcile, mapped
-        # chain_name → conf_body. Diffing against the next reconcile's
-        # "wanted" set is what lets us skip reload_filter_chain unless
-        # there's an actual change — restarting filter-chain.service
-        # glitches every running chain so we avoid it on no-op moves.
-        self._owned_chains: dict[str, str] = {}
+        # Filter-chain modules currently loaded (pactl module-filter-chain).
+        # Each entry: chain_name → (module_id, signature). Signature is
+        # a stable fingerprint of the args we passed to load — when the
+        # next reconcile computes new args, we compare signatures to
+        # decide whether to unload+reload that specific chain (and
+        # only that chain — no global cascade).
+        self._owned_chains: dict[str, tuple[int, str]] = {}
 
     # ── State accessors ─────────────────────────────────────────
 
@@ -206,58 +211,68 @@ class MixerService:
                 )
 
     async def _cleanup_orphan_chains(self) -> None:
-        """Delete only the filter-chain confs that the persisted state
-        no longer wants — anything the next reconcile will re-create
-        is left alone, so we don't reload filter-chain.service unless
-        we actually have to.
+        """Cleanup pass at boot: get rid of phonon-owned filter-chain
+        artefacts left behind by a previous phonon-stage run.
 
-        Critical: on this stage's setup `systemctl --user restart
-        filter-chain.service` cascades into a pipewire-pulse re-init
-        that wipes every pactl-loaded module (phonon_master null-sink,
-        airplay_in, AES67 send sinks...). Reloading needlessly here
-        was nuking our own audio graph at every boot. So: compute
-        the wanted set first, delete the diff, reload only if there
-        IS a diff."""
+        Two surfaces to clean:
+
+        1. **Legacy on-disk confs**. Earlier versions of the service
+           wrote `phonon-*.conf` files under
+           `~/.config/pipewire/filter-chain.conf.d/` and relied on
+           `filter-chain.service` to load them on its next restart.
+           If any are still around, they'd race with the new pactl-
+           loaded modules — delete them. The filter-chain.service
+           restart cascades into a pipewire-pulse re-init (wipes
+           every pactl module) so we only fire it when a conf needs
+           removing — never on a clean boot.
+
+        2. **Orphan pactl module-filter-chain instances** from a
+           previous phonon-stage session. pactl modules survive the
+           daemon restart; in-memory `_owned_chains` doesn't. Same
+           pattern as `_cleanup_orphan_loopbacks` — match by media.name
+           prefix to find ours, unload each.
+        """
+        # 1. Legacy conf cleanup.
         try:
-            on_disk = await self._pw.list_filter_chain_confs()
+            legacy_confs = await self._pw.list_filter_chain_confs()
         except Exception:
-            logger.info("mixer.orphan_chain_list_failed", exc_info=False)
-            return
-        # Build the body we'd generate for each wanted chain so the
-        # first _reconcile's diff sees the on-disk state as already
-        # in-sync — no spurious rewrite + reload.
-        master = self._store.state.master
-        master_src = _effective_master_source(master)
-        wanted_bodies: dict[str, str] = {}
-        # Master chain conf if master has any inserts (enabled or not —
-        # passthrough is still rendered to keep the node.name present).
-        if master.inserts:
-            wanted_bodies[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
-                master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
-            )
-        for o in self._store.state.outputs:
-            if o.inserts and any(i.enabled for i in o.inserts) and o.receives_master:
-                wanted_bodies[chain_name_for(o)] = render_filter_chain_conf(
-                    o, o.inserts, master_src
-                )
-        stale = [c for c in on_disk if c not in wanted_bodies]
-        if not stale:
-            self._owned_chains = dict(wanted_bodies)
-            return
-        for chain in stale:
+            legacy_confs = []
+        if legacy_confs:
+            logger.info("mixer.legacy_chain_confs_clearing", count=len(legacy_confs))
+            for chain in legacy_confs:
+                try:
+                    await self._pw.delete_filter_chain_conf(chain)
+                except Exception:
+                    logger.warning(
+                        "mixer.orphan_chain_delete_failed", chain=chain, exc_info=True
+                    )
             try:
-                await self._pw.delete_filter_chain_conf(chain)
+                await self._pw.reload_filter_chain()
             except Exception:
-                logger.warning("mixer.orphan_chain_delete_failed", chain=chain, exc_info=True)
+                logger.warning("mixer.orphan_chain_reload_failed", exc_info=True)
+
+        # 2. Orphan pactl module unload.
         try:
-            await self._pw.reload_filter_chain()
-            logger.info("mixer.orphan_chains_cleared", count=len(stale))
+            modules = await self._pw.list_filter_chain_modules()
         except Exception:
-            logger.warning("mixer.orphan_chain_reload_failed", exc_info=True)
-        # Same as _apply_filter_chain_diff: re-push persisted control
-        # values so the engine state matches what the UI shows.
-        await self._resync_all_chain_controls()
-        self._owned_chains = dict(wanted_bodies)
+            modules = {}
+        if not modules:
+            return
+        for mid, chain_name in modules.items():
+            is_ours = chain_name.startswith(CHAIN_NAME_PREFIX) or chain_name == MASTER_CHAIN_NAME
+            if not is_ours:
+                continue
+            try:
+                await self._pw.unload_module(mid)
+                logger.info(
+                    "mixer.orphan_filter_chain_unloaded",
+                    module_id=mid, chain=chain_name,
+                )
+            except Exception:
+                logger.warning(
+                    "mixer.orphan_filter_chain_unload_failed",
+                    module_id=mid, chain=chain_name, exc_info=True,
+                )
 
     async def _ensure_master_null_sink(self) -> None:
         """phonon_master is the single shared bus null-sink. Created
@@ -726,12 +741,16 @@ class MixerService:
         )
         new_master = replace(master, inserts=new_inserts)
         self._store.replace_state(replace(self._store.state, master=new_master))
-        # In-memory body cache sync so the next non-control reconcile
-        # doesn't reload filter-chain.service for nothing.
+        # Signature cache sync: re-render the master chain's pactl args
+        # with the new control value baked in so the next reconcile's
+        # diff doesn't see this change as a "spec drift" and reload the
+        # module for nothing.
         if MASTER_CHAIN_NAME in self._owned_chains and new_master.inserts:
-            self._owned_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+            mid, _old_sig = self._owned_chains[MASTER_CHAIN_NAME]
+            new_args = render_master_filter_chain_args(
                 new_master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
             )
+            self._owned_chains[MASTER_CHAIN_NAME] = (mid, chain_signature(new_args))
         try:
             await self._pw.set_filter_node_control(MASTER_CHAIN_NAME, control_name, value)
         except Exception:
@@ -860,14 +879,13 @@ class MixerService:
         new = replace(cur, inserts=new_inserts)
         new_outputs = [new if o.id == output_id else o for o in self._store.state.outputs]
         self._store.replace_state(replace(self._store.state, outputs=new_outputs))
-        # Keep the in-memory chain-body cache in sync with the new
-        # control value — otherwise the next non-control reconcile
-        # would see a "wanted vs owned" diff just because of this
-        # control move and reload the service for nothing.
+        # Signature cache sync — see master path above for rationale.
         chain = chain_name_for(new)
         if chain in self._owned_chains and new.inserts:
             master_src = _effective_master_source(self._store.state.master)
-            self._owned_chains[chain] = render_filter_chain_conf(new, new.inserts, master_src)
+            mid, _old_sig = self._owned_chains[chain]
+            new_args = render_filter_chain_args(new, new.inserts, master_src)
+            self._owned_chains[chain] = (mid, chain_signature(new_args))
         try:
             await self._pw.set_filter_node_control(chain, control_name, value)
         except Exception:
@@ -1241,13 +1259,11 @@ class MixerService:
         current MixerState.
 
         Order matters: the filter-chain diff has to fire BEFORE we
-        create loopbacks and source→master links. Reloading
-        filter-chain.service on this stage cascades into a
-        pipewire-pulse re-init that wipes every pactl-loaded module
-        (phonon_master null-sink, source plugin null-sinks, every
-        loopback). Doing the diff afterwards would mean we'd just
-        created loopbacks that the cascade then deletes — leaving
-        the live graph silent until the next user action.
+        create loopbacks and source→master links. Each filter-chain
+        is now loaded as a stand-alone `module-filter-chain` (no more
+        `systemctl --user restart filter-chain.service`) so a chain
+        add/remove is an atomic pactl op that doesn't touch any other
+        module. The "cascade wipes everything" failure mode is gone.
         """
         # 1. Tear down what we created on the previous reconcile.
         for owned_mid in self._owned_loopbacks:
@@ -1259,50 +1275,33 @@ class MixerService:
         self._owned_loopbacks.clear()
         self._owned_links.clear()
 
-        # 2. Compute the wanted filter-chain set BEFORE we touch
-        #    anything else. We need it to decide whether step 4 will
-        #    cascade (and therefore whether we have to re-list nodes
-        #    afterwards before creating loopbacks/links).
+        # 2. Compute the wanted filter-chain set (chain_name → pactl
+        #    arg list). Order matters in pactl args only for display;
+        #    the signature helper hashes them sorted so a reorder
+        #    doesn't trigger a spurious reload.
         master = self._store.state.master
         master_src = _effective_master_source(master)
-        wanted_chains: dict[str, str] = {}
+        wanted_chains: dict[str, list[str]] = {}
         if master.inserts:
-            wanted_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_conf(
+            wanted_chains[MASTER_CHAIN_NAME] = render_master_filter_chain_args(
                 master.inserts, MASTER_SINK_NAME, MASTER_POST_SINK_NAME
             )
         for o in self._store.state.outputs:
             if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
-                wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
+                wanted_chains[chain_name_for(o)] = render_filter_chain_args(
                     o, o.inserts, master_src
                 )
 
-        # 3. Apply the chain diff EARLY. The cascade (when it fires)
-        #    nukes phonon_master, all loopbacks, and any source-plugin
-        #    null-sink that lives as a pactl module — so anything we
-        #    rebuild has to wait until after this step.
-        chain_diff_fired = wanted_chains != self._owned_chains
-        if chain_diff_fired:
-            await self._apply_filter_chain_diff(wanted_chains)
-            self._owned_chains = wanted_chains
-            # Cascade just wiped pactl-side state — clear our in-memory
-            # tracking so we don't try to unload phantom module ids on
-            # the next reconcile.
-            self._owned_loopbacks.clear()
-            self._owned_links.clear()
-            # Give pipewire-pulse a moment to re-stabilise after the
-            # cascade. filter-chain.service restart triggers a re-init
-            # that takes ~500-1500 ms on this stage; jumping ahead to
-            # load_loopback while pipewire-pulse is still spinning up
-            # results in "No such entity" errors. Tests override
-            # POST_CHAIN_DIFF_SLEEP_S to 0 because the FakePipeWireBackend
-            # doesn't cascade.
-            if self.POST_CHAIN_DIFF_SLEEP_S > 0:
-                await asyncio.sleep(self.POST_CHAIN_DIFF_SLEEP_S)
+        # 3. Apply the chain diff. Each chain is its own pactl module
+        #    now — load/unload is atomic, no global cascade, the master
+        #    null-sink + source plugin sinks survive untouched. The
+        #    diff helper updates self._owned_chains in-place.
+        await self._apply_filter_chain_diff(wanted_chains)
 
-        # 4. Now the world is settled: ensure phonon_master exists
-        #    (cascade may have killed it) and grab fresh node/port
-        #    lists. The cache was invalidated by reload_filter_chain
-        #    in Fix 1, so list_nodes() actually re-runs pw-dump here.
+        # 4. Ensure the bus null-sinks. The chain ops above never touch
+        #    these, so no special "wait for pipewire-pulse to recover"
+        #    dance — list_nodes is fresh thanks to the cache invalidation
+        #    each module load triggers.
         try:
             await self._ensure_master_null_sink()
         except Exception:
@@ -1544,40 +1543,75 @@ class MixerService:
         for o in self._store.state.outputs:
             await self._resync_chain_controls_for_output(o)
 
-    async def _apply_filter_chain_diff(self, wanted: dict[str, str]) -> None:
-        """Reconcile the on-disk filter-chain confs against `wanted`.
-        Writes new/changed confs, deletes stale ones, then reloads
-        filter-chain.service exactly once. Only invoked when the
-        wanted set actually differs from the previous reconcile.
+    async def _apply_filter_chain_diff(self, wanted: dict[str, list[str]]) -> None:
+        """Reconcile the live pactl module-filter-chain modules against
+        the `wanted` set (chain_name → pactl args list).
 
-        Errors on individual writes/deletes are logged and skipped —
-        a single bad conf shouldn't stop the rest of the reconcile.
+        For each chain in _owned_chains not in wanted → unload its
+        module. For each wanted chain → if not currently loaded, load
+        fresh; if signature changed, unload-then-load (the only way to
+        change a module's args). Unchanged signatures are skipped, so
+        live control PATCH-es don't churn the module.
+
+        Per-chain atomic — no global cascade, no other module touched.
         """
+        # 1. Stale chains (loaded but no longer wanted).
         stale = set(self._owned_chains) - set(wanted)
         for chain in stale:
+            mid, _sig = self._owned_chains.pop(chain)
             try:
-                await self._pw.delete_filter_chain_conf(chain)
+                await self._pw.unload_module(mid)
+                logger.info("mixer.filter_chain_unloaded", chain=chain, module_id=mid)
             except Exception:
-                logger.warning("mixer.filter_chain_delete_failed", chain=chain, exc_info=True)
-        for chain, body in wanted.items():
-            if self._owned_chains.get(chain) == body:
-                continue  # unchanged — skip the write
-            try:
-                await self._pw.write_filter_chain_conf(chain, body)
-            except Exception:
-                logger.warning("mixer.filter_chain_write_failed", chain=chain, exc_info=True)
-        try:
-            await self._pw.reload_filter_chain()
+                logger.warning(
+                    "mixer.filter_chain_unload_failed",
+                    chain=chain, module_id=mid, exc_info=True,
+                )
+
+        # 2. Load new / reload changed.
+        loaded = 0
+        reloaded = 0
+        skipped = 0
+        for chain, args in wanted.items():
+            sig = chain_signature(args)
+            owned = self._owned_chains.get(chain)
+            if owned is not None and owned[1] == sig:
+                skipped += 1
+                continue
+            if owned is not None:
+                # Spec drift — same chain, different args. Unload old
+                # then load new. The brief gap (~50 ms) glitches that
+                # one chain only; everything else keeps playing.
+                try:
+                    await self._pw.unload_module(owned[0])
+                except Exception:
+                    logger.warning(
+                        "mixer.filter_chain_pre_reload_unload_failed",
+                        chain=chain, module_id=owned[0], exc_info=True,
+                    )
+            new_mid = await self._pw.load_filter_chain(args)
+            if new_mid is None:
+                # Failed — drop tracking so a retry next reconcile.
+                self._owned_chains.pop(chain, None)
+                logger.warning("mixer.filter_chain_load_returned_none", chain=chain)
+                continue
+            self._owned_chains[chain] = (new_mid, sig)
+            if owned is None:
+                loaded += 1
+            else:
+                reloaded += 1
+
+        if stale or loaded or reloaded:
             logger.info(
-                "mixer.filter_chain_reconciled",
-                wanted=len(wanted),
-                deleted=len(stale),
+                "mixer.filter_chain_diff_applied",
+                wanted=len(wanted), unloaded=len(stale),
+                loaded=loaded, reloaded=reloaded, skipped=skipped,
             )
-        except Exception:
-            logger.warning("mixer.filter_chain_reload_failed", exc_info=True)
-        # Reload reset every chain to LADSPA defaults; push our
-        # persisted control values back so engine ↔ state agree.
-        await self._resync_all_chain_controls()
+
+        # Push persisted control values back into any chain we just
+        # (re)loaded — the new module starts with LADSPA defaults.
+        if loaded or reloaded:
+            await self._resync_all_chain_controls()
 
     async def _link_pairs(self, src_ports: list[int], dst_ports: list[int]) -> None:
         """Zip-pair two pre-ordered port lists and create the links.

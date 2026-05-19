@@ -191,6 +191,79 @@ class TestFullResyncClearsTracking:
 # ── Fix 4 — replay_audio_state lock ───────────────────────────────
 
 
+# ── Refactor: filter-chain via pactl module-filter-chain ──────────
+
+
+class TestFilterChainNoCascade:
+    """Pin the post-refactor contract: adding/removing FX loads or
+    unloads a single pactl module, never restarts filter-chain.service
+    (which would cascade into a pipewire-pulse re-init wiping every
+    other module on this stage)."""
+
+    async def test_adding_chain_does_not_reload_service(
+        self, mixer: tuple[FakePipeWireBackend, MixerService]
+    ) -> None:
+        pw, svc = mixer
+        await svc.init()
+        out_b = await svc.add_output(sink_node_name="dg60_b", label="B")
+        prior_reload = pw.filter_chain_reload_count
+        # Attach a chain on B.
+        new_b = replace(
+            out_b,
+            inserts=(
+                PluginInsert(
+                    backend="ladspa",
+                    library="lsp/limiter_stereo.so",
+                    label="limiter_stereo",
+                    controls={"Threshold": -3.0},
+                    enabled=True,
+                ),
+            ),
+        )
+        new_outputs = [new_b if o.id == out_b.id else o for o in svc.state.outputs]
+        svc._store.replace_state(replace(svc.state, outputs=new_outputs))
+        await svc._reconcile()
+        # ZERO filter-chain.service restarts — that's the whole point
+        # of the refactor.
+        assert pw.filter_chain_reload_count == prior_reload
+        # One filter-chain module loaded instead.
+        chain = "phonon_fx_" + out_b.id
+        assert chain in pw.filter_chain_modules.values()
+
+    async def test_removing_chain_unloads_only_that_module(
+        self, mixer: tuple[FakePipeWireBackend, MixerService]
+    ) -> None:
+        pw, svc = mixer
+        await svc.init()
+        out_b = await svc.add_output(sink_node_name="dg60_b", label="B")
+        # Attach + reconcile so the module is loaded.
+        new_b = replace(
+            out_b,
+            inserts=(
+                PluginInsert(
+                    backend="ladspa", library="lsp/x.so", label="limiter_stereo",
+                    controls={}, enabled=True,
+                ),
+            ),
+        )
+        new_outputs = [new_b if o.id == out_b.id else o for o in svc.state.outputs]
+        svc._store.replace_state(replace(svc.state, outputs=new_outputs))
+        await svc._reconcile()
+        chain = "phonon_fx_" + out_b.id
+        assert chain in pw.filter_chain_modules.values()
+        prior_reload = pw.filter_chain_reload_count
+        # Remove the chain.
+        new_b_empty = replace(svc.outputs[0], inserts=())
+        new_outputs_empty = [
+            new_b_empty if o.id == out_b.id else o for o in svc.state.outputs
+        ]
+        svc._store.replace_state(replace(svc.state, outputs=new_outputs_empty))
+        await svc._reconcile()
+        # Module unloaded, no global reload.
+        assert chain not in pw.filter_chain_modules.values()
+        assert pw.filter_chain_reload_count == prior_reload
+
+
 class TestReplayLock:
     async def test_lock_object_exists(self) -> None:
         """The replay lock is a module-level asyncio.Lock so that

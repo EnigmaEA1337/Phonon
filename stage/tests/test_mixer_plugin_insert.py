@@ -260,18 +260,26 @@ class TestServicePluginInsert:
         assert "Delay time (ms)" not in result.insert.controls
 
     @pytest.mark.asyncio()
-    async def test_attach_writes_filter_chain_conf(
+    async def test_attach_loads_filter_chain_module(
         self, service: MixerService, fake_pw: FakePipeWireBackend
     ) -> None:
+        """Post-2026-05-19 refactor: instead of writing a conf and
+        restarting filter-chain.service, attaching loads the chain as
+        a stand-alone pactl module. Same outcome, no cascade."""
         out = await service.add_output(sink_node_name="alsa_output.dg60_1", label="DG60 #1")
-        prior_reload_count = fake_pw.filter_chain_reload_count
+        prior_modules = len(fake_pw.filter_chain_modules)
         await service.set_output_insert(
             out.id, backend="ladspa", library=LSP_LIBRARY, label=LSP_LABEL
         )
         chain = chain_name_for(out)
+        # Exactly one new filter-chain module loaded.
+        assert len(fake_pw.filter_chain_modules) == prior_modules + 1
+        assert chain in fake_pw.filter_chain_modules.values()
+        # And the conf dict still carries the args string (tests that
+        # check `chain in filter_chain_confs` keep passing).
         assert chain in fake_pw.filter_chain_confs
-        # Reload happened exactly once for the attach.
-        assert fake_pw.filter_chain_reload_count == prior_reload_count + 1
+        # No global cascade — the legacy reload counter stays put.
+        assert fake_pw.filter_chain_reload_count == 0
 
     @pytest.mark.asyncio()
     async def test_attach_skips_loopback_for_that_output(

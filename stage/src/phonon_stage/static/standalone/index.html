@@ -1006,6 +1006,41 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     0 1px 1px rgba(0,0,0,0.45);
   text-shadow: 0 1px 0 rgba(30,5,5,0.7);
 }
+/* VCA-mute: a parent VCA is muted, so this strip is silenced at the
+   audio level without its own M being on. Amber hue distinguishes it
+   from own-mute (red) and solo-implied mute (dim red). A small violet
+   'V' badge in the top-right corner names the cause at a glance. */
+.row-mrls button.vca-muted {
+  background: linear-gradient(180deg,
+    #fbbf24 0%, #d97706 48%,
+    #b45309 52%, #78350f 100%);
+  color: #fff;
+  border-color: #3a1f04;
+  border-top-color: #fcd34d;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.40),
+    inset 0 -1px 0 rgba(0,0,0,0.45),
+    0 0 4px rgba(251,191,36,0.45),
+    0 1px 1px rgba(0,0,0,0.55);
+  text-shadow: 0 1px 0 rgba(60,30,5,0.75);
+  position: relative;
+  overflow: visible;
+}
+.row-mrls button.vca-muted::after {
+  content: 'V';
+  position: absolute;
+  top: -4px; right: -4px;
+  min-width: 10px; height: 10px; padding: 0 1px;
+  font-size: 7px; font-weight: 700; line-height: 10px;
+  font-family: var(--font-m);
+  color: #fff;
+  background: #a855f7;
+  border: 1px solid #581c87;
+  border-radius: 50%;
+  box-shadow: 0 1px 1px rgba(0,0,0,0.55);
+  pointer-events: none;
+  text-shadow: none;
+}
 .row-mrls button.solo.active {
   background: linear-gradient(180deg,
     #ffeb90 0%, #f5c540 48%,
@@ -2789,10 +2824,27 @@ function mrlsRow(kind, id, state) {
   } else if (kind === 'mix-out') {
     impliedMute = !solo && (mixerState.outputs || []).some(o => o.solo && o.id !== id);
   }
-  const mClass = muted ? 'active' : (impliedMute ? 'implied' : '');
-  const mTitle = impliedMute
-    ? 'Muted by another solo'
-    : 'Mute';
+  // VCA-mute inheritance: any VCA whose members include this strip,
+  // and whose own M is on, silences it at the audio level. Surfaced
+  // as amber-M + violet 'V' badge to distinguish from own-mute (red)
+  // and solo-implied mute (dim red). Own mute keeps priority — if M
+  // is already on, no need to also call out the VCA.
+  let vcaMuted = false;
+  if (!muted && (kind === 'mix-src' || kind === 'mix-out')) {
+    vcaMuted = (mixerState.vcas || []).some(v => v.mute && (v.members || []).includes(id));
+  }
+  const mClass = muted
+    ? 'active'
+    : vcaMuted
+      ? 'vca-muted'
+      : impliedMute
+        ? 'implied'
+        : '';
+  const mTitle = vcaMuted
+    ? 'Muted by a parent VCA'
+    : impliedMute
+      ? 'Muted by another solo'
+      : 'Mute';
   // VCA is pure control-plane — no per-channel mute and no solo
   // (it doesn't carry audio so there's nothing to L/R-split or
   // exclusively monitor). Render the M button alone, padded with

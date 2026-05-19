@@ -196,7 +196,19 @@ class TestRecvConfRendering:
 
 class TestRestoreExistingAes67:
     @pytest.mark.asyncio
-    async def test_restores_send_and_recv(self, tmp_path: Path) -> None:
+    async def test_restores_send_and_recv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mock out the actual pipewire spawn — we just want to verify
+        # the parsing and state-registration logic, not run real PW.
+        async def fake_spawn(stream_id: str, conf_path: Path) -> int:
+            return 99999  # bogus PID
+
+        monkeypatch.setattr(aes67, "_spawn_stream_process", fake_spawn)
+        # Also skip the legacy-conf migration step — it would try to read
+        # _LEGACY_CONF_DIR (the real path) which we don't want touching.
+        monkeypatch.setattr(aes67, "_migrate_legacy_confs", lambda: None)
+
         aes67._CONF_DIR = tmp_path
         aes67._active_streams.clear()
         (tmp_path / f"{aes67._CONF_PREFIX}aaa11111.conf").write_text(SEND_CONF)
@@ -210,6 +222,7 @@ class TestRestoreExistingAes67:
         assert send["multicast_group"] == "239.69.10.10"
         assert send["port"] == 5004
         assert send["audio_format"] == "S16BE"
+        assert send["pid"] == 99999  # spawn was called and pid recorded
         recv = aes67._active_streams["bbb22222"]
         assert recv["kind"] == "recv"
         assert recv["name"] == "otherone"
@@ -218,11 +231,54 @@ class TestRestoreExistingAes67:
         aes67._active_streams.clear()
 
     @pytest.mark.asyncio
-    async def test_no_conf_dir_is_quiet(self, tmp_path: Path) -> None:
+    async def test_no_conf_dir_is_quiet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(aes67, "_migrate_legacy_confs", lambda: None)
         aes67._CONF_DIR = tmp_path / "missing"
         aes67._active_streams.clear()
         await aes67.restore_existing_aes67()  # should not raise
         assert aes67._active_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_skips_stream_if_spawn_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If pipewire isn't installed (or the spawn fails for any other
+        # OSError reason) we drop the stream rather than register a
+        # zombie entry with no audio behind it.
+        async def fake_spawn_fails(stream_id: str, conf_path: Path) -> int:
+            raise FileNotFoundError("pipewire not installed")
+
+        monkeypatch.setattr(aes67, "_spawn_stream_process", fake_spawn_fails)
+        monkeypatch.setattr(aes67, "_migrate_legacy_confs", lambda: None)
+        aes67._CONF_DIR = tmp_path
+        aes67._active_streams.clear()
+        (tmp_path / f"{aes67._CONF_PREFIX}aaa11111.conf").write_text(SEND_CONF)
+        await aes67.restore_existing_aes67()
+        assert aes67._active_streams == {}
+
+
+class TestLegacyConfMigration:
+    def test_moves_legacy_confs_to_new_dir(self, tmp_path: Path) -> None:
+        # Set up the legacy and new dirs in the tmp scratch space.
+        legacy = tmp_path / "legacy"
+        new = tmp_path / "new"
+        legacy.mkdir()
+        (legacy / f"{aes67._CONF_PREFIX}abc123.conf").write_text(SEND_CONF)
+        (legacy / "unrelated.conf").write_text("ignored")
+        aes67._LEGACY_CONF_DIR = legacy
+        aes67._CONF_DIR = new
+        aes67._migrate_legacy_confs()
+        assert (new / f"{aes67._CONF_PREFIX}abc123.conf").exists()
+        assert not (legacy / f"{aes67._CONF_PREFIX}abc123.conf").exists()
+        # Non-phonon confs in the legacy dir must NOT be touched.
+        assert (legacy / "unrelated.conf").exists()
+
+    def test_no_legacy_dir_is_quiet(self, tmp_path: Path) -> None:
+        aes67._LEGACY_CONF_DIR = tmp_path / "nope"
+        aes67._CONF_DIR = tmp_path / "new"
+        aes67._migrate_legacy_confs()  # should not raise
 
 
 # ── Discovered stream key uniqueness ──────────────────────────────────────

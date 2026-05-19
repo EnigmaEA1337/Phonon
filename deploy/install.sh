@@ -246,6 +246,19 @@ if [ -f "${SCRIPT_DIR}/udev/99-phonon.rules" ]; then
     echo "  udev rules installed (edit /etc/udev/rules.d/99-phonon.rules with real IDs)"
 fi
 
+# WirePlumber rules that rewrite PW node.name for cards whose udev
+# tag conflicts with a hardcoded firmware serial (DG60, etc.) so two
+# physical units don't share a sink name. Lives in
+# /etc/wireplumber/wireplumber.conf.d/ — picked up at next WP restart.
+if [ -d "${SCRIPT_DIR}/wireplumber" ]; then
+    install -d /etc/wireplumber/wireplumber.conf.d
+    for f in "${SCRIPT_DIR}/wireplumber"/*.conf; do
+        [ -f "$f" ] || continue
+        cp "$f" /etc/wireplumber/wireplumber.conf.d/
+        echo "  wireplumber rule installed: $(basename "$f")"
+    done
+fi
+
 # ── Step 4/7: Create directories ────────────────────────────────────────
 
 echo "[4/11] Creating directories..."

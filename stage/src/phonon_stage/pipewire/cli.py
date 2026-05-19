@@ -160,6 +160,37 @@ _pw_top_cache: dict[int, dict[str, Any]] = {}
 _pw_top_cache_time: float = 0.0
 _PW_TOP_CACHE_TTL = 3.0
 
+# Per-node XRUN baseline, keyed by node name (not id — ids churn across
+# PW restarts but names are stable). When the user clicks "Reset XRUN",
+# we snapshot the current raw err counts into this dict; subsequent
+# reads subtract the baseline, giving a "since reset" delta. PipeWire
+# itself has no reset command — counters only zero out when a node is
+# destroyed.
+_xrun_baseline: dict[str, int] = {}
+
+
+async def reset_xrun_baseline() -> dict[str, int]:
+    """Snapshot the current raw XRUN counts as a new reset point.
+
+    Returns the baseline dict {node_name: raw_err}. Future calls to
+    `pw_top_xruns()` will report `max(0, raw - baseline)` per node."""
+    global _xrun_baseline, _pw_top_cache_time
+    raw = await _pw_top_xruns_raw()
+    _xrun_baseline = {v["name"]: int(v.get("err", 0)) for v in raw.values() if v.get("name")}
+    # Invalidate the read cache so the next call re-reads with the new
+    # baseline applied instead of returning pre-reset cached values.
+    _pw_top_cache_time = 0.0
+    return dict(_xrun_baseline)
+
+
+async def _pw_top_xruns_raw() -> dict[int, dict[str, Any]]:
+    """Read raw pw-top output WITHOUT applying the reset baseline.
+
+    Internal helper — public callers should use `pw_top_xruns()` which
+    applies the baseline subtraction. This bypass is only used at
+    reset-time to snapshot the true cumulative counts."""
+    return await _pw_top_xruns_impl(apply_baseline=False)
+
 
 async def pw_top_xruns() -> dict[int, dict[str, Any]]:
     """Run `pw-top -b` briefly and parse the latest snapshot.
@@ -171,10 +202,15 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
     `quantum` is the buffer size in samples (e.g. 1024), `rate` is the
     sample rate in Hz (e.g. 48000). Both are ints; 0 when pw-top
     couldn't read them (typical for idle nodes that emit "---").
+    `err` is delta-from-baseline (see `reset_xrun_baseline()`).
     """
+    return await _pw_top_xruns_impl(apply_baseline=True)
+
+
+async def _pw_top_xruns_impl(apply_baseline: bool) -> dict[int, dict[str, Any]]:
     global _pw_top_cache, _pw_top_cache_time
     now = asyncio.get_event_loop().time()
-    if _pw_top_cache and (now - _pw_top_cache_time) < _PW_TOP_CACHE_TTL:
+    if apply_baseline and _pw_top_cache and (now - _pw_top_cache_time) < _PW_TOP_CACHE_TTL:
         return _pw_top_cache
 
     # `pw-top -b` (batch mode) without -n waits forever for a TTY-like stdin
@@ -226,6 +262,7 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
         end = positions[i + 1] if i + 1 < len(positions) else len(text)
         block = text[pos:end].splitlines()
         snapshots.append(block)
+
     # Pick the snapshot with the most rows in state "R" (Running) —
     # pw-top -n 2 emits a first snapshot where most nodes are still
     # in state "C" (Creating) with quantum/rate=0, then a stable
@@ -235,6 +272,7 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
     # tiebreak preferring the LAST snapshot (newest data).
     def _running_rows(block: list[str]) -> int:
         return sum(1 for ln in block if ln.startswith("R "))
+
     snapshot = max(
         enumerate(snapshots),
         key=lambda iv: (_running_rows(iv[1]), iv[0]),
@@ -266,6 +304,7 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
             err = int(parts[8])
         except (ValueError, IndexError):
             continue
+
         # QUANT (parts[2]) and RATE (parts[3]) are "---" for idle nodes
         # that haven't picked up format negotiation yet — coerce to 0
         # so the API surface stays a clean int.
@@ -274,6 +313,7 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
                 return int(s)
             except ValueError:
                 return 0
+
         quantum = _to_int(parts[2])
         rate = _to_int(parts[3])
         # Driver rows (sinks/sources backed by hardware or a session
@@ -287,16 +327,25 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
             rate = _to_int(parts[11])
         if not name_part:
             continue
+        # Subtract reset baseline (if any). When a node is destroyed and
+        # recreated its raw count drops below the baseline — clamp to 0
+        # so we never report negative XRUNs.
+        if apply_baseline:
+            baseline = _xrun_baseline.get(name_part, 0)
+            reported_err = max(0, err - baseline)
+        else:
+            reported_err = err
         result[node_id] = {
             "name": name_part,
-            "err": err,
+            "err": reported_err,
             "state": state,
             "quantum": quantum,
             "rate": rate,
         }
 
-    _pw_top_cache = result
-    _pw_top_cache_time = now
+    if apply_baseline:
+        _pw_top_cache = result
+        _pw_top_cache_time = now
     return result
 
 

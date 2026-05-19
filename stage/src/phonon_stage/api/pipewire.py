@@ -112,6 +112,19 @@ async def list_xruns() -> dict[str, object]:
     return {"total": total, "nodes": nodes}
 
 
+@router.post("/xruns/reset")
+async def reset_xruns() -> dict[str, object]:
+    """Snapshot current XRUN counts as a new zero point.
+
+    PipeWire has no native counter reset — counters only zero out when
+    nodes are destroyed. We track a baseline per node-name and subtract
+    it from all subsequent reads, giving a 'since reset' delta view."""
+    from phonon_stage.pipewire import cli
+
+    baseline = await cli.reset_xrun_baseline()
+    return {"status": "ok", "nodes_reset": len(baseline)}
+
+
 @router.get("/node-stats")
 async def node_stats_by_name() -> dict[str, dict[str, int]]:
     """Per-node live clock + xrun stats keyed by node name.

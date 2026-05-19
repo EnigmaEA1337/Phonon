@@ -4,6 +4,8 @@ against canned snapshots, not the actual subprocess invocation."""
 # ruff: noqa: E501 — fixed-width pw-top output is naturally wider than 99 cols
 from __future__ import annotations
 
+import pytest
+
 from phonon_stage.pipewire import cli
 
 # Two snapshots — the first is the freshly-created "C" pass with zeroed
@@ -131,3 +133,117 @@ class TestPwTopParserMatchesProductionCode:
         assert hasattr(cli, "pw_top_xruns")
         assert hasattr(cli, "_pw_top_cache")
         assert hasattr(cli, "_PW_TOP_CACHE_TTL")
+        assert hasattr(cli, "reset_xrun_baseline")
+        assert hasattr(cli, "_xrun_baseline")
+
+
+# ── XRUN reset baseline ────────────────────────────────────────────────
+# The user-facing /pipewire/xruns/reset endpoint snapshots current raw
+# counts and subtracts them from future reads (PipeWire has no native
+# counter reset). Verify the subtraction math + clamp-to-zero behaviour
+# without spawning pw-top.
+
+
+def _fake_pw_top_proc(payload_bytes: bytes) -> object:
+    """Build a stand-in for asyncio.create_subprocess_exec's return value
+    that yields `payload_bytes` from communicate() and a 0 return code."""
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return payload_bytes, b""
+
+        def kill(self) -> None: ...
+
+    return FakeProc()
+
+
+class TestXrunBaseline:
+    def setup_method(self) -> None:
+        # Each test starts with a fresh baseline. Tests must not bleed
+        # state across each other (the baseline is module-global).
+        cli._xrun_baseline = {}
+        cli._pw_top_cache = {}
+        cli._pw_top_cache_time = 0.0
+
+    def _fake_raw(
+        self, monkeypatch: pytest.MonkeyPatch, payload: dict[int, dict[str, object]]
+    ) -> None:
+        async def fake() -> dict[int, dict[str, object]]:
+            return payload
+
+        monkeypatch.setattr(cli, "_pw_top_xruns_raw", fake)
+
+    @pytest.mark.asyncio
+    async def test_reset_records_current_err_per_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._fake_raw(
+            monkeypatch,
+            {
+                1: {"name": "alpha", "err": 100, "state": "R", "quantum": 128, "rate": 48000},
+                2: {"name": "beta", "err": 50, "state": "R", "quantum": 128, "rate": 48000},
+            },
+        )
+        baseline = await cli.reset_xrun_baseline()
+        assert baseline == {"alpha": 100, "beta": 50}
+        assert cli._xrun_baseline == {"alpha": 100, "beta": 50}
+
+    @pytest.mark.asyncio
+    async def test_reset_invalidates_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cli._pw_top_cache = {1: {"name": "x", "err": 99, "state": "R", "quantum": 0, "rate": 0}}
+        cli._pw_top_cache_time = 999_999.0  # would survive otherwise
+        self._fake_raw(monkeypatch, {})
+        await cli.reset_xrun_baseline()
+        assert cli._pw_top_cache_time == 0.0
+
+    @pytest.mark.asyncio
+    async def test_impl_subtracts_baseline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cli._xrun_baseline = {"alpha": 100}
+        sample_output = (
+            "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
+            "R    1    128  48000  10.0us   5.0us  0.00  0.00  150    S16LE 2 48000 alpha\n"
+        )
+
+        async def fake_exec(*args: str, **kwargs: object) -> object:
+            return _fake_pw_top_proc(sample_output.encode())
+
+        monkeypatch.setattr(cli.asyncio, "create_subprocess_exec", fake_exec)
+        result = await cli._pw_top_xruns_impl(apply_baseline=True)
+        # raw=150, baseline=100 → delta=50
+        assert result[1]["err"] == 50
+
+    @pytest.mark.asyncio
+    async def test_impl_clamps_negative_to_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A node was destroyed and recreated → raw count drops below
+        # baseline. Clamp to 0 instead of reporting negative XRUNs.
+        cli._xrun_baseline = {"alpha": 500}
+        sample_output = (
+            "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
+            "R    1    128  48000  10.0us   5.0us  0.00  0.00   12    S16LE 2 48000 alpha\n"
+        )
+
+        async def fake_exec(*args: str, **kwargs: object) -> object:
+            return _fake_pw_top_proc(sample_output.encode())
+
+        monkeypatch.setattr(cli.asyncio, "create_subprocess_exec", fake_exec)
+        result = await cli._pw_top_xruns_impl(apply_baseline=True)
+        assert result[1]["err"] == 0
+
+    @pytest.mark.asyncio
+    async def test_raw_bypass_skips_baseline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The raw path is used by reset_xrun_baseline itself — it must
+        # see the real cumulative counts, not deltas.
+        cli._xrun_baseline = {"alpha": 100}
+        sample_output = (
+            "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
+            "R    1    128  48000  10.0us   5.0us  0.00  0.00  300    S16LE 2 48000 alpha\n"
+        )
+
+        async def fake_exec(*args: str, **kwargs: object) -> object:
+            return _fake_pw_top_proc(sample_output.encode())
+
+        monkeypatch.setattr(cli.asyncio, "create_subprocess_exec", fake_exec)
+        result = await cli._pw_top_xruns_impl(apply_baseline=False)
+        assert result[1]["err"] == 300

@@ -59,8 +59,13 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .tb-ptp.off { opacity: 0.5; }
 .tb-xrun { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
   border: 1px solid var(--border); border-radius: 3px; font-family: var(--font-m);
-  font-size: 9px; color: var(--text-dim); cursor: pointer; transition: color 0.2s, border-color 0.2s; }
+  font-size: 9px; color: var(--text-dim); cursor: help; transition: color 0.2s, border-color 0.2s; }
 .tb-xrun.warn { color: var(--yellow); border-color: rgba(251,191,36,0.4); }
+.tb-xrun-reset { background: transparent; border: none; color: inherit;
+  opacity: 0.55; cursor: pointer; padding: 0 0 0 2px; font-size: 11px;
+  line-height: 1; transition: opacity 0.15s, transform 0.4s; }
+.tb-xrun-reset:hover { opacity: 1; }
+.tb-xrun-reset.spinning { transform: rotate(360deg); opacity: 1; }
 /* Kernel badge — green when lowlatency is live, yellow if a generic
    kernel is running. Visible at-a-glance: did the reboot after
    install.sh actually pick up linux-lowlatency? */
@@ -1535,6 +1540,17 @@ body.mode-live .edit-only select { opacity: 0.4; }
       <polyline points="12 7 12 12 15 14"/>
     </svg>
     <span class="tb-ptp-label" id="tb-ptp-label">—</span>
+  </span>
+  <!-- Global XRUN counter — sum of err across all PW nodes since last
+       reset. Click ↻ to snapshot the current cumulative values as a
+       new zero (PipeWire has no native counter reset). -->
+  <span class="tb-xrun" id="tb-xrun" title="XRUN: 0 — clean run">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 9-9"/>
+      <polyline points="3 4 3 12 11 12"/>
+    </svg>
+    <span id="tb-xrun-label">0</span>
+    <button class="tb-xrun-reset" onclick="resetXruns(event)" title="Reset XRUN counter (snapshot current values as new zero)">↻</button>
   </span>
   <div class="tb-spacer"></div>
   <button class="btn edit-only" style="font-size:9px;padding:2px 6px" onclick="showModal('about')">About</button>
@@ -7839,6 +7855,30 @@ function renderTopbarXruns(x) {
   el.title = offenders.length
     ? 'XRUN total ' + total + ' — ' + offenders.map(n => `${n.name}:${n.err}`).join(', ')
     : 'XRUN: 0 — clean run';
+}
+
+// Snapshot current XRUN counts as a new zero. PipeWire has no native
+// reset — backend tracks a baseline keyed by node name and subtracts it
+// on subsequent reads.
+async function resetXruns(evt) {
+  if (evt) evt.stopPropagation();
+  const btn = evt && evt.currentTarget;
+  if (btn) btn.classList.add('spinning');
+  try {
+    const r = await fetch(API + '/pipewire/xruns/reset', { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    // Force-refresh the topbar badge and per-strip LCDs right away so
+    // the user sees the counters drop instead of waiting up to 10s.
+    const [xr] = await Promise.all([
+      api('/pipewire/xruns').catch(() => null),
+      pollDiagCells(),
+    ]);
+    if (xr) renderTopbarXruns(xr);
+  } catch (e) {
+    console.warn('reset xruns failed', e);
+  } finally {
+    if (btn) setTimeout(() => btn.classList.remove('spinning'), 400);
+  }
 }
 
 function renderTopbarKernel(k) {

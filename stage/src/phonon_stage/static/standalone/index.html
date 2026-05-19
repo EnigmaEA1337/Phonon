@@ -1087,39 +1087,67 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 /* Click-to-edit engraved nameplate — brushed dark steel with an
    incised (slightly recessed) caption. Replaces the cream scotch
    tape so the footer matches the chrome cap + rocker switches. */
+/* Strip name plate — restyled to mirror the FX-slot aesthetic: dark
+   brushed gradient, 6 px LED dot on the left, low-contrast monospace
+   caption. When labeled the slot lights green (same hue as an active
+   fx-btn) so the operator reads the strip as "occupied"; when empty
+   the LED stays off and the caption falls back to "+ name", mirroring
+   the "+ FX" affordance. The container itself remains the click + JS
+   target for rename, so mixScotchEdit's innerHTML swap still works. */
 .strip-scotch { width: 96%; margin: 4px auto 0;
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 5px;
+  font-family: var(--font-m); font-size: 8px; font-weight: 600;
+  letter-spacing: 0.3px; color: #c7ccd2;
   background: linear-gradient(180deg,
-    #4a4f56 0%, #3a3e44 25%, #2c3036 50%,
-    #25292f 51%, #1e2126 75%, #161a1e 100%);
-  color: #d8dde3;
-  font-family: var(--font-d);
-  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
-  text-transform: uppercase;
-  text-align: center;
-  padding: 4px 6px; border-radius: 2px;
-  border: 1px solid #0a0c0e;
-  border-top-color: #5a5e64;
+    #3c4047 0%, #2a2d33 48%,
+    #1d2025 52%, #15181c 100%);
+  border: 1px solid #060709;
+  border-top-color: #4f5258;
+  border-radius: 3px;
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.14),
-    inset 0 -1px 0 rgba(0,0,0,0.65),
-    0 1px 1px rgba(0,0,0,0.5);
-  /* Incised lettering — dark above, faint highlight below. */
-  text-shadow:
-    0 -1px 0 rgba(0,0,0,0.85),
-    0 1px 0 rgba(255,255,255,0.10);
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    0 1px 1px rgba(0,0,0,0.45);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
   cursor: text;
-  height: 24px; line-height: 16px; box-sizing: border-box;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  height: 22px; box-sizing: border-box;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background 80ms linear, box-shadow 80ms linear, color 80ms linear; }
+.strip-scotch::before {
+  content: '';
+  width: 6px; height: 6px; border-radius: 50%;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 30% 30%,
+    #6affba 0%, #34d399 55%, #1a8859 100%);
+  border: 1px solid rgba(0,0,0,0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    0 0 4px rgba(52,211,153,0.85);
+}
+.strip-scotch:not(.empty) {
+  color: #d4f5e0;
+  border-color: rgba(52,211,153,0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    inset 0 0 6px rgba(52,211,153,0.18),
+    0 0 4px rgba(52,211,153,0.30),
+    0 1px 1px rgba(0,0,0,0.45); }
 .strip-scotch:hover {
   background: linear-gradient(180deg,
-    #585d64 0%, #484c52 25%, #383c42 50%,
-    #303338 51%, #282b30 75%, #1e2228 100%);
-  color: #f0f3f7;
-}
-.strip-scotch.empty { color: rgba(216,221,227,0.4); font-style: italic; font-weight: 500; }
-.strip-scotch input { width: 100%; background: transparent; border: none; outline: none;
-  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit;
-  text-align: center; letter-spacing: inherit; text-transform: inherit; }
+    #4c5057 0%, #383b41 48%,
+    #2a2d33 52%, #1f2228 100%);
+  color: #f0f3f7; }
+.strip-scotch.empty { color: rgba(199,204,210,0.55); }
+.strip-scotch.empty::before {
+  background: #1a1d22;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.6); }
+.strip-scotch input { flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  font-family: inherit; font-size: inherit; font-weight: inherit;
+  color: inherit; letter-spacing: inherit;
+  height: 100%; padding: 0; }
 
 /* ── Mix Console — one wide horizontal strip lane ────── */
 .mix-console { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0;
@@ -1217,17 +1245,86 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
   display: flex; flex-wrap: wrap; gap: 2px;
   padding: 2px 4px; min-height: 20px; align-content: flex-start;
 }
+/* VCA member chip — fx-btn-styled "slot": dark brushed gradient with
+   a small violet LED that identifies the owning VCA's colour. Reads
+   as a populated slot (like an active fx-btn) so the chip stack
+   looks like the FX chain of an strip. Click still unassigns. */
 .vca-member-chip {
-  background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.4);
-  border-radius: 3px; padding: 1px 4px; font-size: 8px;
-  font-family: var(--font-m); color: var(--text); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-m); font-size: 8px; font-weight: 600;
+  letter-spacing: 0.3px; color: #ead8fb;
+  background: linear-gradient(180deg,
+    #3c4047 0%, #2a2d33 48%,
+    #1d2025 52%, #15181c 100%);
+  border: 1px solid rgba(168,85,247,0.5);
+  border-radius: 3px;
+  padding: 0 5px;
+  height: 16px; line-height: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    inset 0 0 5px rgba(168,85,247,0.20),
+    0 0 3px rgba(168,85,247,0.30),
+    0 1px 1px rgba(0,0,0,0.45);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+  cursor: pointer; flex: 0 0 auto;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background 80ms linear, color 80ms linear, box-shadow 80ms linear;
 }
-.vca-member-chip:hover { background: rgba(168,85,247,0.35); }
-.vca-assign-btn { background: transparent; border: 1px dashed rgba(168,85,247,0.5);
-  color: #a855f7; border-radius: 3px; padding: 1px 4px; font-size: 8px;
-  font-family: var(--font-m); cursor: pointer; }
-.vca-assign-btn:hover { background: rgba(168,85,247,0.15); }
+.vca-member-chip::before {
+  content: '';
+  width: 5px; height: 5px; border-radius: 50%;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 30% 30%,
+    #d8b4fe 0%, #a855f7 55%, #6b21a8 100%);
+  border: 1px solid rgba(0,0,0,0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    0 0 3px rgba(168,85,247,0.85);
+}
+.vca-member-chip:hover {
+  background: linear-gradient(180deg,
+    #4c5057 0%, #383b41 48%,
+    #2a2d33 52%, #1f2228 100%);
+  color: #f4e2ff;
+}
+/* "+ assign" affordance — same fx-btn shell, but LED stays off (no
+   member behind this slot yet). Mirrors the "+ FX" placeholder on
+   the FX row. */
+.vca-assign-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-m); font-size: 8px; font-weight: 600;
+  letter-spacing: 0.3px; color: rgba(199,204,210,0.65);
+  background: linear-gradient(180deg,
+    #3c4047 0%, #2a2d33 48%,
+    #1d2025 52%, #15181c 100%);
+  border: 1px solid #060709;
+  border-top-color: #4f5258;
+  border-radius: 3px;
+  padding: 0 5px;
+  height: 16px; line-height: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.6),
+    0 1px 1px rgba(0,0,0,0.45);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+  cursor: pointer; flex: 0 0 auto;
+  transition: background 80ms linear, color 80ms linear;
+}
+.vca-assign-btn::before {
+  content: '';
+  width: 5px; height: 5px; border-radius: 50%;
+  flex-shrink: 0;
+  background: #1a1d22;
+  border: 1px solid rgba(0,0,0,0.55);
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.6);
+}
+.vca-assign-btn:hover {
+  background: linear-gradient(180deg,
+    #4c5057 0%, #383b41 48%,
+    #2a2d33 52%, #1f2228 100%);
+  color: #f0f3f7;
+}
 /* Network strips — sources or outputs whose PW node is an AES67
    stream (name starts with "aes67-"). Override the type tint with
    the network role colour: orange, per CLAUDE.md conventions for
@@ -5539,7 +5636,7 @@ function mixHwVolForSink(sinkName, alsaCards) {
 // label shows placeholder text so the operator can spot strips
 // they haven't named yet.
 function scotchLabel(kind, id, label) {
-  const display = (label && label.trim()) ? escapeHtml(label) : '— click to label —';
+  const display = (label && label.trim()) ? escapeHtml(label) : '+ name';
   const cls = (label && label.trim()) ? 'strip-scotch' : 'strip-scotch empty';
   return `<div class="row-scotch ${cls}" title="Click to rename"
     onclick="mixScotchEdit(this, '${kind}', '${id}')">${display}</div>`;

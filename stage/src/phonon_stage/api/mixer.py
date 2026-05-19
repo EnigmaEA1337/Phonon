@@ -21,7 +21,15 @@ from phonon_stage.mixer.models import (
 from phonon_stage.mixer.service import MixerError, MixerService
 
 if TYPE_CHECKING:
-    from phonon_stage.mixer.models import MasterBus, Output, PluginInsert, Source, Vca
+    from phonon_stage.mixer.models import (
+        Bus,
+        BusSend,
+        MasterBus,
+        Output,
+        PluginInsert,
+        Source,
+        Vca,
+    )
 
 
 router = APIRouter(prefix="/mixer", tags=["mixer"])
@@ -73,6 +81,16 @@ class OutputResponse(BaseModel):
     inserts: list[PluginInsertResponse] = Field(default_factory=list)
 
 
+class BusSendResponse(BaseModel):
+    """Shape returned by every Source's bus_sends entry. Mirrors
+    BusSend (bus_id + per-send gain + enabled flag)."""
+
+    model_config = ConfigDict(extra="forbid")
+    bus_id: str
+    gain_db: float
+    enabled: bool
+
+
 class SourceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -86,6 +104,28 @@ class SourceResponse(BaseModel):
     solo: bool
     to_master: bool
     direct_outputs: list[str]
+    # Post-fader bus sends. May be empty — pre-bus clients ignore
+    # the field (extra=forbid here means *unexpected* keys, not
+    # missing-but-known ones).
+    bus_sends: list[BusSendResponse] = Field(default_factory=list)
+
+
+class BusResponse(BaseModel):
+    """Shape returned by every bus endpoint. Mirrors the Bus dataclass,
+    plus a derived `sink_node_name` so the UI can subscribe to the
+    bus's PW node for metering without recomputing the name itself."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    label: str
+    gain_db: float
+    mute: bool
+    mute_left: bool
+    mute_right: bool
+    solo: bool
+    sink_node_name: str
+    insert: PluginInsertResponse | None = None
+    inserts: list[PluginInsertResponse] = Field(default_factory=list)
 
 
 class VcaResponse(BaseModel):
@@ -104,8 +144,10 @@ class MixerSnapshot(BaseModel):
     master: MasterResponse
     outputs: list[OutputResponse]
     sources: list[SourceResponse]
-    # VCAs are returned but may be an empty list — pre-VCA clients
-    # still parse the response (extra fields are ignored on those).
+    # Buses + VCAs are returned but may be empty lists — pre-feature
+    # clients still parse the response (the extra=forbid above is
+    # about *unexpected* keys, not missing-but-known ones).
+    buses: list[BusResponse] = Field(default_factory=list)
     vcas: list[VcaResponse] = Field(default_factory=list)
 
 
@@ -182,6 +224,34 @@ class SourceUpdate(BaseModel):
     solo: bool | None = None
     to_master: bool | None = None
     direct_outputs: list[str] | None = None
+
+
+class BusCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=64)
+    gain_db: float = Field(default=0.0, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
+
+
+class BusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str | None = Field(default=None, min_length=1, max_length=64)
+    gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
+    mute: bool | None = None
+    mute_left: bool | None = None
+    mute_right: bool | None = None
+    solo: bool | None = None
+
+
+class BusSendUpdate(BaseModel):
+    """Body for PUT /mixer/sources/{id}/bus-sends/{bus_id}. Either
+    field can be omitted — the server preserves the existing value
+    and updates only what was supplied. Posting against a bus the
+    source isn't yet sending to creates the send with the supplied
+    fields plus defaults for the rest (gain_db=0, enabled=True)."""
+
+    model_config = ConfigDict(extra="forbid")
+    gain_db: float | None = Field(default=None, ge=MIN_GAIN_DB, le=MAX_GAIN_DB)
+    enabled: bool | None = None
 
 
 class VcaCreate(BaseModel):
@@ -264,6 +334,34 @@ def _to_source_resp(s: Source) -> SourceResponse:
         solo=s.solo,
         to_master=s.to_master,
         direct_outputs=list(s.direct_outputs),
+        bus_sends=[_to_bus_send_resp(snd) for snd in s.bus_sends],
+    )
+
+
+def _to_bus_send_resp(snd: BusSend) -> BusSendResponse:
+    return BusSendResponse(
+        bus_id=snd.bus_id,
+        gain_db=snd.gain_db,
+        enabled=snd.enabled,
+    )
+
+
+def _to_bus_resp(b: Bus) -> BusResponse:
+    from phonon_stage.mixer.filter_chain import bus_sink_name
+
+    chain = [_to_insert_resp(i) for i in b.inserts]
+    chain_resp: list[PluginInsertResponse] = [c for c in chain if c is not None]
+    return BusResponse(
+        id=b.id,
+        label=b.label,
+        gain_db=b.gain_db,
+        mute=b.mute,
+        mute_left=b.mute_left,
+        mute_right=b.mute_right,
+        solo=b.solo,
+        sink_node_name=bus_sink_name(b.id),
+        insert=chain_resp[0] if chain_resp else None,
+        inserts=chain_resp,
     )
 
 
@@ -296,6 +394,7 @@ async def get_snapshot(request: Request) -> MixerSnapshot:
         master=_to_master_resp(svc.master),
         outputs=[_to_output_resp(o) for o in svc.outputs],
         sources=[_to_source_resp(s) for s in svc.sources],
+        buses=[_to_bus_resp(b) for b in svc.buses],
         vcas=[_to_vca_resp(v) for v in svc.vcas],
     )
 
@@ -632,12 +731,8 @@ async def list_sessions(request: Request) -> list[SessionMetaResponse]:
     return [_to_session_meta_response(m) for m in svc.list_sessions()]
 
 
-@router.post(
-    "/sessions/full", response_model=SessionMetaResponse, status_code=201
-)
-async def save_session_full(
-    request: Request, body: SessionSaveFull
-) -> SessionMetaResponse:
+@router.post("/sessions/full", response_model=SessionMetaResponse, status_code=201)
+async def save_session_full(request: Request, body: SessionSaveFull) -> SessionMetaResponse:
     """Snapshot the entire current state (sources + master + outputs +
     every FX chain). The id is a UTC timestamp, the comment is free
     text shown in the list view."""
@@ -649,12 +744,8 @@ async def save_session_full(
     return _to_session_meta_response(session.meta)
 
 
-@router.post(
-    "/sessions/fx", response_model=SessionMetaResponse, status_code=201
-)
-async def save_session_fx(
-    request: Request, body: SessionSaveFx
-) -> SessionMetaResponse:
+@router.post("/sessions/fx", response_model=SessionMetaResponse, status_code=201)
+async def save_session_fx(request: Request, body: SessionSaveFx) -> SessionMetaResponse:
     """Snapshot just the FX chain on one target. `target` is "master"
     or "output:<id>". Use case: "j'aime ce que je viens de monter
     sur le master, je veux pouvoir y revenir sans rappeler le mix
@@ -883,6 +974,116 @@ async def delete_source(request: Request, source_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+# ── Buses (sub-mix strips) ──────────────────────────────────────────
+# A Bus is a sub-mix: sources can post-fader send into it via their
+# `bus_sends` list, the bus runs its own DSP chain (optional), and
+# the result is summed back into the master. Audio-wise the bus is a
+# regular strip — gain, mute, mute_left/right, solo. v1 always routes
+# to master (no bus → output direct), so the endpoints don't expose
+# routing flags.
+
+
+@router.get("/buses", response_model=list[BusResponse])
+async def list_buses(request: Request) -> list[BusResponse]:
+    svc = _service(request)
+    return [_to_bus_resp(b) for b in svc.buses]
+
+
+@router.post("/buses", response_model=BusResponse, status_code=201)
+async def post_bus(request: Request, body: BusCreate) -> BusResponse:
+    svc = _service(request)
+    try:
+        b = await svc.add_bus(label=body.label, gain_db=body.gain_db)
+    except MixerError as exc:
+        # MAX_BUSES collision is a 409 Conflict; anything else (a
+        # validation error masquerading as MixerError) is a 400.
+        status = 409 if "limit reached" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_bus_resp(b)
+
+
+@router.patch("/buses/{bus_id}", response_model=BusResponse)
+async def patch_bus(request: Request, bus_id: str, body: BusUpdate) -> BusResponse:
+    svc = _service(request)
+    try:
+        b = await svc.update_bus(
+            bus_id,
+            label=body.label,
+            gain_db=body.gain_db,
+            mute=body.mute,
+            mute_left=body.mute_left,
+            mute_right=body.mute_right,
+            solo=body.solo,
+        )
+    except MixerError as exc:
+        status = 404 if "unknown bus id" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_bus_resp(b)
+
+
+@router.delete("/buses/{bus_id}", status_code=204)
+async def delete_bus(request: Request, bus_id: str) -> None:
+    svc = _service(request)
+    try:
+        await svc.remove_bus(bus_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ── Source ↔ Bus sends (per-source send list) ───────────────────────
+# A Source's bus_sends list is small enough that the API operates on
+# individual sends keyed by bus_id, not on the whole list. Reasoning:
+# the UI tweaks one slider at a time, and PUT-by-bus-id is idempotent
+# (re-PUTting the same send updates only the supplied fields).
+
+
+@router.put(
+    "/sources/{source_id}/bus-sends/{bus_id}",
+    response_model=SourceResponse,
+)
+async def put_source_bus_send(
+    request: Request,
+    source_id: str,
+    bus_id: str,
+    body: BusSendUpdate,
+) -> SourceResponse:
+    """Upsert a BusSend on the source. Creates it if absent, otherwise
+    updates only the fields supplied. Returns the full source so the
+    client doesn't need a separate fetch to refresh its mirror."""
+    svc = _service(request)
+    try:
+        s = await svc.set_source_bus_send(
+            source_id, bus_id, gain_db=body.gain_db, enabled=body.enabled
+        )
+    except MixerError as exc:
+        msg = str(exc)
+        if "unknown source id" in msg or "unknown bus id" in msg:
+            raise HTTPException(status_code=404, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_source_resp(s)
+
+
+@router.delete(
+    "/sources/{source_id}/bus-sends/{bus_id}",
+    response_model=SourceResponse,
+)
+async def delete_source_bus_send(request: Request, source_id: str, bus_id: str) -> SourceResponse:
+    """Drop a BusSend. Idempotent — removing an absent send returns
+    the unchanged source with a 200."""
+    svc = _service(request)
+    try:
+        s = await svc.remove_source_bus_send(source_id, bus_id)
+    except MixerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _to_source_resp(s)
+
+
 # ── VCAs (control-plane groupings) ──────────────────────────────────
 # A VCA has no audio path. Its gain and mute fold into the effective
 # values of every member strip at reconcile time. One fader can pull
@@ -910,9 +1111,7 @@ async def post_vca(request: Request, body: VcaCreate) -> VcaResponse:
 async def patch_vca(request: Request, vca_id: str, body: VcaUpdate) -> VcaResponse:
     svc = _service(request)
     try:
-        v = await svc.patch_vca(
-            vca_id, label=body.label, gain_db=body.gain_db, mute=body.mute
-        )
+        v = await svc.patch_vca(vca_id, label=body.label, gain_db=body.gain_db, mute=body.mute)
     except MixerError as exc:
         status = 404 if "unknown vca id" in str(exc) else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -929,9 +1128,7 @@ async def delete_vca(request: Request, vca_id: str) -> None:
 
 
 @router.post("/vcas/{vca_id}/members", response_model=VcaResponse)
-async def assign_vca_member(
-    request: Request, vca_id: str, body: VcaMember
-) -> VcaResponse:
+async def assign_vca_member(request: Request, vca_id: str, body: VcaMember) -> VcaResponse:
     """Assign a strip (source or output id) to this VCA. Idempotent —
     re-posting the same strip is a no-op."""
     svc = _service(request)
@@ -944,9 +1141,7 @@ async def assign_vca_member(
 
 
 @router.delete("/vcas/{vca_id}/members/{strip_id}", response_model=VcaResponse)
-async def unassign_vca_member(
-    request: Request, vca_id: str, strip_id: str
-) -> VcaResponse:
+async def unassign_vca_member(request: Request, vca_id: str, strip_id: str) -> VcaResponse:
     svc = _service(request)
     try:
         v = await svc.unassign_vca_member(vca_id, strip_id)

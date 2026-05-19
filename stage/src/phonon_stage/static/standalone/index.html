@@ -1161,18 +1161,25 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
-/* VCA strip — pure control plane, no audio path. Slimmer than the
-   other strips (no I/O, no FX, no VU) since there's nothing to meter
-   and nothing to wire. Violet per CLAUDE.md strip colours. */
+/* VCA strip — pure control plane, no audio path. Narrower than the
+   other strips (90 px vs 120 px) because there are no VU bars
+   alongside the fader. The fader still sits in the same vertical
+   slot for cross-console alignment, just with the meter columns
+   removed. Violet per CLAUDE.md strip colours. */
 .strip.mix-vca {
   border-top: 2px solid #a855f7;
-  width: 120px;
+  width: 90px;
   background: linear-gradient(180deg,
     rgba(168,85,247,0.30) 0%,
     rgba(168,85,247,0.18) 12%,
     rgba(168,85,247,0.06) 20%,
     var(--bg-2) 30%,
     var(--bg-1) 100%);
+}
+/* Centre the fader inside the narrower strip — no VU bars to its
+   left, so without explicit centering it would sit flush-left. */
+.strip.mix-vca .fader-area {
+  justify-content: center;
 }
 .vca-members {
   display: flex; flex-wrap: wrap; gap: 2px;
@@ -5365,6 +5372,12 @@ function renderMixVcas() {
         onclick="vcaUnassign('${v.id}','${mid}')">${escapeHtml(txt)}</span>`;
     }).join('');
     const memberCount = (v.members || []).length;
+    // LCD shows what an operator actually wants at a glance on a VCA:
+    // the current gain delta this VCA contributes, the number of
+    // member strips it controls, and the mute state. No XRUN/quantum
+    // metrics — there's no PW node behind a VCA.
+    const gainStr = (v.gain_db >= 0 ? '+' : '') + v.gain_db.toFixed(1);
+    const muteStr = v.mute ? 'ON' : '—';
     return `<div class="strip mix-vca" data-vca-id="${v.id}">
       <div class="row-action" style="display:flex;align-items:center;gap:3px">
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${ledColor};flex-shrink:0"></span>
@@ -5379,16 +5392,14 @@ function renderMixVcas() {
       </div>
       <div class="row-extra2"></div>
       <div class="row-fx empty"></div>
-      <div class="row-diag empty">
-        <div class="diag-cell"><div class="diag-label">VCA</div><div class="diag-val">—</div></div>
-        <div class="diag-cell"><div class="diag-label">CTRL</div><div class="diag-val">—</div></div>
-        <div class="diag-cell"><div class="diag-label">ONLY</div><div class="diag-val">—</div></div>
+      <div class="row-diag">
+        <div class="diag-cell"><div class="diag-label">GAIN</div><div class="diag-val">${gainStr}</div></div>
+        <div class="diag-cell"><div class="diag-label">MEMB</div><div class="diag-val">${memberCount}</div></div>
+        <div class="diag-cell"><div class="diag-label">MUTE</div><div class="diag-val">${muteStr}</div></div>
       </div>
       ${mrlsRow('mix-vca', v.id, { mute: v.mute, mute_left: false, mute_right: false, solo: false })}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
-        <div class="vu-bar" data-ch="L"></div>
-        <div class="vu-bar" data-ch="R"></div>
         ${faderCol('mix-vca', v.id, v.gain_db)}
       </div>
       <div class="row-io-out strip-io output" style="color:var(--text-fade)">${memberCount ? '↓ ' + memberCount + ' strip' + (memberCount > 1 ? 's' : '') : 'empty'}</div>

@@ -1161,11 +1161,12 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
-/* VCA strip — pure control plane, no audio path, but matches the
-   120 px width and full row layout of every other strip so columns
-   line up across the console. The VU columns are present but inert
-   (no segments lit, dimmed) — they're there for grid alignment,
-   not for metering anything. Violet per CLAUDE.md strip colours. */
+/* VCA strip — pure control plane, no audio path. Same 120 px width
+   and same row grid as the other strips so columns line up across
+   the console, but the fader-area is fader-only (no VU bars, no
+   dB tick column) since there's nothing to meter. The fader sits
+   centered to compensate for the missing meter columns to its left.
+   Violet per CLAUDE.md strip colours. */
 .strip.mix-vca {
   border-top: 2px solid #a855f7;
   width: 120px;
@@ -1176,7 +1177,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     var(--bg-2) 30%,
     var(--bg-1) 100%);
 }
-.strip.mix-vca .vu-bar { opacity: 0.18; }
+.strip.mix-vca .fader-area { justify-content: center; }
 .vca-members {
   display: flex; flex-wrap: wrap; gap: 2px;
   padding: 2px 4px; min-height: 20px; align-content: flex-start;
@@ -5395,9 +5396,6 @@ function renderMixVcas() {
       </div>
       ${mrlsRow('mix-vca', v.id, { mute: v.mute, mute_left: false, mute_right: false, solo: false })}
       <div class="row-fader fader-area">
-        ${MIX_VU_TICKS}
-        <div class="vu-bar" data-ch="L">${MIX_VU_SEGS}</div>
-        <div class="vu-bar" data-ch="R">${MIX_VU_SEGS}</div>
         ${faderCol('mix-vca', v.id, v.gain_db)}
       </div>
       <div class="row-io-out strip-io output" style="color:var(--text-fade)">${memberCount ? '↓ ' + memberCount + ' strip' + (memberCount > 1 ? 's' : '') : 'empty'}</div>

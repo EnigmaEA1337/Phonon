@@ -40,13 +40,20 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 from phonon_stage.mixer.filter_chain import (
+    BUS_SINK_NAME_PREFIX,
     MASTER_CHAIN_NAME,
     MASTER_POST_SINK_NAME,
+    bus_chain_name_for,
+    bus_post_sink_name,
+    bus_sink_name,
     chain_name_for,
+    render_bus_filter_chain_conf,
     render_filter_chain_conf,
     render_master_filter_chain_conf,
 )
 from phonon_stage.mixer.models import (
+    Bus,
+    BusSend,
     MasterBus,
     MixerState,
     Output,
@@ -86,6 +93,14 @@ def _effective_master_source(master: MasterBus) -> str:
     downstream of the master chain). Outputs don't care which one;
     they just consume from .monitor of whichever this returns."""
     return MASTER_POST_SINK_NAME if master.inserts else MASTER_SINK_NAME
+
+
+def _effective_bus_source(bus: Bus) -> str:
+    """Name of the PW node the bus→master loopback should read from.
+    Bare `phonon_bus_<id>` when the bus has no inserts; the post-chain
+    null-sink when at least one insert is present. Mirrors
+    _effective_master_source for buses."""
+    return bus_post_sink_name(bus.id) if bus.inserts else bus_sink_name(bus.id)
 
 
 class MixerError(Exception):
@@ -151,6 +166,10 @@ class MixerService:
     def vcas(self) -> list[Vca]:
         return list(self._store.state.vcas)
 
+    @property
+    def buses(self) -> list[Bus]:
+        return list(self._store.state.buses)
+
     def _output(self, output_id: str) -> Output:
         out = next((o for o in self._store.state.outputs if o.id == output_id), None)
         if out is None:
@@ -164,6 +183,13 @@ class MixerService:
             msg = f"unknown source id: {source_id}"
             raise MixerError(msg)
         return s
+
+    def _bus(self, bus_id: str) -> Bus:
+        b = next((b for b in self._store.state.buses if b.id == bus_id), None)
+        if b is None:
+            msg = f"unknown bus id: {bus_id}"
+            raise MixerError(msg)
+        return b
 
     # ── Bootstrap ───────────────────────────────────────────────
 
@@ -184,7 +210,8 @@ class MixerService:
 
     async def full_resync(self) -> None:
         """Full from-scratch sync: ensure phonon_master, sweep
-        orphan loopbacks + filter-chains, then reconcile.
+        orphan loopbacks + filter-chains + bus null-sinks, then
+        reconcile.
 
         Used by init() at boot, and by POST /mixer/admin/reconcile
         when the operator presses Resync. The plain _reconcile()
@@ -195,21 +222,28 @@ class MixerService:
         await self._ensure_master_null_sink()
         await self._cleanup_orphan_loopbacks()
         await self._cleanup_orphan_chains()
+        await self._cleanup_orphan_bus_null_sinks()
         await self._reconcile()
 
     async def _cleanup_orphan_loopbacks(self) -> None:
-        """Find every module-loopback whose source argument targets
-        phonon_master.monitor and unload it. We can't rely on the
-        in-memory `_owned_loopbacks` here — that list is empty at
-        boot — so we ask the backend for the live module list."""
+        """Find every module-loopback whose source argument targets a
+        Phonon-managed null-sink monitor (master, master_post, or any
+        bus / bus_post) and unload it. We can't rely on the in-memory
+        `_owned_loopbacks` here — that list is empty at boot — so we
+        ask the backend for the live module list."""
         try:
             modules = await self._pw.list_loopback_modules()
         except Exception:
             logger.info("mixer.orphan_cleanup_list_failed", exc_info=False)
             return
-        target = f"source={MASTER_SINK_NAME}.monitor"
+        # Sources we consider "ours" — anything whose `source=...monitor`
+        # argument hangs off one of our null-sinks. The bus prefix
+        # catches both `phonon_bus_<id>` and `phonon_bus_<id>_post`.
+        master_prefix = f"source={MASTER_SINK_NAME}"
+        master_post_prefix = f"source={MASTER_POST_SINK_NAME}"
+        bus_prefix = f"source={BUS_SINK_NAME_PREFIX}"
         for mid, args in modules.items():
-            if target not in args:
+            if not (master_prefix in args or master_post_prefix in args or bus_prefix in args):
                 continue
             try:
                 await self._pw.unload_module(mid)
@@ -255,6 +289,13 @@ class MixerService:
             if o.inserts and any(i.enabled for i in o.inserts) and o.receives_master:
                 wanted_bodies[chain_name_for(o)] = render_filter_chain_conf(
                     o, o.inserts, master_src
+                )
+        # Bus chain confs — one per Bus that has at least one insert.
+        # Same passthrough-vs-active behaviour as the master chain.
+        for b in self._store.state.buses:
+            if b.inserts:
+                wanted_bodies[bus_chain_name_for(b.id)] = render_bus_filter_chain_conf(
+                    b.id, b.label, b.inserts, bus_sink_name(b.id), bus_post_sink_name(b.id)
                 )
         stale = [c for c in on_disk if c not in wanted_bodies]
         if not stale:
@@ -366,6 +407,78 @@ class MixerService:
                         module_id=mid,
                         exc_info=True,
                     )
+
+    async def _ensure_bus_null_sink(self, bus_id: str, *, post: bool = False) -> None:
+        """Create the bus null-sink (or its post-chain twin) if missing.
+        Idempotent — every reconcile pass calls this for each known bus
+        so the sink survives across daemon restarts and pactl cascades.
+
+        `post=False` → `phonon_bus_<id>` (main sum-in sink for sources)
+        `post=True`  → `phonon_bus_<id>_post` (only created when the
+                       bus carries inserts).
+        """
+        name = bus_post_sink_name(bus_id) if post else bus_sink_name(bus_id)
+        description = f"Phonon-Bus-{bus_id}{'-Post' if post else ''}"
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            nodes = []
+        if any(n.name == name for n in nodes):
+            return
+        await self._pw.load_null_sink(name, description)
+
+    async def _unload_bus_null_sinks(self, bus_id: str) -> None:
+        """Tear down both the main and post-chain null-sinks for a bus,
+        called by remove_bus(). Loopbacks targeting those sinks are
+        cleared on the next _reconcile() pass."""
+        names = {bus_sink_name(bus_id), bus_post_sink_name(bus_id)}
+        try:
+            modules = await self._pw.list_null_sink_modules()
+        except Exception:
+            logger.info("mixer.bus_null_sink_list_failed", bus_id=bus_id, exc_info=False)
+            return
+        for mid, name in modules.items():
+            if name in names:
+                try:
+                    await self._pw.unload_module(mid)
+                    logger.info("mixer.bus_null_sink_unloaded", module_id=mid, name=name)
+                except Exception:
+                    logger.warning(
+                        "mixer.bus_null_sink_unload_failed",
+                        module_id=mid,
+                        name=name,
+                        exc_info=True,
+                    )
+
+    async def _cleanup_orphan_bus_null_sinks(self) -> None:
+        """Scan loaded null-sink modules; unload any `phonon_bus_*`
+        whose bus id no longer exists in state. Catches the case where
+        a Stage was hard-restarted between remove_bus() persisting and
+        the unload completing."""
+        try:
+            modules = await self._pw.list_null_sink_modules()
+        except Exception:
+            logger.info("mixer.bus_orphan_list_failed", exc_info=False)
+            return
+        known: set[str] = set()
+        for b in self._store.state.buses:
+            known.add(bus_sink_name(b.id))
+            known.add(bus_post_sink_name(b.id))
+        for mid, name in modules.items():
+            if not name.startswith(BUS_SINK_NAME_PREFIX):
+                continue
+            if name in known:
+                continue
+            try:
+                await self._pw.unload_module(mid)
+                logger.info("mixer.bus_orphan_unloaded", module_id=mid, name=name)
+            except Exception:
+                logger.warning(
+                    "mixer.bus_orphan_unload_failed",
+                    module_id=mid,
+                    name=name,
+                    exc_info=True,
+                )
 
     # ── Master mutations ────────────────────────────────────────
 
@@ -1041,9 +1154,7 @@ class MixerService:
             for v in self._store.state.vcas
         ]
         self._store.replace_state(
-            replace(
-                self._store.state, outputs=new_outputs, sources=new_sources, vcas=new_vcas
-            )
+            replace(self._store.state, outputs=new_outputs, sources=new_sources, vcas=new_vcas)
         )
         await self._reconcile()
 
@@ -1179,10 +1290,187 @@ class MixerService:
             else v
             for v in self._store.state.vcas
         ]
-        self._store.replace_state(
-            replace(self._store.state, sources=new_sources, vcas=new_vcas)
-        )
+        self._store.replace_state(replace(self._store.state, sources=new_sources, vcas=new_vcas))
         await self._reconcile()
+
+    # ── Buses (sub-mix strips) ──────────────────────────────────
+
+    async def add_bus(self, label: str, gain_db: float = 0.0) -> Bus:
+        from phonon_stage.mixer.models import MAX_BUSES
+
+        if len(self._store.state.buses) >= MAX_BUSES:
+            msg = f"bus limit reached ({MAX_BUSES})"
+            raise MixerError(msg)
+        validate_gain_db(gain_db)
+        b = Bus(id=uuid.uuid4().hex[:8], label=label, gain_db=gain_db)
+        new_buses = [*self._store.state.buses, b]
+        self._store.replace_state(replace(self._store.state, buses=new_buses))
+        # Reconcile so the bus null-sink is created and the (empty)
+        # bus→master loopback comes online. Once a source picks up a
+        # bus_send into this bus, audio starts flowing without any
+        # additional reconcile beyond patch_source.
+        await self._reconcile()
+        return b
+
+    async def update_bus(
+        self,
+        bus_id: str,
+        *,
+        label: str | None = None,
+        gain_db: float | None = None,
+        mute: bool | None = None,
+        mute_left: bool | None = None,
+        mute_right: bool | None = None,
+        solo: bool | None = None,
+    ) -> Bus:
+        """Patch a bus. Audio-impacting fields without topology change
+        (gain, mute_left, mute_right) take the fast volume path; mute
+        and solo affect link suppression and trigger a full reconcile.
+        Mirrors update_output's split exactly."""
+        cur = self._bus(bus_id)
+        new = cur
+        topology_change = False
+        if label is not None:
+            new = replace(new, label=label)
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+            new = replace(new, gain_db=gain_db)
+        if mute is not None:
+            if mute != cur.mute:
+                topology_change = True
+            new = replace(new, mute=mute)
+        if mute_left is not None:
+            new = replace(new, mute_left=mute_left)
+        if mute_right is not None:
+            new = replace(new, mute_right=mute_right)
+        if solo is not None:
+            if solo != cur.solo:
+                topology_change = True
+            new = replace(new, solo=solo)
+        new_buses = [new if b.id == bus_id else b for b in self._store.state.buses]
+        self._store.replace_state(replace(self._store.state, buses=new_buses))
+        if topology_change:
+            await self._reconcile()
+        else:
+            await self._apply_strip_volume_bus(new)
+        return new
+
+    async def _apply_strip_volume_bus(self, bus: Bus) -> None:
+        """Volume-only fast path for a bus — gain / mute_left /
+        mute_right push channel volumes on the bus null-sink without
+        rebuilding any link. Matches the Output and Master fast paths."""
+        try:
+            nodes = await self._pw.list_nodes()
+        except Exception:
+            return
+        sink = bus_sink_name(bus.id)
+        bus_node = next((n for n in nodes if n.name == sink), None)
+        if bus_node is None:
+            return
+        lin = self._db_to_linear(bus.gain_db)
+        # The fast path is only reached when no topology change is
+        # pending, so global mute / solo silencing are NOT factored in
+        # here (they'd require a reconcile anyway). Local L/R mutes
+        # are the only knobs we can move cheaply.
+        try:
+            await self._pw.set_node_channel_volumes(
+                bus_node.name,
+                [
+                    0.0 if bus.mute_left else lin,
+                    0.0 if bus.mute_right else lin,
+                ],
+            )
+        except Exception:
+            logger.warning(
+                "mixer.bus_volume_fast_path_failed",
+                bus_id=bus.id,
+                exc_info=True,
+            )
+
+    async def remove_bus(self, bus_id: str) -> None:
+        """Delete a bus, prune every source.bus_sends referencing it,
+        tear down its null-sinks, and reconcile."""
+        self._bus(bus_id)
+        new_buses = [b for b in self._store.state.buses if b.id != bus_id]
+        # Drop every send pointing at this bus so a future re-add with
+        # the same id doesn't accidentally re-link old sends.
+        new_sources = [
+            replace(s, bus_sends=tuple(snd for snd in s.bus_sends if snd.bus_id != bus_id))
+            if any(snd.bus_id == bus_id for snd in s.bus_sends)
+            else s
+            for s in self._store.state.sources
+        ]
+        self._store.replace_state(replace(self._store.state, buses=new_buses, sources=new_sources))
+        # Unload the sink modules BEFORE reconcile so the orphan-cleanup
+        # pass inside reconcile doesn't race with the just-removed bus.
+        await self._unload_bus_null_sinks(bus_id)
+        await self._reconcile()
+
+    async def set_source_bus_send(
+        self,
+        source_id: str,
+        bus_id: str,
+        *,
+        gain_db: float | None = None,
+        enabled: bool | None = None,
+    ) -> Source:
+        """Upsert a BusSend on a source. If the source already has a
+        send to `bus_id`, only the provided fields move; otherwise a
+        new entry is appended with defaults for the unspecified ones.
+        Topology change → full reconcile (a new send needs new links).
+        """
+        cur = self._source(source_id)
+        # Validate bus exists — silent prune on remove_bus would also
+        # work, but explicit error here gives the API a 400 to return.
+        if not any(b.id == bus_id for b in self._store.state.buses):
+            msg = f"unknown bus id: {bus_id}"
+            raise MixerError(msg)
+        if gain_db is not None:
+            validate_gain_db(gain_db)
+        existing = next((s for s in cur.bus_sends if s.bus_id == bus_id), None)
+        if existing is None:
+            send = BusSend(
+                bus_id=bus_id,
+                gain_db=gain_db if gain_db is not None else 0.0,
+                enabled=enabled if enabled is not None else True,
+            )
+            new_sends = (*cur.bus_sends, send)
+            topology_change = send.enabled
+        else:
+            new_send = replace(
+                existing,
+                gain_db=gain_db if gain_db is not None else existing.gain_db,
+                enabled=enabled if enabled is not None else existing.enabled,
+            )
+            new_sends = tuple(new_send if s.bus_id == bus_id else s for s in cur.bus_sends)
+            # Topology only changes when the on/off bit flips. Pure
+            # gain moves on an enabled send don't need new links (v1
+            # ignores per-send gain anyway), but we still reconcile so
+            # the model and PW agree once we honour gain.
+            topology_change = enabled is not None and enabled != existing.enabled
+        new = replace(cur, bus_sends=new_sends)
+        new_sources = [new if s.id == source_id else s for s in self._store.state.sources]
+        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        if topology_change:
+            await self._reconcile()
+        return new
+
+    async def remove_source_bus_send(self, source_id: str, bus_id: str) -> Source:
+        """Drop the bus_send for `bus_id` from this source. Idempotent
+        — removing an absent send is a no-op."""
+        cur = self._source(source_id)
+        if not any(s.bus_id == bus_id for s in cur.bus_sends):
+            return cur
+        had_enabled = any(s.bus_id == bus_id and s.enabled for s in cur.bus_sends)
+        new = replace(
+            cur,
+            bus_sends=tuple(s for s in cur.bus_sends if s.bus_id != bus_id),
+        )
+        new_sources = [new if s.id == source_id else s for s in self._store.state.sources]
+        self._store.replace_state(replace(self._store.state, sources=new_sources))
+        if had_enabled:
+            await self._reconcile()
+        return new
 
     # ── VCAs (control-plane groupings) ──────────────────────────
 
@@ -1377,9 +1665,7 @@ class MixerService:
             output_id = target[len("output:") :]
             cur = self._output(output_id)
             new_output = replace(cur, inserts=new_inserts)
-            new_outputs = [
-                new_output if o.id == output_id else o for o in state.outputs
-            ]
+            new_outputs = [new_output if o.id == output_id else o for o in state.outputs]
             self._store.replace_state(replace(state, outputs=new_outputs))
             return
         msg = f"unknown session target: {target!r}"
@@ -1425,6 +1711,14 @@ class MixerService:
             if o.receives_master and o.inserts and any(i.enabled for i in o.inserts):
                 wanted_chains[chain_name_for(o)] = render_filter_chain_conf(
                     o, o.inserts, master_src
+                )
+        # Bus chain confs — one per Bus that has at least one insert.
+        # Passthrough conf is rendered even when all inserts are
+        # disabled so the chain's node.name stays visible to PW.
+        for b in self._store.state.buses:
+            if b.inserts:
+                wanted_chains[bus_chain_name_for(b.id)] = render_bus_filter_chain_conf(
+                    b.id, b.label, b.inserts, bus_sink_name(b.id), bus_post_sink_name(b.id)
                 )
 
         # 3. Apply the chain diff EARLY. The cascade (when it fires)
@@ -1482,6 +1776,27 @@ class MixerService:
             except Exception:
                 logger.info("mixer.master_post_unload_skipped", exc_info=False)
 
+        # Bus null-sinks — one main per Bus, plus a post-sink when the
+        # bus has any inserts. Mirrors the master pattern. Buses removed
+        # from state during this session are swept by the orphan pass
+        # so dangling sinks don't accumulate across daemon restarts.
+        for b in self._store.state.buses:
+            try:
+                await self._ensure_bus_null_sink(b.id, post=False)
+            except Exception:
+                logger.warning("mixer.bus_null_sink_ensure_failed", bus_id=b.id, exc_info=True)
+            if b.inserts:
+                try:
+                    await self._ensure_bus_null_sink(b.id, post=True)
+                except Exception:
+                    logger.warning(
+                        "mixer.bus_post_null_sink_ensure_failed", bus_id=b.id, exc_info=True
+                    )
+        try:
+            await self._cleanup_orphan_bus_null_sinks()
+        except Exception:
+            logger.info("mixer.bus_orphan_cleanup_skipped", exc_info=False)
+
         try:
             nodes = await self._pw.list_nodes()
             ports = await self._pw.list_ports()
@@ -1513,10 +1828,12 @@ class MixerService:
         #    solo'd strip cancels its solo intent (intuitive: the
         #    operator doesn't want silence everywhere just because
         #    they muted a solo'd strip). When the group is non-empty
-        #    on a given side (sources / outputs), every non-member
-        #    of that side gets silenced via link suppression.
+        #    on a given side (sources / outputs / buses), every
+        #    non-member of that side gets silenced via link
+        #    suppression.
         src_solo_active = any(s.solo and not s.mute for s in self._store.state.sources)
         out_solo_active = any(o.solo and not o.mute for o in self._store.state.outputs)
+        bus_solo_active = any(b.solo and not b.mute for b in self._store.state.buses)
 
         # 6. Master volume (per-channel for L/R mutes) + global mute.
         master_lin = self._db_to_linear(self.master.gain_db)
@@ -1531,6 +1848,60 @@ class MixerService:
             await self._pw.set_node_mute(master_node.id, self.master.mute)
         except Exception:
             logger.warning("mixer.master_apply_failed", exc_info=True)
+
+        # 6b. Buses: per-channel volume on each bus null-sink + the
+        #     bus→master bridge. When a bus has at least one enabled
+        #     insert, step 3 already wrote its filter-chain conf, so
+        #     audio flows phonon_bus_<id> → chain → phonon_bus_<id>_post,
+        #     and we add a loopback from `<post>.monitor` to phonon_master.
+        #     When the chain is empty/all-disabled we loopback straight
+        #     from `<bus>.monitor` to phonon_master.
+        for b in self._store.state.buses:
+            bus_sink = bus_sink_name(b.id)
+            bus_node = next((n for n in nodes if n.name == bus_sink), None)
+            if bus_node is None:
+                # Sink wasn't ready yet — log and skip; the next
+                # reconcile will catch up.
+                logger.info("mixer.bus_sink_missing", bus_id=b.id, name=bus_sink)
+                continue
+            bus_silenced_by_solo = bus_solo_active and not b.solo
+            silenced = b.mute or self.master.mute or bus_silenced_by_solo
+            b_lin = self._db_to_linear(b.gain_db)
+            try:
+                await self._pw.set_node_channel_volumes(
+                    bus_node.name,
+                    [
+                        0.0 if (b.mute_left or silenced) else b_lin,
+                        0.0 if (b.mute_right or silenced) else b_lin,
+                    ],
+                )
+                await self._pw.set_node_mute(bus_node.id, silenced)
+            except Exception:
+                logger.warning("mixer.bus_apply_failed", bus_id=b.id, exc_info=True)
+            if b.inserts and any(i.enabled for i in b.inserts):
+                # Filter-chain renders the bus→post wiring; we still
+                # need the post→master loopback so audio reaches the
+                # master sum.
+                if silenced:
+                    continue
+                mid = await self._pw.load_loopback(
+                    f"{bus_post_sink_name(b.id)}.monitor",
+                    MASTER_SINK_NAME,
+                    0,
+                )
+                if mid is not None:
+                    self._owned_loopbacks.append(mid)
+                continue
+            # No enabled inserts → straight bus.monitor → master loopback.
+            if silenced:
+                continue
+            mid = await self._pw.load_loopback(
+                f"{bus_sink}.monitor",
+                MASTER_SINK_NAME,
+                0,
+            )
+            if mid is not None:
+                self._owned_loopbacks.append(mid)
 
         # 7. For each output: per-channel volume on the sink, then the
         #    master→output bridge. The bridge is either a plain pactl
@@ -1650,10 +2021,43 @@ class MixerService:
                 output_in_ports = self._ordered_input_ports(ports, output_sink)
                 await self._link_pairs(src_out_ports, output_in_ports)
 
+            # Bus sends — additive on top of master / direct_outputs.
+            # v1 send model: each enabled BusSend becomes a direct
+            # source.monitor → bus_sink.playback link pair, at unity
+            # gain. Per-send `gain_db` is persisted in the model and
+            # surfaced by the API, but the reconcile ignores it for
+            # now (the bus's own fader controls bus-side level). Per-
+            # send gain via a dedicated loopback-with-volume lands in
+            # a later phase — flipping this loop to load_loopback then
+            # is a localized change.
+            for send in s.bus_sends:
+                if not send.enabled:
+                    continue
+                target_bus = next(
+                    (b for b in self._store.state.buses if b.id == send.bus_id),
+                    None,
+                )
+                if target_bus is None:
+                    continue
+                # A muted / solo-silenced bus stays linked at the PW
+                # level — the silencing happens at the bus sink's
+                # channel volumes (step 6b). Keeping the links in place
+                # means flipping the bus's mute is a fast-path move
+                # rather than a full topology rebuild.
+                bus_sink_node = next(
+                    (n for n in nodes if n.name == bus_sink_name(target_bus.id)),
+                    None,
+                )
+                if bus_sink_node is None:
+                    continue
+                bus_in_ports = self._ordered_input_ports(ports, bus_sink_node)
+                await self._link_pairs(src_out_ports, bus_in_ports)
+
         logger.info(
             "mixer.reconciled",
             outputs=len(self._store.state.outputs),
             sources=len(self._store.state.sources),
+            buses=len(self._store.state.buses),
             links=len(self._owned_links),
             loopbacks=len(self._owned_loopbacks),
         )

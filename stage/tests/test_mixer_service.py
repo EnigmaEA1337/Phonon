@@ -790,6 +790,188 @@ class TestVca:
             await service.add_vca(label="overflow")
 
 
+# ── Bus (sub-mix) reconcile ───────────────────────────────────────────
+
+
+class TestBuses:
+    """Bus-side reconcile: null-sink lifecycle, bus→master loopback,
+    source→bus sends, mute / solo / cap. The Fake backend synthesizes
+    a node + ports per null-sink, so source→bus links resolve through
+    the same code path as source→output direct sends."""
+
+    async def test_add_bus_creates_null_sink_and_master_loopback(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Adding a Bus stamps a `phonon_bus_<id>` null-sink and a
+        loopback from that sink's monitor into phonon_master, so audio
+        eventually summed into the bus reaches the master."""
+        b = await service.add_bus(label="Drums", gain_db=-3.0)
+        names = {name for _, (name, _) in fake_pw.null_sinks.items()}
+        assert f"phonon_bus_{b.id}" in names
+        # Exactly one bus→master loopback for this bus.
+        sources = [src for (src, sink, _) in fake_pw.loopbacks.values()]
+        assert f"phonon_bus_{b.id}.monitor" in sources
+        # And no spurious phonon_master_post (master has no inserts).
+        assert "phonon_master_post" not in names
+
+    async def test_bus_cap_enforced(self, service: MixerService) -> None:
+        from phonon_stage.mixer.models import MAX_BUSES
+
+        for i in range(MAX_BUSES):
+            await service.add_bus(label=f"B{i}")
+        with pytest.raises(MixerError, match="limit reached"):
+            await service.add_bus(label="overflow")
+
+    async def test_bus_gain_volume_fast_path(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Patching only gain_db / mute_left / mute_right takes the
+        fast volume path — channel volumes shift on the bus sink but
+        the loopback isn't torn down + rebuilt."""
+        b = await service.add_bus(label="Drums", gain_db=0.0)
+        old_loopbacks = dict(fake_pw.loopbacks)
+        await service.update_bus(b.id, gain_db=-6.0)
+        assert fake_pw.loopbacks == old_loopbacks  # untouched
+        sink_name = f"phonon_bus_{b.id}"
+        chans = fake_pw.channel_volumes[sink_name]
+        # -6 dB → ~0.501 linear, allow a wide tolerance.
+        assert 0.4 < chans[0] < 0.6
+        assert 0.4 < chans[1] < 0.6
+
+    async def test_bus_mute_silences_loopback(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """When a bus is muted its bus→master loopback is dropped, so
+        no audio leaves the bus sink. Un-muting brings it back."""
+        b = await service.add_bus(label="Drums")
+        assert any(
+            src == f"phonon_bus_{b.id}.monitor" for (src, _, _) in fake_pw.loopbacks.values()
+        )
+        await service.update_bus(b.id, mute=True)
+        assert not any(
+            src == f"phonon_bus_{b.id}.monitor" for (src, _, _) in fake_pw.loopbacks.values()
+        )
+        await service.update_bus(b.id, mute=False)
+        assert any(
+            src == f"phonon_bus_{b.id}.monitor" for (src, _, _) in fake_pw.loopbacks.values()
+        )
+
+    async def test_bus_solo_silences_other_buses(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """When one bus is soloed, every other (non-soloed) bus's
+        loopback to master is suppressed — same invariant as
+        output-side solo."""
+        b1 = await service.add_bus(label="Drums")
+        b2 = await service.add_bus(label="FX")
+        await service.update_bus(b1.id, solo=True)
+        live = {src for (src, _, _) in fake_pw.loopbacks.values()}
+        assert f"phonon_bus_{b1.id}.monitor" in live
+        assert f"phonon_bus_{b2.id}.monitor" not in live
+        # Clearing solo brings b2 back.
+        await service.update_bus(b1.id, solo=False)
+        live = {src for (src, _, _) in fake_pw.loopbacks.values()}
+        assert f"phonon_bus_{b2.id}.monitor" in live
+
+    async def test_set_source_bus_send_creates_link(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """A source whose enabled BusSend points at a known bus must
+        end up linked source.monitor → bus_sink.playback on reconcile."""
+        b = await service.add_bus(label="Drums")
+        s = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AP",
+            to_master=False,
+        )
+        before_links = len(fake_pw.links)
+        await service.set_source_bus_send(s.id, b.id, gain_db=0.0, enabled=True)
+        # Two new links (FL + FR) into the bus sink.
+        assert len(fake_pw.links) >= before_links + 2
+
+    async def test_set_source_bus_send_disabled_creates_no_link(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """An `enabled=False` send keeps the model entry (the UI shows
+        a greyed-out send fader) but produces no PW links."""
+        b = await service.add_bus(label="Drums")
+        s = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AP",
+            to_master=False,
+        )
+        await service.set_source_bus_send(s.id, b.id, enabled=False)
+        # No new source→bus links should appear.
+        bus_sink_id = next(n.id for n in fake_pw.nodes if n.name == f"phonon_bus_{b.id}")
+        new_links = [
+            lk
+            for lk in fake_pw.links
+            if lk.dst_port_id in {p.id for p in fake_pw.ports if p.node_id == bus_sink_id}
+        ]
+        assert new_links == []
+        # And the model entry is persisted.
+        updated = next(x for x in service.sources if x.id == s.id)
+        assert any(snd.bus_id == b.id and not snd.enabled for snd in updated.bus_sends)
+
+    async def test_set_source_bus_send_unknown_bus_rejected(self, service: MixerService) -> None:
+        s = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        with pytest.raises(MixerError, match="unknown bus id"):
+            await service.set_source_bus_send(s.id, "nope", enabled=True)
+
+    async def test_remove_source_bus_send_idempotent(self, service: MixerService) -> None:
+        s = await service.add_source(
+            source_node_name="airplay_in", source_is_sink=True, label="AP"
+        )
+        # Calling remove on a non-existing send is a silent no-op.
+        result = await service.remove_source_bus_send(s.id, "bus-never-existed")
+        assert result.id == s.id
+
+    async def test_remove_bus_tears_down_and_prunes_sends(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """Deleting a bus unloads its null-sink, drops the bus→master
+        loopback, and prunes every source.bus_sends that referenced
+        it — no phantom entries left in state."""
+        b = await service.add_bus(label="Drums")
+        s = await service.add_source(
+            source_node_name="airplay_in",
+            source_is_sink=True,
+            label="AP",
+            to_master=False,
+        )
+        await service.set_source_bus_send(s.id, b.id, enabled=True)
+        await service.remove_bus(b.id)
+        # Bus removed from state.
+        assert all(x.id != b.id for x in service.buses)
+        # Null-sink unloaded from PW.
+        names = {name for _, (name, _) in fake_pw.null_sinks.items()}
+        assert f"phonon_bus_{b.id}" not in names
+        # Source's bus_sends pruned.
+        updated = next(x for x in service.sources if x.id == s.id)
+        assert all(snd.bus_id != b.id for snd in updated.bus_sends)
+
+    async def test_bus_persists_across_init(
+        self, service: MixerService, fake_pw: FakePipeWireBackend
+    ) -> None:
+        """A bus written to disk in one daemon lifetime must reload
+        and re-create its null-sink + master loopback on the next."""
+        b = await service.add_bus(label="Drums", gain_db=-2.0)
+        # Spin up a fresh service against the same backend + store.
+        store2 = MixerStore(service._store._path)
+        svc2 = MixerService(pw_backend=fake_pw, store=store2)
+        await svc2.init()
+        assert len(svc2.buses) == 1
+        assert svc2.buses[0].label == "Drums"
+        assert svc2.buses[0].gain_db == -2.0
+        # And the null-sink is still loaded.
+        names = {name for _, (name, _) in fake_pw.null_sinks.items()}
+        assert f"phonon_bus_{b.id}" in names
+
+
 # ── Bus / BusSend dataclass round-trips ───────────────────────────────
 
 

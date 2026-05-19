@@ -278,6 +278,7 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
     [extra1]  28px  /* delay input (out) / direct chips (src) / empty (master) */
     [extra2]  20px  /* HW vol (out) / empty */
     [fx]      calc(var(--fx-rows, 1) * 22px + (var(--fx-rows, 1) - 1) * 2px)
+    [diag]    18px  /* mini-LCD: live XRUN / quantum / rate for the strip's PW node */
     [mrls]    20px  /* M R L S channel-mute / solo buttons */
     [fader]   230px
     [io-out]  16px
@@ -296,7 +297,59 @@ body { font-family: var(--font-d); background: var(--bg-0); color: var(--text); 
 .strip > .row-extra1  { grid-row: extra1; }
 .strip > .row-extra2  { grid-row: extra2; }
 .strip > .row-fx      { grid-row: fx; }
+.strip > .row-diag    { grid-row: diag; }
 .strip > .row-mrls    { grid-row: mrls; }
+
+/* Live per-strip diagnostic strip — three LCD cells: XRUN count,
+   quantum (buffer size, e.g. 1024), sample rate (e.g. 48k). Same
+   phosphor-on-black aesthetic as the 1U Monitoring rack. Updated
+   every ~2s by a /pipewire/node-stats poll. */
+.row-diag {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 2px;
+  align-items: stretch;
+}
+.diag-cell {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 1px 2px;
+  background: #050608;
+  border: 1px solid #000;
+  border-radius: 2px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.9), inset 0 0 0 1px rgba(255,255,255,0.02);
+  min-width: 0; overflow: hidden;
+}
+.diag-label {
+  font-family: var(--font-d);
+  font-size: 6px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(160,170,180,0.65);
+  line-height: 1;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7);
+}
+.diag-val {
+  font-family: var(--font-m);
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #6ce4f5;
+  text-shadow: 0 0 3px rgba(108,228,245,0.5);
+  letter-spacing: -0.3px;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+.diag-cell.warn .diag-val {
+  color: #fbd86b;
+  text-shadow: 0 0 3px rgba(251,216,107,0.55);
+}
+.diag-cell.danger .diag-val {
+  color: #ff7878;
+  text-shadow: 0 0 3px rgba(255,120,120,0.6);
+}
+/* Source strips have no own quantum/rate (their feed is upstream of
+   phonon_master); show a dim placeholder rather than empty cells. */
+.row-diag.empty .diag-cell { opacity: 0.35; }
 .strip > .row-fader   { grid-row: fader; }
 .strip > .row-io-out  { grid-row: io-out; }
 .strip > .row-scotch  { grid-row: scotch; }
@@ -2642,6 +2695,26 @@ const MIX_VU_TICKS = `<div class="vu-ticks">
 //   S = solo  → silences every OTHER strip on the same side
 //       (other sources if S is on a source; other outputs if on
 //       an output). Multiple S's = solo group, all of them play.
+// Render the live diagnostic row (3 LCD cells: XRUN / Q / R) for one
+// strip. `node` is the PW node name we want stats for — typically the
+// sink_node_name for output strips, the source_node_name for source
+// strips. Empty string → render a dim placeholder.
+function diagRow(node) {
+  if (!node) {
+    return `<div class="row-diag empty">
+      <div class="diag-cell"><div class="diag-label">XR</div><div class="diag-val">—</div></div>
+      <div class="diag-cell"><div class="diag-label">Q</div><div class="diag-val">—</div></div>
+      <div class="diag-cell"><div class="diag-label">R</div><div class="diag-val">—</div></div>
+    </div>`;
+  }
+  const enc = escapeHtml(node);
+  return `<div class="row-diag" data-diag-node="${enc}">
+    <div class="diag-cell"><div class="diag-label">XR</div><div class="diag-val" data-diag-field="err">0</div></div>
+    <div class="diag-cell"><div class="diag-label">Q</div><div class="diag-val" data-diag-field="quantum">—</div></div>
+    <div class="diag-cell"><div class="diag-label">R</div><div class="diag-val" data-diag-field="rate">—</div></div>
+  </div>`;
+}
+
 function mrlsRow(kind, id, state) {
   const muted = state.mute;
   const ml = state.mute_left;
@@ -5081,6 +5154,7 @@ function renderMixSources() {
       ${directChips}
       <div class="row-extra2"></div>
       <div class="row-fx empty"></div>
+      ${diagRow(s.source_node_name)}
       ${mrlsRow('mix-src', s.id, s)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
@@ -5126,6 +5200,7 @@ function renderMixMaster() {
       </button>
     </div>
     ${fxRowForMaster(m)}
+    ${diagRow('phonon_master')}
     ${mrlsRow('mix-master', '', m)}
     <div class="row-fader fader-area">
       ${MIX_VU_TICKS}
@@ -5177,6 +5252,7 @@ function renderMixOutputs() {
       </div>
       <div class="row-extra2">${hw}</div>
       ${fxRow(o)}
+      ${diagRow(o.sink_node_name)}
       ${mrlsRow('mix-out', o.id, o)}
       <div class="row-fader fader-area">
         ${MIX_VU_TICKS}
@@ -8058,6 +8134,45 @@ function animateVU() {
   } catch(e) { /* ignore */ }
 }
 setInterval(animateVU, 100);
+
+// ── Per-strip diag LCDs (XRUN / quantum / rate) ──────
+// pw-top runs `-n 2` (~2s) so polling faster than that is wasted.
+// Refresh every 2s and update only the cells whose values actually
+// changed — no DOM churn during normal idle.
+async function pollDiagCells() {
+  let stats;
+  try {
+    const r = await fetch(API + '/pipewire/node-stats');
+    if (!r.ok) return;
+    stats = await r.json();
+  } catch (e) { return; }
+  const formatRate = (hz) => hz >= 1000 ? Math.round(hz / 1000) + 'k' : String(hz || '—');
+  const formatQuantum = (q) => q ? String(q) : '—';
+  const formatErr = (n) => n > 999 ? Math.round(n / 1000) + 'k' : String(n || 0);
+  document.querySelectorAll('.row-diag[data-diag-node]').forEach(row => {
+    const node = row.dataset.diagNode;
+    const s = stats[node];
+    const err = s ? (s.err || 0) : 0;
+    const q   = s ? (s.quantum || 0) : 0;
+    const rate = s ? (s.rate || 0) : 0;
+    const errCell = row.querySelector('[data-diag-field="err"]');
+    const qCell = row.querySelector('[data-diag-field="quantum"]');
+    const rCell = row.querySelector('[data-diag-field="rate"]');
+    if (errCell) {
+      errCell.textContent = formatErr(err);
+      const parent = errCell.parentElement;
+      if (parent) {
+        parent.classList.toggle('warn', err > 0 && err <= 10);
+        parent.classList.toggle('danger', err > 10);
+      }
+    }
+    if (qCell) qCell.textContent = formatQuantum(q);
+    if (rCell) rCell.textContent = formatRate(rate);
+  });
+}
+setInterval(pollDiagCells, 2000);
+// Fire once on load too so the cells aren't dashes for the first 2s.
+setTimeout(pollDiagCells, 500);
 
 // ── Init ─────────────────────────────────────────────
 refreshAll();

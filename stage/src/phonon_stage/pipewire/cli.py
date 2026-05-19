@@ -162,9 +162,15 @@ _PW_TOP_CACHE_TTL = 3.0
 
 
 async def pw_top_xruns() -> dict[int, dict[str, Any]]:
-    """Run `pw-top -b` briefly and parse the latest snapshot's ERR column.
+    """Run `pw-top -b` briefly and parse the latest snapshot.
 
-    Returns: {node_id: {name, err, state, format}}
+    Header layout from PipeWire's pw-top:
+       S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT     NAME
+
+    Returns: {node_id: {name, err, state, quantum, rate, format}}
+    `quantum` is the buffer size in samples (e.g. 1024), `rate` is the
+    sample rate in Hz (e.g. 48000). Both are ints; 0 when pw-top
+    couldn't read them (typical for idle nodes that emit "---").
     """
     global _pw_top_cache, _pw_top_cache_time
     now = asyncio.get_event_loop().time()
@@ -249,9 +255,25 @@ async def pw_top_xruns() -> dict[int, dict[str, Any]]:
             err = int(parts[8])
         except (ValueError, IndexError):
             continue
+        # QUANT (parts[2]) and RATE (parts[3]) are "---" for idle nodes
+        # that haven't picked up format negotiation yet — coerce to 0
+        # so the API surface stays a clean int.
+        def _to_int(s: str) -> int:
+            try:
+                return int(s)
+            except ValueError:
+                return 0
+        quantum = _to_int(parts[2])
+        rate = _to_int(parts[3])
         if not name_part:
             continue
-        result[node_id] = {"name": name_part, "err": err, "state": state}
+        result[node_id] = {
+            "name": name_part,
+            "err": err,
+            "state": state,
+            "quantum": quantum,
+            "rate": rate,
+        }
 
     _pw_top_cache = result
     _pw_top_cache_time = now

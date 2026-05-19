@@ -92,14 +92,42 @@ async def list_links(request: Request) -> list[PwLinkResponse]:
 async def list_xruns() -> dict[str, object]:
     """Per-node XRUN counters parsed from `pw-top -b`. Cached 3s.
 
-    Returns: { total: int, nodes: [{id, name, err, state}] }
+    Returns: { total: int, nodes: [{id, name, err, state, quantum, rate}] }
     """
     from phonon_stage.pipewire import cli
 
     table = await cli.pw_top_xruns()
     nodes = [
-        {"id": nid, "name": v.get("name", ""), "err": v.get("err", 0), "state": v.get("state", "")}
+        {
+            "id": nid,
+            "name": v.get("name", ""),
+            "err": v.get("err", 0),
+            "state": v.get("state", ""),
+            "quantum": v.get("quantum", 0),
+            "rate": v.get("rate", 0),
+        }
         for nid, v in table.items()
     ]
     total = sum(int(n["err"]) for n in nodes)
     return {"total": total, "nodes": nodes}
+
+
+@router.get("/node-stats")
+async def node_stats_by_name() -> dict[str, dict[str, int]]:
+    """Per-node live clock + xrun stats keyed by node name.
+
+    Same payload as /xruns but as `{name: {err, quantum, rate}}` so
+    the strip UI can look up its sink's stats with a single dict
+    lookup instead of scanning the array."""
+    from phonon_stage.pipewire import cli
+
+    table = await cli.pw_top_xruns()
+    return {
+        v.get("name", ""): {
+            "err": v.get("err", 0),
+            "quantum": v.get("quantum", 0),
+            "rate": v.get("rate", 0),
+        }
+        for v in table.values()
+        if v.get("name")
+    }

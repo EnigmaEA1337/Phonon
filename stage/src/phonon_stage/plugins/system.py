@@ -54,6 +54,25 @@ class SystemBackend(Protocol):
         Empty string if unavailable."""
         ...
 
+    async def system_unit_start(self, unit: str) -> None:
+        """Start a SYSTEM-scope unit (not --user). Uses sudo on the
+        real backend — the phonon sudoers grants this without password
+        for an explicit whitelist of units (e.g. nqptp.service).
+
+        Why this exists: most plugin units (shairport-sync, spotifyd)
+        run in the user session so systemctl --user can drive them
+        without sudo. But nqptp is a SYSTEM unit because it binds
+        UDP/319+320 and has to coexist with ptp4l for AES67 — running
+        it as user-scope would still bind those ports, but management
+        across reboots is brittle. So we leave nqptp in system scope
+        and use sudo from the plugin."""
+        ...
+
+    async def system_unit_stop(self, unit: str) -> None:
+        """Stop a SYSTEM-scope unit (not --user). Same sudo path as
+        system_unit_start."""
+        ...
+
     def read_text(self, path: Path) -> str: ...
 
     def write_text_atomic(self, path: Path, content: str, mode: int = 0o644) -> None: ...
@@ -139,6 +158,18 @@ class RealSystemBackend:
         )
         return out.strip()
 
+    async def system_unit_start(self, unit: str) -> None:
+        """Start a system-scope unit via sudo. Required for nqptp because
+        it's a system service (binds UDP/319+320). The phonon sudoers
+        grants `/bin/systemctl start <unit>` without password for the
+        whitelisted units — see deploy/install.sh §sudoers."""
+        await self._run("sudo", "-n", self.SYSTEMCTL, "start", unit)
+
+    async def system_unit_stop(self, unit: str) -> None:
+        """Stop a system-scope unit via sudo. Same whitelist as
+        system_unit_start."""
+        await self._run("sudo", "-n", self.SYSTEMCTL, "stop", unit)
+
     def read_text(self, path: Path) -> str:
         return path.read_text()
 
@@ -210,6 +241,17 @@ class FakeSystemBackend:
 
     async def systemctl_status_stderr(self, unit: str) -> str:
         return f"fake-status: {unit} active={self.active.get(unit, False)}"
+
+    async def system_unit_start(self, unit: str) -> None:
+        # Share the `active` dict with the user-scope methods so
+        # systemctl_is_active still answers correctly regardless of
+        # which scope started the unit — keeps existing tests honest.
+        self._maybe_fail("system_start", unit)
+        self.active[unit] = True
+
+    async def system_unit_stop(self, unit: str) -> None:
+        self._maybe_fail("system_stop", unit)
+        self.active[unit] = False
 
     def read_text(self, path: Path) -> str:
         if path not in self.files:

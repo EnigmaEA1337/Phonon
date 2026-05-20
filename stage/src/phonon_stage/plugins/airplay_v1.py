@@ -377,9 +377,14 @@ class AirplayV1Plugin:
         await self._apply_nqptp_iface(settings.nqptp_interface)
         if settings.airplay_version == 2:
             try:
-                await self._system.systemctl_start(self.NQPTP_UNIT)
+                # nqptp is a SYSTEM unit (binds UDP/319+320, has to
+                # coexist with ptp4l for AES67). Plugin uses sudo via
+                # SystemBackend.system_unit_start — the phonon sudoers
+                # whitelists `systemctl start nqptp.service`.
+                await self._system.system_unit_start(self.NQPTP_UNIT)
             except Exception:
                 import structlog
+
                 structlog.get_logger().warning(
                     "plugins.airplay.nqptp_start_failed",
                     exc_info=True,
@@ -399,13 +404,20 @@ class AirplayV1Plugin:
         try:
             if iface:
                 proc = await asyncio.create_subprocess_exec(
-                    "sudo", "-n", "/usr/local/sbin/phonon-nqptp", "set-iface", iface,
+                    "sudo",
+                    "-n",
+                    "/usr/local/sbin/phonon-nqptp",
+                    "set-iface",
+                    iface,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
             else:
                 proc = await asyncio.create_subprocess_exec(
-                    "sudo", "-n", "/usr/local/sbin/phonon-nqptp", "clear-iface",
+                    "sudo",
+                    "-n",
+                    "/usr/local/sbin/phonon-nqptp",
+                    "clear-iface",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -445,7 +457,9 @@ class AirplayV1Plugin:
 
     async def _stop_nqptp_quiet(self) -> None:
         try:
-            await self._system.systemctl_stop(self.NQPTP_UNIT)
+            # System scope — nqptp is a system unit, see
+            # _sync_nqptp_to_settings for the rationale.
+            await self._system.system_unit_stop(self.NQPTP_UNIT)
         except Exception:
             # Already stopped / never installed / not granted via sudoers
             # — all benign here, the AP1 path doesn't depend on nqptp.
@@ -487,9 +501,14 @@ class AirplayV1Plugin:
         # AP1 mode).
         if settings.airplay_version == 2:
             try:
-                await self._system.systemctl_start(self.NQPTP_UNIT)
+                # nqptp is a SYSTEM unit (binds UDP/319+320, has to
+                # coexist with ptp4l for AES67). Plugin uses sudo via
+                # SystemBackend.system_unit_start — the phonon sudoers
+                # whitelists `systemctl start nqptp.service`.
+                await self._system.system_unit_start(self.NQPTP_UNIT)
             except Exception:
                 import structlog
+
                 structlog.get_logger().warning(
                     "plugins.airplay.nqptp_start_failed",
                     exc_info=True,

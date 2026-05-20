@@ -363,6 +363,21 @@ class TestAirplayV2Mode:
         await plugin.put_settings(AirplayV1Settings(airplay_version=2))
         assert await fake_sys.systemctl_is_active("nqptp.service")
 
+    async def test_nqptp_uses_system_scope_not_user(
+        self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
+    ) -> None:
+        """Regression guard for the long-standing v1→v2 bug: nqptp is
+        a SYSTEM unit but the plugin used to call systemctl_start (user
+        scope), which fails silently and leaves nqptp down. Toggling to
+        v2 with the user-scope path explicitly failing must still leave
+        nqptp running, because the system-scope path is the one in use."""
+        fake_sys.fail_on.add(("start", "nqptp.service"))
+        fake_sys.fail_on.add(("stop", "nqptp.service"))
+        await plugin.put_settings(AirplayV1Settings(airplay_version=2))
+        # nqptp must come up via system_unit_start, not the failing
+        # user-scope systemctl_start.
+        assert await fake_sys.systemctl_is_active("nqptp.service")
+
     async def test_v2_then_v1_stops_nqptp(
         self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend
     ) -> None:
@@ -395,9 +410,12 @@ class TestAirplayV2Mode:
     async def test_nqptp_interface_round_trip(self, plugin: AirplayV1Plugin) -> None:
         # The iface setting lives in a sentinel comment in the conf so
         # it round-trips through get_settings() like every other field.
-        await plugin.put_settings(AirplayV1Settings(
-            airplay_version=2, nqptp_interface="enp1s0",
-        ))
+        await plugin.put_settings(
+            AirplayV1Settings(
+                airplay_version=2,
+                nqptp_interface="enp1s0",
+            )
+        )
         back = await plugin.get_settings()
         assert back.nqptp_interface == "enp1s0"
 

@@ -974,7 +974,7 @@ USVC
 # ${DATA_DIR}/plugins/<plugin-name>/ — phonon-stage creates the file
 # at first enable, the unit references it by absolute path.
 
-# AirPlay v1 — shairport-sync 3.x / 4.x
+# AirPlay v1/v2 — shairport-sync 3.x / 4.x
 # `Wants=` (not `Requires=`) on pipewire-pulse: shairport-sync will
 # keep trying to connect to the PA socket if it's not ready, that's
 # fine and more robust than a hard requirement that would put the
@@ -987,16 +987,32 @@ USVC
 # audio bypasses the airplay_in null-sink the plugin sets up and
 # WirePlumber auto-routes it to the default sink, defeating the
 # whole Phonon routing matrix.
+#
+# Binary selection: prefer /usr/local/bin/shairport-sync (built from
+# source with --with-airplay-2 by step 9b above) over the apt binary
+# at /usr/bin/shairport-sync. The local build supports BOTH AP1 and
+# AP2; the apt binary supports AP1 only and silently ignores the
+# `airplay-version = 2;` line the plugin writes when the user toggles
+# v2. Hardcoding /usr/bin/ was the root cause of the long-standing
+# "v1 → v2 restarts but stays on v1" bug.
 mkdir -p "${DATA_DIR}/plugins/airplay-v1"
+SHAIRPORT_BIN="/usr/bin/shairport-sync"
+if [ -x /usr/local/bin/shairport-sync ]; then
+    SHAIRPORT_BIN="/usr/local/bin/shairport-sync"
+    echo "  shairport-sync: using local AP2-capable build at ${SHAIRPORT_BIN}"
+else
+    echo "  shairport-sync: only apt binary present — AP2 toggle will be inert"
+    echo "  (run deploy/build-shairport-ap2.sh on this host to enable AP2)"
+fi
 cat > "${DATA_DIR}/.config/systemd/user/shairport-sync.service" <<APV1SVC
 [Unit]
-Description=AirPlay 1 receiver (Phonon plugin)
+Description=AirPlay receiver (Phonon plugin)
 After=pipewire-pulse.service
 Wants=pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/shairport-sync -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf -o pa
+ExecStart=${SHAIRPORT_BIN} -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf -o pa
 Restart=on-failure
 RestartSec=2
 

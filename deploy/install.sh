@@ -988,21 +988,23 @@ USVC
 # WirePlumber auto-routes it to the default sink, defeating the
 # whole Phonon routing matrix.
 #
-# Binary selection: prefer /usr/local/bin/shairport-sync (built from
-# source with --with-airplay-2 by step 9b above) over the apt binary
-# at /usr/bin/shairport-sync. The local build supports BOTH AP1 and
-# AP2; the apt binary supports AP1 only and silently ignores the
-# `airplay-version = 2;` line the plugin writes when the user toggles
-# v2. Hardcoding /usr/bin/ was the root cause of the long-standing
-# "v1 → v2 restarts but stays on v1" bug.
+# Binary selection: the user unit doesn't hard-code either binary.
+# Instead it execs a wrapper script (/usr/local/sbin/phonon-shairport)
+# that reads the rendered conf and picks:
+#   * /usr/local/bin/shairport-sync  when `airplay-version = 2;`  (AP2 build)
+#   * /usr/bin/shairport-sync         when `airplay-version = 1;`  (apt AP1-only)
+#
+# Why the wrapper exists: shairport-sync 4.3.7 built with --with-airplay-2
+# reads `airplay-version = 1;` correctly but still starts in AP2 mode
+# regardless of the value (upstream defect). So swapping the conf line
+# isn't enough — the actual binary has to swap too. The apt binary is
+# strictly AP1 and reliably enters classic mode, which is exactly what
+# we need when the operator picks v=1 (cross-VLAN compat, no PTP).
 mkdir -p "${DATA_DIR}/plugins/airplay-v1"
-SHAIRPORT_BIN="/usr/bin/shairport-sync"
-if [ -x /usr/local/bin/shairport-sync ]; then
-    SHAIRPORT_BIN="/usr/local/bin/shairport-sync"
-    echo "  shairport-sync: using local AP2-capable build at ${SHAIRPORT_BIN}"
-else
-    echo "  shairport-sync: only apt binary present — AP2 toggle will be inert"
-    echo "  (run deploy/build-shairport-ap2.sh on this host to enable AP2)"
+if [ -f "${REPO_ROOT}/deploy/phonon-shairport.sh" ]; then
+    chmod +x "${REPO_ROOT}/deploy/phonon-shairport.sh"
+    ln -sf "${REPO_ROOT}/deploy/phonon-shairport.sh" /usr/local/sbin/phonon-shairport
+    echo "  shairport-sync wrapper wired (chooses AP1/AP2 binary from conf)"
 fi
 cat > "${DATA_DIR}/.config/systemd/user/shairport-sync.service" <<APV1SVC
 [Unit]
@@ -1012,7 +1014,7 @@ Wants=pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=${SHAIRPORT_BIN} -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf -o pa
+ExecStart=/usr/local/sbin/phonon-shairport -c ${DATA_DIR}/plugins/airplay-v1/shairport-sync.conf -o pa
 Restart=on-failure
 RestartSec=2
 

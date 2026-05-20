@@ -331,14 +331,18 @@ class TestAirplayV2Mode:
     """Behaviour gated on airplay_version=2: nqptp lifecycle + the
     `airplay-version` conf line."""
 
-    async def test_v1_default_omits_airplay_version_line(
+    async def test_v1_emits_airplay_version_line(
         self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path
     ) -> None:
+        """Regression guard: a shairport-sync build compiled with
+        --with-airplay-2 defaults to AP2 mode when the conf doesn't
+        explicitly set the version. The renderer used to omit the line
+        for v=1 (assuming the apt AP1-only binary made it moot), which
+        silently kept the local AP2-capable binary in AP2 mode despite
+        the operator picking v=1. The line is now written unconditionally."""
         await plugin.put_settings(AirplayV1Settings())  # version=1 default
         body = fake_sys.read_text(conf_path)
-        # The line is omitted entirely for v1 — tidier conf + matches
-        # the "AP2 binary silently ignores it anyway" comment.
-        assert "airplay-version" not in body
+        assert "airplay-version = 1" in body
 
     async def test_v2_emits_airplay_version_line(
         self, plugin: AirplayV1Plugin, fake_sys: FakeSystemBackend, conf_path: Path

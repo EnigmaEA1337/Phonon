@@ -606,15 +606,15 @@ class AirplayV1Plugin:
           * `playback_mode` and `output_format` are valid in `general`.
         """
         password_line = f'password = "{s.password}";' if s.password else "// password unset"
-        # airplay-version is only honoured by shairport-sync builds
-        # compiled with --with-airplay-2. The apt binary (AP1-only)
-        # silently ignores it, so emitting unconditionally is safe —
-        # but we omit it for v1 to keep the conf tidy and avoid
-        # confusion when an operator reads the file looking for
-        # "what protocol is this stage advertising?".
-        version_line = (
-            f"  airplay-version = {s.airplay_version};\n" if s.airplay_version == 2 else ""
-        )
+        # airplay-version MUST be emitted unconditionally. A shairport-sync
+        # build compiled with --with-airplay-2 (our /usr/local/bin/ build)
+        # defaults to AP2 mode when the line is absent — so omitting it
+        # for v=1 silently leaves the daemon in AP2 mode, ignoring the
+        # operator's choice and crash-looping when nqptp is stopped (see
+        # the long debugging session 2026-05-20). The apt AP1-only binary
+        # ignores the line either way, so writing it explicitly costs us
+        # nothing.
+        version_line = f"  airplay-version = {s.airplay_version};\n"
         # Optional lines — only emit when the value would be accepted /
         # meaningful. shairport-sync 4.x rejects `volume_range_db = 0`
         # despite the doc saying it means "device default".
